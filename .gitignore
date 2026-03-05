@@ -60,3 +60,6 @@ Desktop.ini
 
 # Alembic
 alembic/versions/__pycache__/
+
+# Temp npm fix
+.npm-fix/
