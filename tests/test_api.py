@@ -13,7 +13,6 @@ def client():
 
 class TestHealthEndpoint:
     def test_health_ok(self, client):
-        # Override the DB dependency via FastAPI's mechanism
         from packages.storage.database import get_db_session
 
         mock_session = MagicMock()
@@ -21,11 +20,12 @@ class TestHealthEndpoint:
         app.dependency_overrides[get_db_session] = lambda: mock_session
 
         try:
-            # Patch redis at the module level where it was imported
-            with patch("apps.api.routers.health.redis_lib") as mock_redis_mod:
-                mock_r = MagicMock()
-                mock_r.ping.return_value = True
-                mock_redis_mod.from_url.return_value = mock_r
+            with patch("apps.api.routers.health.boto3") as mock_boto3:
+                mock_client = MagicMock()
+                mock_client.list_foundation_models.return_value = {
+                    "modelSummaries": [{"modelId": "amazon.titan-text-express-v1"}]
+                }
+                mock_boto3.client.return_value = mock_client
 
                 resp = client.get("/health")
                 assert resp.status_code == 200

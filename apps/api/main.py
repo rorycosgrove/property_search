@@ -3,7 +3,7 @@ FastAPI application — Irish Property Research Dashboard API.
 
 Provides REST endpoints for properties, analytics, alerts, sources,
 saved searches, LLM enrichment, and system health.
-"""
+Deployed on AWS Lambda via Mangum (API Gateway → Lambda → FastAPI)."""
 
 from __future__ import annotations
 
@@ -16,6 +16,7 @@ from packages.shared.config import settings
 from packages.shared.logging import setup_logging, get_logger
 
 from apps.api.routers import (
+    admin,
     alerts,
     analytics,
     health,
@@ -49,13 +50,16 @@ app = FastAPI(
 
 # ── CORS ──────────────────────────────────────────────────────────────────────
 
+# CORS origins — includes localhost for dev and configurable for Amplify domain
+_cors_origins = [
+    origin.strip()
+    for origin in settings.cors_origins.split(",")
+    if origin.strip()
+]
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[
-        "http://localhost:3000",
-        "http://localhost:3001",
-        f"http://localhost:{settings.api_port}",
-    ],
+    allow_origins=_cors_origins,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -71,3 +75,4 @@ app.include_router(analytics.router, prefix="/api/v1/analytics", tags=["Analytic
 app.include_router(alerts.router, prefix="/api/v1/alerts", tags=["Alerts"])
 app.include_router(saved_searches.router, prefix="/api/v1/saved-searches", tags=["Saved Searches"])
 app.include_router(llm.router, prefix="/api/v1/llm", tags=["LLM / AI"])
+app.include_router(admin.router, prefix="/api/v1/admin", tags=["Admin"])

@@ -1,7 +1,7 @@
 """
 LLM prompt templates for property enrichment.
 
-All prompts are designed to work with both Ollama and OpenAI models.
+All prompts are designed to work with Amazon Bedrock models (Titan, Nova).
 """
 
 SYSTEM_PROMPT = """You are an expert Irish property market analyst and real estate advisor.

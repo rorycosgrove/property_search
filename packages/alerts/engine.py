@@ -29,7 +29,7 @@ class AlertEngine:
     """
     Evaluates saved searches and property changes to generate alerts.
 
-    Called by the Celery worker after each scraping cycle.
+    Called by the SQS worker Lambda after each scraping cycle.
     """
 
     def __init__(self, db: Session):

@@ -331,25 +331,16 @@ class LLMEnrichmentResponse(BaseModel):
 class LLMConfigResponse(BaseModel):
     provider: str
     enabled: bool
-    ollama_endpoint: str
-    ollama_model: str
-    ollama_timeout: int
-    openai_model: str
-    openai_endpoint: str
-    openai_timeout: int
-    # Never expose API key
+    bedrock_model_id: str
+    bedrock_max_tokens: int
+    aws_region: str
 
 
 class LLMConfigUpdate(BaseModel):
     provider: str | None = None
     enabled: bool | None = None
-    ollama_endpoint: str | None = None
-    ollama_model: str | None = None
-    ollama_timeout: int | None = None
-    openai_api_key: str | None = None
-    openai_model: str | None = None
-    openai_endpoint: str | None = None
-    openai_timeout: int | None = None
+    bedrock_model: str | None = None
+    bedrock_max_tokens: int | None = None
 
 
 # ── Analytics Schemas ─────────────────────────────────────────────────────────
@@ -403,7 +394,7 @@ class AnalyticsSummary(BaseModel):
 class HealthResponse(BaseModel):
     status: str
     database: str
-    redis: str
+    bedrock: str
     worker: str | None = None
 
 

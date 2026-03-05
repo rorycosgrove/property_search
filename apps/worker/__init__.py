@@ -1,1 +1,1 @@
-# apps.worker — Celery worker application
+# apps.worker — SQS + EventBridge Lambda handlers

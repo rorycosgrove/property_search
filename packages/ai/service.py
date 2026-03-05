@@ -2,8 +2,8 @@
 LLM service layer.
 
 Provides high-level property enrichment functions that use the
-configured LLM provider (Ollama or OpenAI). Handles provider
-switching via Redis config and caching of results.
+configured LLM provider (Amazon Bedrock). Handles provider
+switching via DynamoDB config and caching of results.
 """
 
 from __future__ import annotations
@@ -13,8 +13,7 @@ from typing import Any
 
 from packages.shared.config import settings
 from packages.shared.logging import get_logger
-from packages.ai.ollama_provider import OllamaProvider
-from packages.ai.openai_provider import OpenAIProvider
+from packages.ai.bedrock_provider import BedrockProvider
 from packages.ai.prompts import (
     COMPARISON_PROMPT,
     MARKET_TREND_PROMPT,
@@ -32,43 +31,66 @@ def get_provider(provider_name: str | None = None, model: str | None = None) -> 
     """
     Get an LLM provider instance.
 
-    Checks Redis for runtime config override, then falls back to settings.
+    Checks DynamoDB for runtime config override, then falls back to settings.
     """
     name = provider_name or _get_active_provider_name()
+    active_model = model or _get_active_model()
 
-    if name == "openai":
-        return OpenAIProvider(model=model)
-    else:
-        return OllamaProvider(model=model)
+    return BedrockProvider(model_id=active_model)
 
 
 def _get_active_provider_name() -> str:
-    """Get the active provider name, checking Redis cache first."""
+    """Get the active provider name, checking DynamoDB cache first."""
     try:
-        import redis
-
-        r = redis.from_url(settings.redis_url, decode_responses=True)
-        cached = r.get("llm:provider")
-        if cached:
-            return cached
+        return _get_dynamo_config("llm_provider") or settings.llm_provider
     except Exception:
-        pass
+        return settings.llm_provider
 
-    return settings.llm_provider
+
+def _get_active_model() -> str | None:
+    """Get the active model name from DynamoDB cache."""
+    try:
+        return _get_dynamo_config("llm_model") or None
+    except Exception:
+        return None
 
 
 def set_active_provider(provider: str, model: str | None = None) -> None:
-    """Set the active LLM provider in Redis (runtime config)."""
+    """Set the active LLM provider in DynamoDB (runtime config)."""
     try:
-        import redis
-
-        r = redis.from_url(settings.redis_url, decode_responses=True)
-        r.set("llm:provider", provider)
+        _set_dynamo_config("llm_provider", provider)
         if model:
-            r.set("llm:model", model)
+            _set_dynamo_config("llm_model", model)
         logger.info("llm_provider_changed", provider=provider, model=model)
     except Exception as e:
-        logger.error("llm_config_redis_error", error=str(e))
+        logger.error("llm_config_dynamo_error", error=str(e))
+
+
+# ── DynamoDB config helpers ───────────────────────────────────────────────────
+
+_dynamo_client = None
+
+
+def _get_dynamo():
+    global _dynamo_client
+    if _dynamo_client is None:
+        import boto3
+        _dynamo_client = boto3.resource("dynamodb", region_name=settings.aws_region)
+    return _dynamo_client
+
+
+def _get_dynamo_config(key: str) -> str | None:
+    """Read a config value from the DynamoDB config table."""
+    table = _get_dynamo().Table(settings.dynamodb_config_table)
+    response = table.get_item(Key={"config_key": key})
+    item = response.get("Item")
+    return item.get("config_value") if item else None
+
+
+def _set_dynamo_config(key: str, value: str) -> None:
+    """Write a config value to the DynamoDB config table."""
+    table = _get_dynamo().Table(settings.dynamodb_config_table)
+    table.put_item(Item={"config_key": key, "config_value": value})
 
 
 # ── High-level enrichment functions ───────────────────────────────────────────

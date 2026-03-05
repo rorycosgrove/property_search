@@ -7,6 +7,20 @@ defaults for development. Override via .env or environment for production.
 
 from __future__ import annotations
 
+import json
+import os
+
+from packages.shared.constants import (
+    DEFAULT_SCRAPE_INTERVAL_SECONDS,
+    GEOCODER_RATE_LIMIT_SECONDS,
+    MAX_SCRAPE_RETRIES,
+    REQUEST_TIMEOUT_SECONDS,
+    DEFAULT_RSS_INTERVAL_SECONDS,
+    DEFAULT_PPR_INTERVAL_SECONDS,
+    SCRAPE_DELAY_MIN_SECONDS,
+    SCRAPE_DELAY_MAX_SECONDS,
+)
+from pydantic import model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -19,64 +33,73 @@ class Settings(BaseSettings):
         extra="ignore",
     )
 
-    # ── Database ──────────────────────────────────
-    postgres_host: str = "postgres"
+    # ── Database (RDS PostgreSQL) ─────────────────
+    postgres_host: str = "localhost"
     postgres_port: int = 5432
     postgres_db: str = "propertysearch"
     postgres_user: str = "propertysearch"
     postgres_password: str = "changeme_in_production"
 
-    # ── Redis ─────────────────────────────────────
-    redis_host: str = "redis"
-    redis_port: int = 6379
-    redis_db: int = 0
+    # ── AWS ───────────────────────────────────────
+    aws_region: str = "eu-west-1"
+    aws_profile: str = ""
+    aws_secrets_arn: str = ""
 
-    # ── Celery ────────────────────────────────────
-    celery_broker_url: str = "redis://redis:6379/1"
-    celery_result_backend: str = "redis://redis:6379/2"
+    # ── SQS Queue URLs ────────────────────────────
+    scrape_queue_url: str = ""
+    llm_queue_url: str = ""
+    alert_queue_url: str = ""
+
+    # ── DynamoDB (config cache) ───────────────────
+    dynamodb_config_table: str = "property-search-config"
 
     # ── API ───────────────────────────────────────
     api_host: str = "0.0.0.0"
     api_port: int = 8000
     api_workers: int = 4
     log_level: str = "INFO"
+    cors_origins: str = "http://localhost:3000,http://localhost:3001"
 
     # ── Frontend ──────────────────────────────────
     next_public_api_url: str = "http://localhost:8000"
 
-    # ── LLM ───────────────────────────────────────
-    llm_provider: str = "ollama"
+    # ── LLM (Amazon Bedrock) ─────────────────────
+    llm_provider: str = "bedrock"
     llm_enabled: bool = False
-
-    # Ollama
-    ollama_endpoint: str = "http://host.docker.internal:11434"
-    ollama_model: str = "llama3.2"
-    ollama_timeout_seconds: int = 120
-
-    # OpenAI / compatible (Claude, etc.)
-    openai_api_key: str = ""
-    openai_model: str = "gpt-4o"
-    openai_endpoint: str = "https://api.openai.com/v1"
-    openai_timeout_seconds: int = 60
+    bedrock_model_id: str = "amazon.titan-text-express-v1"
+    bedrock_max_tokens: int = 4096
 
     # ── Scraping ──────────────────────────────────
-    scrape_poll_interval_seconds: int = 900
-    rss_poll_interval_seconds: int = 300
-    ppr_poll_interval_seconds: int = 604800
-    max_scrape_retries: int = 3
-    request_timeout_seconds: int = 30
-    scrape_delay_min_seconds: float = 2.0
-    scrape_delay_max_seconds: float = 5.0
+    scrape_poll_interval_seconds: int = DEFAULT_SCRAPE_INTERVAL_SECONDS
+    rss_poll_interval_seconds: int = DEFAULT_RSS_INTERVAL_SECONDS
+    ppr_poll_interval_seconds: int = DEFAULT_PPR_INTERVAL_SECONDS
+    max_scrape_retries: int = MAX_SCRAPE_RETRIES
+    request_timeout_seconds: int = REQUEST_TIMEOUT_SECONDS
+    scrape_delay_min_seconds: float = SCRAPE_DELAY_MIN_SECONDS
+    scrape_delay_max_seconds: float = SCRAPE_DELAY_MAX_SECONDS
     user_agent: str = "PropertySearch/1.0 (+https://github.com/property-search)"
 
     # ── Geocoding ─────────────────────────────────
     geocoder_provider: str = "nominatim"
     geocoder_user_agent: str = "PropertySearch/1.0"
-    geocoder_rate_limit: int = 1
+    geocoder_rate_limit: float = GEOCODER_RATE_LIMIT_SECONDS
 
     # ── Observability ─────────────────────────────
     enable_metrics: bool = True
     enable_tracing: bool = False
+
+    @model_validator(mode="after")
+    def _resolve_secrets(self) -> "Settings":
+        """Fetch DB credentials from Secrets Manager when running in Lambda."""
+        if self.aws_secrets_arn and os.environ.get("AWS_LAMBDA_FUNCTION_NAME"):
+            import boto3
+
+            client = boto3.client("secretsmanager", region_name=self.aws_region)
+            resp = client.get_secret_value(SecretId=self.aws_secrets_arn)
+            secret = json.loads(resp["SecretString"])
+            self.postgres_user = secret["username"]
+            self.postgres_password = secret["password"]
+        return self
 
     # ── Derived properties ────────────────────────
     @property
@@ -94,8 +117,10 @@ class Settings(BaseSettings):
         )
 
     @property
-    def redis_url(self) -> str:
-        return f"redis://{self.redis_host}:{self.redis_port}/{self.redis_db}"
+    def is_lambda(self) -> bool:
+        """Detect if running inside AWS Lambda."""
+        import os
+        return bool(os.environ.get("AWS_LAMBDA_FUNCTION_NAME"))
 
 
 # Singleton — import this from anywhere

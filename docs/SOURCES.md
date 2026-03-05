@@ -16,8 +16,24 @@ The property search platform uses a pluggable adapter system to fetch listings f
 
 1. Each adapter extends the `SourceAdapter` abstract base class
 2. Adapters are registered in `packages/sources/registry.py`
-3. The Celery worker calls adapters through the pipeline: `fetch → parse → normalize → geocode → store`
+3. SQS worker Lambda calls adapters through the pipeline: `fetch → parse → normalize → geocode → store`
 4. Deduplication happens via `content_hash` (SHA-256 of the source URL)
+
+## Execution Model
+
+Adapters are invoked by Lambda workers consuming from the **scrape** SQS queue:
+
+```
+EventBridge (every 6h)
+  → scrape_all_sources() sends N messages to SQS scrape queue
+    → Lambda worker: scrape_source(source_id)
+      → registry.get_adapter(adapter_name)(config)
+      → adapter.fetch_listings()
+      → adapter.parse_listing() per listing
+      → normalizer.normalize()
+      → geocoder.geocode()
+      → repository.upsert()
+```
 
 ## Writing a Custom Adapter
 
@@ -26,7 +42,6 @@ The property search platform uses a pluggable adapter system to fetch listings f
 ```python
 # packages/sources/my_source.py
 from packages.sources.base import SourceAdapter, RawListing, NormalizedProperty
-from packages.shared.config import get_settings
 import httpx
 
 
@@ -35,7 +50,6 @@ class MySourceAdapter(SourceAdapter):
 
     def __init__(self, config: dict | None = None):
         self.config = config or {}
-        self.settings = get_settings()
 
     def get_adapter_name(self) -> str:
         return "mysource"
@@ -60,7 +74,7 @@ class MySourceAdapter(SourceAdapter):
                     title=item["title"],
                     price=str(item["price"]),
                     address=item["address"],
-                    raw_data=item,  # Store everything for parse_listing
+                    raw_data=item,
                 ))
 
         return listings
@@ -111,7 +125,7 @@ BUILTIN_ADAPTERS = {
 
 Via API:
 ```bash
-curl -X POST http://localhost:8000/api/v1/sources \
+curl -X POST https://<api-url>/api/v1/sources \
   -H "Content-Type: application/json" \
   -d '{
     "name": "MySource – Dublin",
@@ -126,8 +140,8 @@ Or via seed script — add to `DEFAULT_SOURCES` in `scripts/seed.py`.
 ### Step 4: Test
 
 ```bash
-# Trigger a manual scrape
-curl -X POST http://localhost:8000/api/v1/sources/{source_id}/trigger
+# Trigger a manual scrape via API
+curl -X POST https://<api-url>/api/v1/sources/{source_id}/trigger
 ```
 
 ## Adapter Interface
@@ -148,60 +162,20 @@ class SourceAdapter(ABC):
 
     @abstractmethod
     def get_adapter_type(self) -> str:
-        """Return the adapter type (scraper, api, csv, rss)."""
+        """Return adapter type: 'scraper', 'csv', 'rss', etc."""
 
-    def supports_incremental(self) -> bool:
-        """Whether adapter supports incremental fetching (default: False)."""
-        return False
+    @classmethod
+    def get_default_config(cls) -> dict:
+        """Default configuration for this adapter."""
+
+    @classmethod
+    def get_config_schema(cls) -> dict:
+        """JSON schema describing adapter configuration options."""
 ```
-
-## Data Classes
-
-```python
-@dataclass
-class RawListing:
-    source_url: str        # Unique URL (used for content_hash)
-    title: str
-    price: str | None
-    address: str
-    raw_data: dict         # All scraped fields for parse_listing
-
-@dataclass
-class NormalizedProperty:
-    source_url: str
-    title: str
-    address: str
-    county: str | None
-    eircode: str | None
-    price: float | None
-    bedrooms: int | None
-    bathrooms: int | None
-    floor_area_sqm: float | None
-    property_type: str | None
-    ber_rating: str | None
-    description: str | None
-    image_urls: list[str]
-    latitude: float | None
-    longitude: float | None
-    content_hash: str       # Auto-computed from source_url
-    fuzzy_hash: str | None  # Auto-computed from address + price
-    raw_data: dict
-```
-
-## Configuration
-
-Each adapter can define its own config schema. Config is stored as JSONB on the `source` record and passed to the adapter constructor.
 
 ## Rate Limiting
 
-Adapters should implement their own rate limiting. The built-in scrapers use:
-- 1-3 second delays between page requests
-- Respect for `robots.txt` (informational — no enforcement)
-- User-Agent header identifying the bot
-
-## Error Handling
-
-- If `fetch_listings()` raises an exception, the worker records the error on the source record
-- `consecutive_errors` is incremented; resets on success
-- After 10 consecutive errors, the source is automatically disabled
-- Individual `parse_listing()` failures are logged but don't stop the batch
+All HTTP-based adapters use `httpx.AsyncClient` with timeouts. The scraping pipeline includes:
+- Per-adapter timeout (configurable)
+- Nominatim geocoding rate limit (1 req/sec per OSM policy)
+- SQS visibility timeout ensures long-running scrapes don't get retried prematurely

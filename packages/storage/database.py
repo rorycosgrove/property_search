@@ -3,6 +3,8 @@ Database engine, session management, and dependency injection.
 
 Provides the SQLAlchemy engine, session factory, and a FastAPI dependency
 for injecting database sessions into endpoint handlers.
+
+Supports both Lambda (NullPool) and local development (connection pool) modes.
 """
 
 from __future__ import annotations
@@ -12,17 +14,24 @@ from contextlib import contextmanager
 
 from sqlalchemy import create_engine
 from sqlalchemy.orm import Session, sessionmaker
+from sqlalchemy.pool import NullPool
 
 from packages.shared.config import settings
 
 # ── Engine ────────────────────────────────────────────────────────────────────
 
+# Lambda: use NullPool (connections don't persist across invocations)
+# Local dev: use standard pool with pre-ping
+_pool_args = {}
+if settings.is_lambda:
+    _pool_args = {"poolclass": NullPool}
+else:
+    _pool_args = {"pool_size": 10, "max_overflow": 20, "pool_pre_ping": True}
+
 engine = create_engine(
     settings.database_url,
-    pool_size=10,
-    max_overflow=20,
-    pool_pre_ping=True,  # Detect stale connections
     echo=False,
+    **_pool_args,
 )
 
 SessionLocal = sessionmaker(

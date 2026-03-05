@@ -34,8 +34,8 @@ def main():
     seed_sources()
 
     print("\n=== Setup complete ===")
-    print("Start the stack with: docker compose up -d")
-    print("Or run locally with:  make dev")
+    print("Deploy to AWS:       cd infra && npx cdk deploy --all")
+    print("Or run locally with: uvicorn apps.api.main:app --reload --port 8000")
 
 
 if __name__ == "__main__":

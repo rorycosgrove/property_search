@@ -15,6 +15,12 @@ from geoalchemy2.functions import ST_DWithin, ST_MakePoint, ST_SetSRID
 from sqlalchemy import and_, desc, func, or_, select, text
 from sqlalchemy.orm import Session, joinedload
 
+from packages.shared.constants import (
+    SIMILAR_PROPERTY_BEDROOM_RANGE,
+    SIMILAR_PROPERTY_LIMIT,
+    SIMILAR_PROPERTY_PRICE_TOLERANCE,
+    SOURCE_ERROR_THRESHOLD,
+)
 from packages.shared.schemas import (
     AlertSeverity,
     AlertType,
@@ -96,8 +102,8 @@ class SourceRepository:
             source.last_polled_at = utc_now()
             source.error_count += 1
             source.last_error = error_message
-            # Auto-disable after 5 consecutive errors
-            if source.error_count >= 5:
+            # Auto-disable after N consecutive errors
+            if source.error_count >= SOURCE_ERROR_THRESHOLD:
                 source.enabled = False
             self.session.flush()
 
@@ -269,7 +275,7 @@ class PropertyRepository:
                 )
             )
             .group_by(Property.county)
-            .order_by(desc("avg_price"))
+            .order_by(func.avg(Property.price).desc())
         )
 
         if property_type:
@@ -312,7 +318,7 @@ class PropertyRepository:
     def find_similar(
         self,
         property_id: str,
-        limit: int = 6,
+        limit: int = SIMILAR_PROPERTY_LIMIT,
     ) -> list[Property]:
         """Find similar properties based on county, type, bedrooms, and price range."""
         prop = self.get_by_id(property_id, include_relations=False)
@@ -330,10 +336,13 @@ class PropertyRepository:
             conditions.append(Property.property_type == prop.property_type)
         if prop.bedrooms:
             conditions.append(
-                Property.bedrooms.between(prop.bedrooms - 1, prop.bedrooms + 1)
+                Property.bedrooms.between(
+                    prop.bedrooms - SIMILAR_PROPERTY_BEDROOM_RANGE,
+                    prop.bedrooms + SIMILAR_PROPERTY_BEDROOM_RANGE
+                )
             )
         if prop.price:
-            price_range = prop.price * 0.2  # ±20%
+            price_range = prop.price * SIMILAR_PROPERTY_PRICE_TOLERANCE
             conditions.append(
                 Property.price.between(prop.price - price_range, prop.price + price_range)
             )
@@ -515,8 +524,8 @@ class SoldPropertyRepository:
                 func.avg(SoldProperty.price).label("avg_price"),
                 func.count(SoldProperty.id).label("count"),
             )
-            .group_by(text("period"))
-            .order_by(text("period"))
+            .group_by(period_expr)
+            .order_by(period_expr)
         )
 
         conditions = []

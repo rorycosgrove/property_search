@@ -93,9 +93,9 @@ def trigger_scrape(source_id: str, db: Session = Depends(get_db_session)):
     if not source:
         raise HTTPException(404, "Source not found")
 
-    from apps.worker.tasks import scrape_source
-    result = scrape_source.delay(source_id)
-    return {"task_id": str(result.id), "status": "dispatched"}
+    from packages.shared.queue import send_task
+    message_id = send_task("scrape", "scrape_source", {"source_id": source_id})
+    return {"task_id": message_id, "status": "dispatched"}
 
 
 def _to_dict(source) -> dict:
