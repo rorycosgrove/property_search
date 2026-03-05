@@ -139,8 +139,8 @@ AI-generated insights for a property.
 |--------|------|-------------|
 | id | UUID (PK) | |
 | property_id | UUID (FK → property, UNIQUE) | |
-| provider | VARCHAR(50) | ollama or openai |
-| model | VARCHAR(100) | Model name used |
+| provider | VARCHAR(50) | bedrock |
+| model | VARCHAR(100) | Model ID (e.g. amazon.titan-text-express-v1) |
 | summary | TEXT | AI-generated summary |
 | value_score | NUMERIC(3,1) | 1–10 value rating |
 | pros | JSONB | Array of strings |
@@ -151,3 +151,19 @@ AI-generated insights for a property.
 | raw_response | JSONB | Full LLM response |
 | created_at | TIMESTAMP | |
 | updated_at | TIMESTAMP | |
+
+## DynamoDB Tables
+
+### property-search-config
+Runtime configuration cache (replaces Redis). Used for LLM model settings.
+
+| Attribute | Type | Description |
+|-----------|------|-------------|
+| config_key | String (PK) | Configuration key (e.g. `llm_provider`, `bedrock_model_id`) |
+| config_value | String | Configuration value |
+
+## Database Hosting
+
+- **Production:** Amazon RDS PostgreSQL 16 (db.t3.micro, free tier) with PostGIS extension, deployed in isolated subnets via CDK `DatabaseStack`
+- **Local development:** Docker Compose with `postgis/postgis:16-3.4` image
+- **Credentials:** Stored in AWS Secrets Manager, injected into Lambda via environment variables

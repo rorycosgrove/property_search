@@ -28,11 +28,11 @@ def get_llm_config():
 
 @router.put("/config")
 def update_llm_config(data: LLMConfigUpdate):
-    """Update LLM provider configuration (stored in Redis)."""
+    """Update LLM provider configuration (stored in DynamoDB)."""
     from packages.ai.service import set_active_provider
 
-    provider_str = data.provider or "ollama"
-    model_str = data.ollama_model if provider_str == "ollama" else data.openai_model
+    provider_str = data.provider or "bedrock"
+    model_str = data.bedrock_model
     set_active_provider(provider_str, model_str)
     return {"provider": provider_str, "model": model_str, "updated": True}
 
@@ -84,17 +84,17 @@ def trigger_enrichment(property_id: str, db: Session = Depends(get_db_session)):
     if not prop:
         raise HTTPException(404, "Property not found")
 
-    from apps.worker.tasks import enrich_property_llm
-    result = enrich_property_llm.delay(property_id)
-    return {"task_id": str(result.id), "status": "dispatched"}
+    from packages.shared.queue import send_task
+    message_id = send_task("llm", "enrich_property_llm", {"property_id": property_id})
+    return {"task_id": message_id, "status": "dispatched"}
 
 
 @router.post("/enrich-batch")
 def trigger_batch_enrichment(limit: int = 50):
     """Trigger LLM enrichment for a batch of un-enriched properties."""
-    from apps.worker.tasks import enrich_batch_llm
-    result = enrich_batch_llm.delay(limit)
-    return {"task_id": str(result.id), "status": "dispatched", "limit": limit}
+    from packages.shared.queue import send_task
+    message_id = send_task("llm", "enrich_batch_llm", {"limit": limit})
+    return {"task_id": message_id, "status": "dispatched", "limit": limit}
 
 
 @router.post("/compare")

@@ -2,40 +2,62 @@
 
 ## Overview
 
-Irish Property Research Dashboard follows a **modular monolith** architecture, inspired by [World Dash](https://github.com/rorycosgrove/world-dash). Business logic lives in isolated Python packages under `packages/`, while applications (`apps/api`, `apps/worker`) orchestrate those packages. The Next.js frontend communicates exclusively via the REST API.
+Irish Property Research Dashboard follows a **modular monolith** architecture deployed on AWS serverless infrastructure. Business logic lives in isolated Python packages under `packages/`, while Lambda handlers (`apps/api`, `apps/worker`) orchestrate those packages. The Next.js frontend is hosted on AWS Amplify and communicates exclusively via the REST API through API Gateway.
 
 ## System Diagram
 
 ```
-┌─────────────┐     ┌──────────────────────┐     ┌────────────────┐
-│  Next.js 14 │────▶│   FastAPI REST API    │────▶│  PostgreSQL 16 │
-│  (port 3000)│     │   (port 8000)         │     │  + PostGIS     │
-└─────────────┘     └──────────┬───────────┘     │  + pgvector    │
-                               │                  └────────────────┘
-                               │ enqueue tasks            ▲
-                               ▼                          │
-                    ┌──────────────────────┐              │
-                    │   Redis 7            │              │
-                    │   (broker + cache)   │              │
-                    └──────────┬───────────┘              │
-                               │                          │
-                    ┌──────────▼───────────┐              │
-                    │  Celery Workers       │──────────────┘
-                    │  • default (scrape)   │
-                    │  • llm (AI enrich)    │──▶ Ollama / OpenAI
-                    │  • beat (scheduler)   │
-                    └──────────────────────┘
+┌─────────────────┐     ┌─────────────────────────┐     ┌──────────────────┐
+│  Next.js 14     │────▶│  API Gateway (HTTP API)  │────▶│  RDS PostgreSQL  │
+│  (AWS Amplify)  │     │  → Lambda (FastAPI)      │     │  16 + PostGIS    │
+└─────────────────┘     └──────────┬──────────────┘     └──────────────────┘
+                                   │                              ▲
+                                   │ send_task()                  │
+                                   ▼                              │
+                        ┌──────────────────────────┐              │
+                        │  Amazon SQS              │              │
+                        │  • scrape queue          │              │
+                        │  • llm queue             │              │
+                        │  • alert queue           │              │
+                        └──────────┬───────────────┘              │
+                                   │                              │
+                        ┌──────────▼───────────────┐              │
+                        │  Lambda Workers           │─────────────┘
+                        │  (SQS event handlers)     │
+                        │                           │──▶ Amazon Bedrock
+                        └───────────────────────────┘    (Titan / Nova)
+                                   ▲
+                        ┌──────────┴───────────────┐
+                        │  EventBridge Rules        │
+                        │  (scheduler)              │     ┌───────────────┐
+                        │  • scrape every 6h        │     │ DynamoDB      │
+                        │  • alerts every 6h15m     │     │ (config cache)│
+                        │  • PPR weekly             │     └───────────────┘
+                        │  • cleanup daily          │
+                        └──────────────────────────┘
 ```
+
+## AWS Infrastructure (CDK Stacks)
+
+| Stack | Resources |
+|-------|-----------|
+| `VpcStack` | VPC with public/private/isolated subnets, 1 NAT gateway |
+| `SecretsStack` | Secrets Manager for RDS credentials |
+| `DatabaseStack` | RDS PostgreSQL db.t3.micro + DynamoDB config table |
+| `ApiStack` | Lambda (Python 3.12, 512 MB) + HTTP API Gateway with CORS |
+| `WorkerStack` | 3 SQS queues (+ DLQs) + 3 Lambda consumers |
+| `SchedulerStack` | 4 EventBridge rules → SQS |
+| `FrontendStack` | Amplify app for Next.js SSR |
 
 ## Module Boundaries
 
 ### packages/shared
-Configuration (Pydantic Settings), structured logging (structlog), Pydantic request/response schemas, Irish-specific utilities (county lists, eircode regex, BER ratings, address normalization).
+Configuration (Pydantic Settings), structured logging (structlog), Pydantic request/response schemas, Irish-specific utilities (county lists, eircode regex, BER ratings, address normalization). Includes `queue.py` for SQS message dispatch.
 
 **Depends on:** Nothing (leaf module)
 
 ### packages/storage
-SQLAlchemy 2.0 ORM models (7 tables), Repository classes, database session management. Uses PostGIS for spatial queries and pgvector for embeddings.
+SQLAlchemy 2.0 ORM models (7 tables), Repository classes, database session management. Uses PostGIS for spatial queries. Lambda-aware connection pooling (NullPool in Lambda, standard pool locally).
 
 **Depends on:** `shared` (config, logging)
 
@@ -60,43 +82,46 @@ Alert evaluation engine. Matches new properties against saved searches, detects 
 **Depends on:** `storage` (repositories, models)
 
 ### packages/ai
-Provider-agnostic LLM integration. Abstract `LLMProvider` with `OllamaProvider` and `OpenAIProvider` implementations. Service layer handles provider selection (configurable at runtime via Redis), prompt management, and response parsing. Supports property enrichment (summary, value score, pros/cons), market analysis, and property comparison.
+Amazon Bedrock LLM integration. `BedrockProvider` implements the abstract `LLMProvider` interface using Bedrock Runtime. Service layer handles provider config (stored in DynamoDB), prompt management, and response parsing. Supports property enrichment (summary, value score, pros/cons), market analysis, and property comparison.
+
+Supported models: Amazon Titan Text Express, Amazon Titan Text Lite, Amazon Nova Micro, Amazon Nova Lite, Amazon Nova Pro.
 
 **Depends on:** `shared` (config), `storage` (repositories)
 
 ### apps/api
-FastAPI application with versioned REST API (`/api/v1/*`). Routers for properties, sold data, sources, analytics, alerts, saved searches, LLM operations, and health checks. CORS enabled, lifespan management.
+FastAPI application wrapped with Mangum for Lambda deployment. Versioned REST API (`/api/v1/*`). Routers for properties, sold data, sources, analytics, alerts, saved searches, LLM operations, and health checks. CORS configured for Amplify domain.
 
 **Depends on:** All packages
 
 ### apps/worker
-Celery application with two worker types:
-- **default** worker (concurrency=4): Scraping, normalization, geocoding, alert evaluation
-- **llm** worker (concurrency=1): AI enrichment (resource-intensive)
-- **beat** scheduler: Periodic tasks (scrape every 6h, alerts every 6h15m, PPR weekly, cleanup daily)
+Two Lambda handler modules:
+- **`sqs_handler`** — Processes SQS events, routes tasks by `task_type` to handler functions (scraping, AI enrichment, alert evaluation)
+- **`tasks.py`** — Pure Python task functions (no framework decorators), called by the SQS handler
 
 **Depends on:** All packages
 
 ### web/
-Next.js 14 frontend. TypeScript, Tailwind CSS dark theme, Zustand state management. Components: interactive Leaflet map, property feed, filter bar, detail panel, analytics dashboard, alerts page, sources management, settings.
+Next.js 14 frontend deployed on AWS Amplify. TypeScript, Tailwind CSS dark theme, Zustand state management. Components: interactive Leaflet map, property feed, filter bar, detail panel, analytics dashboard, alerts page, sources management, settings.
 
-**Depends on:** API only (HTTP)
+**Depends on:** API only (HTTP via API Gateway)
 
 ## Data Flow
 
 ### Scrape Pipeline
 ```
-Beat Schedule → scrape_all_sources()
-  → fan-out: scrape_source(source_id) per source
-    → adapter.fetch_listings() → adapter.parse_listing()
-    → normalizer.normalize() → geocoder.geocode()
-    → repository.upsert() (dedup via content_hash)
-    → detect price changes → chain: evaluate_alerts()
+EventBridge (every 6h) → SQS (scrape queue)
+  → Lambda worker: scrape_all_sources()
+    → fan-out: send_task("scrape", "scrape_source", {source_id}) per source
+      → Lambda worker: scrape_source(source_id)
+        → adapter.fetch_listings() → adapter.parse_listing()
+        → normalizer.normalize() → geocoder.geocode()
+        → repository.upsert() (dedup via content_hash)
+        → detect price changes → send_task("alert", "evaluate_alerts")
 ```
 
 ### Alert Pipeline
 ```
-evaluate_alerts()
+SQS (alert queue) → Lambda worker: evaluate_alerts()
   → for each active SavedSearch:
     → match new properties since last_matched_at
     → generate NEW_LISTING alerts
@@ -106,10 +131,11 @@ evaluate_alerts()
 
 ### LLM Enrichment Pipeline
 ```
-User triggers → enrich_property_llm.apply_async(queue="llm")
-  → fetch property + nearby sold comps
-  → format prompt → provider.generate()
-  → parse JSON response → store LLMEnrichment
+User triggers via API → send_task("llm", "enrich_property_llm", {property_id})
+  → SQS (llm queue) → Lambda worker: enrich_property_llm()
+    → fetch property + nearby sold comps
+    → format prompt → BedrockProvider.generate()
+    → parse JSON response → store LLMEnrichment
 ```
 
 ## Key Design Decisions
@@ -117,7 +143,10 @@ User triggers → enrich_property_llm.apply_async(queue="llm")
 1. **Modular Monolith** — Simpler than microservices, clear boundaries, shared database. Can extract to services later.
 2. **Repository Pattern** — Decouples ORM from business logic. Testable via mock repositories.
 3. **Content Hash Dedup** — Each property gets a deterministic hash from URL. Updates detected via price/status changes.
-4. **Dual Celery Queues** — Separates CPU-bound scraping from GPU/API-bound LLM work.
-5. **Provider-Agnostic LLM** — Runtime-switchable between Ollama (local, free) and OpenAI (cloud, paid) via Redis config.
-6. **PostGIS Spatial** — Native spatial queries for nearby property searches, market heatmaps.
-7. **Pluggable Adapters** — New sources added by implementing `SourceAdapter` ABC and registering in code or via entry points.
+4. **SQS Queue Separation** — Three queues (scrape, llm, alert) isolate workloads with independent concurrency and retry settings.
+5. **Amazon Bedrock** — No API keys needed, uses IAM credentials. Free tier models (Titan, Nova) for property enrichment.
+6. **DynamoDB Config Cache** — Replaces Redis for runtime LLM configuration storage. Serverless, pay-per-use, always-on.
+7. **Lambda + NullPool** — Database connections use NullPool in Lambda to avoid connection leaks across invocations.
+8. **PostGIS Spatial** — Native spatial queries for nearby property searches, market heatmaps.
+9. **Pluggable Adapters** — New sources added by implementing `SourceAdapter` ABC and registering in code.
+10. **CDK Infrastructure** — All AWS resources defined as TypeScript CDK stacks, version-controlled and reproducible.

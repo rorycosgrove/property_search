@@ -1,38 +1,24 @@
-.PHONY: up down build rebuild logs seed scrape test lint format migrate help
+.PHONY: up down logs seed scrape test lint format migrate deploy synth diff destroy help
 
-# ── Docker Compose ────────────────────────────
+# ── Local PostgreSQL (dev) ────────────────────
 up:
 	docker compose up -d
 
 down:
 	docker compose down
 
-build:
-	docker compose build
-
-rebuild:
-	docker compose down
-	docker compose build --no-cache
-	docker compose up -d
-
 logs:
 	docker compose logs -f
 
-logs-worker:
-	docker compose logs -f worker llm-worker
-
-logs-api:
-	docker compose logs -f api
-
 # ── Data ──────────────────────────────────────
 seed:
-	docker compose exec api python scripts/seed.py
+	uv run python scripts/seed.py
 
 scrape:
-	docker compose exec api python -c "from apps.worker.tasks import scrape_all_sources_task; scrape_all_sources_task.delay()"
+	uv run python -c "from apps.worker.tasks import scrape_all_sources; scrape_all_sources()"
 
 import-ppr:
-	docker compose exec api python scripts/import_ppr.py
+	uv run python scripts/import_ppr.py
 
 # ── Development ───────────────────────────────
 test:
@@ -51,35 +37,58 @@ format:
 
 # ── Database ──────────────────────────────────
 migrate:
-	docker compose exec api alembic upgrade head
+	uv run alembic upgrade head
 
 migration:
-	docker compose exec api alembic revision --autogenerate -m "$(msg)"
+	uv run alembic revision --autogenerate -m "$(msg)"
 
 db-shell:
 	docker compose exec postgres psql -U propertysearch -d propertysearch
+
+# ── AWS CDK ───────────────────────────────────
+synth:
+	cd infra && npx cdk synth
+
+diff:
+	cd infra && npx cdk diff
+
+deploy:
+	cd infra && npx cdk deploy --all --require-approval broadening
+
+destroy:
+	cd infra && npx cdk destroy --all
 
 # ── Cleanup ───────────────────────────────────
 clean:
 	docker compose down -v
 	find . -type d -name __pycache__ -exec rm -rf {} + 2>/dev/null || true
 	find . -type d -name .pytest_cache -exec rm -rf {} + 2>/dev/null || true
+	rm -rf infra/cdk.out
 
 help:
-	@echo "Irish Property Search Dashboard"
-	@echo "================================"
-	@echo "  make up          - Start all services"
-	@echo "  make down        - Stop all services"
-	@echo "  make build       - Build Docker images"
-	@echo "  make rebuild     - Full rebuild (no cache)"
-	@echo "  make logs        - Follow all service logs"
+	@echo "Irish Property Search Dashboard (AWS Serverless)"
+	@echo "================================================="
+	@echo ""
+	@echo "Local Development:"
+	@echo "  make up          - Start local PostgreSQL"
+	@echo "  make down        - Stop local PostgreSQL"
+	@echo "  make logs        - Follow PostgreSQL logs"
 	@echo "  make seed        - Seed initial data sources"
 	@echo "  make scrape      - Trigger manual scrape"
 	@echo "  make import-ppr  - Import Property Price Register data"
+	@echo ""
+	@echo "Development:"
 	@echo "  make test        - Run tests"
 	@echo "  make test-cov    - Run tests with coverage"
 	@echo "  make lint        - Run linters"
 	@echo "  make format      - Auto-format code"
 	@echo "  make migrate     - Run database migrations"
 	@echo "  make db-shell    - Open database shell"
-	@echo "  make clean       - Remove all data and caches"
+	@echo ""
+	@echo "AWS CDK:"
+	@echo "  make synth       - Synthesize CloudFormation templates"
+	@echo "  make diff        - Preview infrastructure changes"
+	@echo "  make deploy      - Deploy all stacks to AWS"
+	@echo "  make destroy     - Tear down all stacks"
+	@echo ""
+	@echo "  make clean       - Remove all local data and caches"

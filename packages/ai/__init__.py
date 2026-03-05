@@ -1,1 +1,1 @@
-# packages.ai — provider-agnostic LLM integration (Ollama + OpenAI)
+# packages.ai — LLM integration via Amazon Bedrock (Titan / Nova models)

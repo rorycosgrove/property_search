@@ -1,8 +1,8 @@
 # API Reference
 
-Base URL: `http://localhost:8000`
+Base URL: `https://<api-gateway-url>` (AWS) or `http://localhost:8000` (local)
 
-Interactive docs: `http://localhost:8000/docs` (Swagger UI)
+Interactive docs: `<base-url>/docs` (Swagger UI)
 
 All endpoints return JSON. Errors use standard HTTP status codes with `{"detail": "message"}` body.
 
@@ -11,15 +11,21 @@ All endpoints return JSON. Errors use standard HTTP status codes with `{"detail"
 ## Health
 
 ### GET /health
-Check API and database health.
+Check API, database, and Bedrock health.
 
 **Response** `200`
 ```json
 {
-  "status": "ok",
-  "database": "connected"
+  "status": "healthy",
+  "database": "connected",
+  "bedrock": "available"
 }
 ```
+
+Fields:
+- `status` — `healthy` (all OK) or `degraded` (partial failure)
+- `database` — `connected` or `disconnected`
+- `bedrock` — `available` or `unavailable`
 
 ---
 
@@ -168,11 +174,11 @@ Delete a source.
 List available adapter types.
 
 ### POST /api/v1/sources/{id}/trigger
-Manually trigger a scrape for this source.
+Manually trigger a scrape for this source. Sends a task to the SQS scrape queue.
 
 **Response** `202`
 ```json
-{"task_id": "celery-task-uuid", "status": "queued"}
+{"task_id": "sqs-message-id", "status": "queued"}
 ```
 
 ---
@@ -250,43 +256,44 @@ Delete a saved search.
 
 ---
 
-## LLM
+## LLM / AI
 
 ### GET /api/v1/llm/config
-Get current LLM provider configuration.
+Get current LLM configuration.
+
+**Response** `200`
+```json
+{
+  "provider": "bedrock",
+  "bedrock_model_id": "amazon.titan-text-express-v1",
+  "bedrock_max_tokens": 2000,
+  "aws_region": "eu-west-1"
+}
+```
 
 ### PUT /api/v1/llm/config
-Update LLM provider at runtime.
+Update LLM configuration. Stored in DynamoDB for persistence.
 
 **Body**
 ```json
-{"provider": "ollama", "model": "llama3.1:8b"}
+{
+  "bedrock_model": "amazon.nova-micro-v1:0",
+  "bedrock_max_tokens": 1500
+}
 ```
-
-### GET /api/v1/llm/health
-Check LLM provider connectivity.
-
-### GET /api/v1/llm/enrichment/{property_id}
-Get existing AI enrichment for a property.
 
 ### POST /api/v1/llm/enrich/{property_id}
-Trigger AI enrichment (async, returns task ID).
+Trigger AI enrichment for a property. Sends a task to the SQS LLM queue.
+
+**Response** `202`
+```json
+{"task_id": "sqs-message-id", "status": "queued"}
+```
 
 ### POST /api/v1/llm/enrich-batch
-Trigger batch enrichment for multiple properties.
+Trigger AI enrichment for all un-enriched properties.
 
-**Body**
+**Response** `202`
 ```json
-{"property_ids": ["uuid1", "uuid2"]}
+{"task_id": "sqs-message-id", "status": "queued", "count": 42}
 ```
-
-### POST /api/v1/llm/compare
-Compare 2+ properties using AI.
-
-**Body**
-```json
-{"property_ids": ["uuid1", "uuid2", "uuid3"]}
-```
-
-### GET /api/v1/llm/stats
-LLM enrichment statistics (total enriched, provider breakdown).

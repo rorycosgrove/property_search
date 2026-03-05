@@ -70,7 +70,6 @@ def setup_logging(log_level: str = "INFO") -> None:
     logging.getLogger("httpx").setLevel(logging.WARNING)
     logging.getLogger("httpcore").setLevel(logging.WARNING)
     logging.getLogger("uvicorn.access").setLevel(logging.WARNING)
-    logging.getLogger("celery").setLevel(logging.INFO)
 
 
 def get_logger(name: str) -> structlog.stdlib.BoundLogger:

@@ -236,8 +236,7 @@ export async function getLLMConfig() {
 export async function updateLLMConfig(provider: string, model?: string) {
   const body: Record<string, string> = { provider };
   if (model) {
-    if (provider === 'ollama') body.ollama_model = model;
-    else body.openai_model = model;
+    body.bedrock_model = model;
   }
   return fetchJSON('/api/v1/llm/config', {
     method: 'PUT',

@@ -1,8 +1,8 @@
 """
 Abstract LLM provider interface.
 
-Defines the contract that both Ollama and OpenAI providers implement.
-Runtime switching between providers is supported via Redis configuration.
+Defines the contract that all LLM providers implement.
+Runtime switching between providers is supported via DynamoDB configuration.
 """
 
 from __future__ import annotations
@@ -54,7 +54,7 @@ class LLMProvider(ABC):
 
     @abstractmethod
     def get_provider_name(self) -> str:
-        """Return provider identifier ('ollama' or 'openai')."""
+        """Return provider identifier (e.g., 'bedrock')."""
         ...
 
     @abstractmethod

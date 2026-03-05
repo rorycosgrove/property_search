@@ -1,9 +1,10 @@
 """
-Celery tasks — auto-chained property ingestion pipeline.
+Worker tasks — property ingestion pipeline.
 
 Pipeline: scrape → normalize → geocode → store → detect changes → alert → enrich (LLM)
 
 Each task is idempotent and can be retried safely.
+Tasks are invoked by SQS Lambda handlers (replacing Celery).
 """
 
 from __future__ import annotations
@@ -12,18 +13,13 @@ import asyncio
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
-from celery import chain, group
-from celery.utils.log import get_task_logger
-
-from apps.worker.celery_app import app
 from packages.shared.logging import get_logger
 
 logger = get_logger(__name__)
-task_logger = get_task_logger(__name__)
 
 
 def _run_async(coro):
-    """Helper to run async code in sync Celery tasks."""
+    """Helper to run async code in sync task functions."""
     try:
         loop = asyncio.get_event_loop()
         if loop.is_running():
@@ -38,9 +34,9 @@ def _run_async(coro):
 # ── Source scraping tasks ─────────────────────────────────────────────────────
 
 
-@app.task(bind=True, max_retries=3, default_retry_delay=60)
-def scrape_all_sources(self) -> dict[str, Any]:
-    """Scrape all enabled sources. Dispatches individual scrape tasks."""
+def scrape_all_sources() -> dict[str, Any]:
+    """Scrape all enabled sources. Dispatches individual scrape tasks via SQS."""
+    from packages.shared.queue import send_task
     from packages.storage.database import get_session
     from packages.storage.repositories import SourceRepository
 
@@ -49,22 +45,17 @@ def scrape_all_sources(self) -> dict[str, Any]:
         sources = repo.get_all(enabled_only=True)
         source_ids = [str(s.id) for s in sources]
 
-    task_logger.info(f"Dispatching scrape for {len(source_ids)} sources")
+    logger.info(f"Dispatching scrape for {len(source_ids)} sources")
 
-    tasks = []
+    dispatched = 0
     for sid in source_ids:
-        tasks.append(scrape_source.s(sid))
+        send_task("scrape", "scrape_source", {"source_id": sid})
+        dispatched += 1
 
-    if tasks:
-        job = group(tasks)
-        result = job.apply_async()
-        return {"dispatched": len(tasks), "group_id": str(result.id)}
-
-    return {"dispatched": 0}
+    return {"dispatched": dispatched}
 
 
-@app.task(bind=True, max_retries=3, default_retry_delay=120)
-def scrape_source(self, source_id: str) -> dict[str, Any]:
+def scrape_source(source_id: str) -> dict[str, Any]:
     """
     Scrape a single source and run the full ingestion pipeline.
 
@@ -87,7 +78,7 @@ def scrape_source(self, source_id: str) -> dict[str, Any]:
 
         source = source_repo.get_by_id(source_id)
         if not source:
-            task_logger.error(f"Source {source_id} not found")
+            logger.error(f"Source {source_id} not found")
             return {"error": "Source not found"}
 
         if not source.enabled:
@@ -98,7 +89,7 @@ def scrape_source(self, source_id: str) -> dict[str, Any]:
             adapter = get_adapter(source.adapter_name)
             config = source.config or {}
             raw_listings = _run_async(adapter.fetch_listings(config))
-            task_logger.info(f"Fetched {len(raw_listings)} listings from {source.name}")
+            logger.info(f"Fetched {len(raw_listings)} listings from {source.name}")
 
             # 2. Parse + Normalize
             new_count = 0
@@ -181,32 +172,30 @@ def scrape_source(self, source_id: str) -> dict[str, Any]:
                 "total_fetched": len(raw_listings),
             }
 
-            task_logger.info(f"Scrape complete: {result}")
+            logger.info(f"Scrape complete: {result}")
 
-            # 6. Chain: evaluate alerts for new/changed properties
+            # 6. Dispatch alert evaluation for new/changed properties
             if new_count > 0 or updated_count > 0:
-                evaluate_alerts.delay()
+                from packages.shared.queue import send_task
+                send_task("alert", "evaluate_alerts", {})
 
             return result
 
         except Exception as exc:
-            task_logger.error(f"Scrape failed for {source.name}: {exc}")
-            # Use a separate session to persist the error status,
-            # since the main session will be rolled back on exception.
+            logger.error(f"Scrape failed for {source.name}: {exc}")
             try:
                 from packages.storage.database import get_session as _get_err_session
                 with _get_err_session() as err_db:
                     SourceRepository(err_db).mark_poll_error(source_id, str(exc))
             except Exception:
-                task_logger.warning("Failed to persist scrape error status")
-            raise self.retry(exc=exc)
+                logger.warning("Failed to persist scrape error status")
+            raise
 
 
 # ── PPR import ────────────────────────────────────────────────────────────────
 
 
-@app.task(bind=True, max_retries=2, default_retry_delay=300)
-def import_ppr(self) -> dict[str, Any]:
+def import_ppr() -> dict[str, Any]:
     """Import Property Price Register data."""
     from packages.sources.ppr import PPRAdapter
     from packages.storage.database import get_session
@@ -216,7 +205,7 @@ def import_ppr(self) -> dict[str, Any]:
     config = {"min_year": datetime.now().year - 2}
 
     raw_listings = _run_async(adapter.fetch_listings(config))
-    task_logger.info(f"PPR: downloaded {len(raw_listings)} records")
+    logger.info(f"PPR: downloaded {len(raw_listings)} records")
 
     with get_session() as db:
         sold_repo = SoldPropertyRepository(db)
@@ -243,7 +232,6 @@ def import_ppr(self) -> dict[str, Any]:
 # ── Alert evaluation ──────────────────────────────────────────────────────────
 
 
-@app.task
 def evaluate_alerts() -> dict[str, int]:
     """Evaluate all saved searches and price changes for alerts."""
     from packages.alerts.engine import AlertEngine
@@ -261,8 +249,7 @@ def evaluate_alerts() -> dict[str, int]:
 # ── LLM enrichment tasks ─────────────────────────────────────────────────────
 
 
-@app.task(bind=True, max_retries=2, default_retry_delay=30)
-def enrich_property_llm(self, property_id: str) -> dict[str, Any]:
+def enrich_property_llm(property_id: str) -> dict[str, Any]:
     """Enrich a single property using LLM analysis."""
     from packages.ai.service import enrich_property
     from packages.storage.database import get_session
@@ -319,13 +306,13 @@ def enrich_property_llm(self, property_id: str) -> dict[str, Any]:
             db.commit()
             return {"property_id": property_id, "enriched": True}
         except Exception as exc:
-            task_logger.error(f"LLM enrichment failed: {exc}")
-            raise self.retry(exc=exc)
+            logger.error(f"LLM enrichment failed: {exc}")
+            raise
 
 
-@app.task
 def enrich_batch_llm(limit: int = 50) -> dict[str, Any]:
     """Enrich a batch of un-enriched properties."""
+    from packages.shared.queue import send_task
     from packages.storage.database import get_session
     from packages.storage.models import LLMEnrichment, Property
 
@@ -340,17 +327,17 @@ def enrich_batch_llm(limit: int = 50) -> dict[str, Any]:
             .all()
         )
 
-    tasks = [enrich_property_llm.s(str(p.id)) for p in unenriched]
-    if tasks:
-        group(tasks).apply_async()
+    dispatched = 0
+    for p in unenriched:
+        send_task("llm", "enrich_property_llm", {"property_id": str(p.id)})
+        dispatched += 1
 
-    return {"dispatched": len(tasks)}
+    return {"dispatched": dispatched}
 
 
 # ── Cleanup tasks ─────────────────────────────────────────────────────────────
 
 
-@app.task
 def cleanup_old_alerts(days: int = 90) -> dict[str, int]:
     """Remove acknowledged alerts older than N days."""
     from packages.storage.database import get_session

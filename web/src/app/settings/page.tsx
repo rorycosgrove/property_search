@@ -4,7 +4,7 @@ import { useEffect, useState } from 'react';
 import { getLLMConfig, updateLLMConfig } from '@/lib/api';
 
 export default function SettingsPage() {
-  const [provider, setProvider] = useState('ollama');
+  const [provider, setProvider] = useState('bedrock');
   const [model, setModel] = useState('');
   const [saved, setSaved] = useState(false);
 
@@ -37,8 +37,7 @@ export default function SettingsPage() {
               onChange={(e) => setProvider(e.target.value)}
               className="w-full bg-[var(--background)] border border-[var(--card-border)] rounded px-3 py-2"
             >
-              <option value="ollama">Ollama (Local)</option>
-              <option value="openai">OpenAI (Cloud)</option>
+              <option value="bedrock">Amazon Bedrock (Cloud)</option>
             </select>
           </div>
 
@@ -48,13 +47,11 @@ export default function SettingsPage() {
               type="text"
               value={model}
               onChange={(e) => setModel(e.target.value)}
-              placeholder={provider === 'ollama' ? 'llama3.1:8b' : 'gpt-4o-mini'}
+              placeholder="amazon.titan-text-express-v1"
               className="w-full bg-[var(--background)] border border-[var(--card-border)] rounded px-3 py-2"
             />
             <p className="text-xs text-[var(--muted)] mt-1">
-              {provider === 'ollama'
-                ? 'Run `ollama pull llama3.1:8b` to download the model'
-                : 'Set OPENAI_API_KEY in .env to use OpenAI'}
+              Available models: amazon.titan-text-express-v1, amazon.nova-micro-v1:0, amazon.nova-lite-v1:0
             </p>
           </div>
 
@@ -72,9 +69,9 @@ export default function SettingsPage() {
         <h2 className="text-lg font-semibold mb-2">About</h2>
         <p className="text-sm text-[var(--muted)]">
           Irish Property Research Dashboard v0.1.0<br />
-          Aggregates property listings from Daft.ie, MyHome.ie, PropertyPal,
-          and the Property Price Register. Provides map visualization,
-          price tracking, alerts, and AI-powered insights.
+          Powered by AWS: Lambda, API Gateway, RDS PostgreSQL, Amazon Bedrock,
+          SQS, and Amplify. Aggregates property listings from Daft.ie,
+          MyHome.ie, PropertyPal, and the Property Price Register.
         </p>
       </div>
     </div>
