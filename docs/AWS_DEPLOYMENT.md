@@ -39,6 +39,14 @@ All infrastructure is defined in `infra/lib/`:
 
 ### First-Time Setup
 
+The easiest way to deploy is the interactive script:
+
+```bash
+python deploy.py
+```
+
+This handles all steps below automatically. For manual setup:
+
 ```bash
 # Install CDK dependencies
 cd infra && npm install

@@ -45,22 +45,16 @@ A comprehensive web-based platform for researching properties to buy across Irel
 git clone <repo-url> property_search
 cd property_search
 
-# 2. Install CDK dependencies
-cd infra && npm install && cd ..
+# 2. Run the interactive deploy script (installs deps, bootstraps CDK, deploys)
+python deploy.py
+```
 
-# 3. Bootstrap CDK (first time only)
-cd infra && npx cdk bootstrap && cd ..
+Or step-by-step:
 
-# 4. Deploy all stacks
-make deploy
-
-# 5. Run database migrations (API URL output by CDK)
-curl -X POST https://<api-url>/api/v1/admin/migrate
-
-# 6. Seed sources
-curl -X POST https://<api-url>/api/v1/sources \
-  -H "Content-Type: application/json" \
-  -d '{"name":"Daft.ie – All","adapter_name":"daft","enabled":true,"config":{}}'
+```bash
+python deploy.py --check    # Verify prerequisites
+python deploy.py --local    # Set up local dev only
+python deploy.py --deploy   # Deploy only (deps already installed)
 ```
 
 ### Local Development

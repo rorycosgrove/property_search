@@ -11,7 +11,24 @@ Get the Irish Property Research Dashboard running on AWS in under 10 minutes.
 - **Python 3.12+**
 - AWS account with Bedrock model access enabled in your region
 
-### Step 1: Clone & Install
+### One-Command Deploy
+
+```bash
+git clone <repo-url> property_search
+cd property_search
+python deploy.py
+```
+
+The interactive script will:
+1. Check prerequisites (Python, Node, AWS CLI, credentials)
+2. Install all dependencies (Python, CDK, frontend)
+3. Bootstrap CDK and deploy all 7 stacks
+4. Run database migrations
+5. Seed default property sources
+
+### Manual Step-by-Step
+
+#### Step 1: Clone & Install
 
 ```bash
 git clone <repo-url> property_search
