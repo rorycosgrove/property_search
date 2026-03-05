@@ -1,0 +1,62 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+*.egg-info/
+dist/
+build/
+.eggs/
+*.egg
+
+# Virtual environments
+.venv/
+venv/
+ENV/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Environment
+.env
+.env.local
+.env.production
+
+# Database
+*.db
+*.sqlite3
+
+# Docker
+docker-compose.override.yml
+
+# Node.js
+node_modules/
+.next/
+out/
+.turbo/
+
+# Testing
+htmlcov/
+.coverage
+.coverage.*
+coverage.xml
+*.cover
+.pytest_cache/
+
+# Logs
+*.log
+logs/
+celerybeat-schedule
+celerybeat-schedule.db
+
+# OS
+.DS_Store
+Thumbs.db
+Desktop.ini
+
+# Alembic
+alembic/versions/__pycache__/

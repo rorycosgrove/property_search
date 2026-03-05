@@ -1,0 +1,154 @@
+services:
+  # ── PostgreSQL + PostGIS ──────────────────────────────────────────────────
+  postgres:
+    image: postgis/postgis:16-3.4
+    container_name: ps_postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-propertysearch}
+      POSTGRES_USER: ${POSTGRES_USER:-propertysearch}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-changeme_in_production}
+    ports:
+      - "${POSTGRES_PORT:-5432}:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./docker/postgres/init.sql:/docker-entrypoint-initdb.d/01-init.sql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-propertysearch}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # ── Redis ─────────────────────────────────────────────────────────────────
+  redis:
+    image: redis:7-alpine
+    container_name: ps_redis
+    restart: unless-stopped
+    expose:
+      - "6379"
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # ── FastAPI backend ───────────────────────────────────────────────────────
+  api:
+    build:
+      context: .
+      dockerfile: docker/api/Dockerfile
+    container_name: ps_api
+    restart: unless-stopped
+    ports:
+      - "${API_PORT:-8000}:8000"
+    environment:
+      - POSTGRES_HOST=postgres
+      - POSTGRES_PORT=5432
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+    env_file:
+      - .env
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    volumes:
+      - ./packages:/app/packages
+      - ./apps:/app/apps
+
+  # ── Celery default worker ─────────────────────────────────────────────────
+  worker:
+    build:
+      context: .
+      dockerfile: docker/worker/Dockerfile
+    container_name: ps_worker
+    restart: unless-stopped
+    command: celery -A apps.worker.celery_app worker -l info -Q default -c 4
+    environment:
+      - POSTGRES_HOST=postgres
+      - POSTGRES_PORT=5432
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+    env_file:
+      - .env
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    volumes:
+      - ./packages:/app/packages
+      - ./apps:/app/apps
+
+  # ── Celery LLM worker (low concurrency) ──────────────────────────────────
+  llm-worker:
+    build:
+      context: .
+      dockerfile: docker/worker/Dockerfile
+    container_name: ps_llm_worker
+    restart: unless-stopped
+    command: celery -A apps.worker.celery_app worker -l info -Q llm -c 1
+    environment:
+      - POSTGRES_HOST=postgres
+      - POSTGRES_PORT=5432
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+    env_file:
+      - .env
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    volumes:
+      - ./packages:/app/packages
+      - ./apps:/app/apps
+
+  # ── Celery Beat scheduler ─────────────────────────────────────────────────
+  beat:
+    build:
+      context: .
+      dockerfile: docker/worker/Dockerfile
+    container_name: ps_beat
+    restart: unless-stopped
+    command: celery -A apps.worker.celery_app beat -l info
+    environment:
+      - POSTGRES_HOST=postgres
+      - POSTGRES_PORT=5432
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+    env_file:
+      - .env
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    volumes:
+      - ./packages:/app/packages
+      - ./apps:/app/apps
+
+  # ── Next.js frontend ─────────────────────────────────────────────────────
+  web:
+    build:
+      context: .
+      dockerfile: docker/web/Dockerfile
+    container_name: ps_web
+    restart: unless-stopped
+    ports:
+      - "${FRONTEND_PORT:-3000}:3000"
+    environment:
+      - NEXT_PUBLIC_API_URL=http://localhost:${API_PORT:-8000}
+    depends_on:
+      - api
+    volumes:
+      - ./web:/app
+      - /app/node_modules
+      - /app/.next
+
+volumes:
+  postgres_data:
+  redis_data:
