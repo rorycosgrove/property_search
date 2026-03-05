@@ -350,19 +350,19 @@ class LLMEnrichment(Base):
 from sqlalchemy import ForeignKeyConstraint  # noqa: E402
 
 Property.__table__.append_constraint(
-    ForeignKeyConstraint(["source_id"], ["sources.id"], name="fk_property_source")
+    ForeignKeyConstraint(["source_id"], ["sources.id"], name="fk_property_source", ondelete="CASCADE")
 )
 PropertyPriceHistory.__table__.append_constraint(
-    ForeignKeyConstraint(["property_id"], ["properties.id"], name="fk_pricehistory_property")
+    ForeignKeyConstraint(["property_id"], ["properties.id"], name="fk_pricehistory_property", ondelete="CASCADE")
 )
 Alert.__table__.append_constraint(
-    ForeignKeyConstraint(["property_id"], ["properties.id"], name="fk_alert_property")
+    ForeignKeyConstraint(["property_id"], ["properties.id"], name="fk_alert_property", ondelete="SET NULL")
 )
 Alert.__table__.append_constraint(
     ForeignKeyConstraint(
-        ["saved_search_id"], ["saved_searches.id"], name="fk_alert_savedsearch"
+        ["saved_search_id"], ["saved_searches.id"], name="fk_alert_savedsearch", ondelete="CASCADE"
     )
 )
 LLMEnrichment.__table__.append_constraint(
-    ForeignKeyConstraint(["property_id"], ["properties.id"], name="fk_enrichment_property")
+    ForeignKeyConstraint(["property_id"], ["properties.id"], name="fk_enrichment_property", ondelete="CASCADE")
 )

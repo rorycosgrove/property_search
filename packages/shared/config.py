@@ -10,6 +10,16 @@ from __future__ import annotations
 import json
 import os
 
+from packages.shared.constants import (
+    DEFAULT_SCRAPE_INTERVAL_SECONDS,
+    GEOCODER_RATE_LIMIT_SECONDS,
+    MAX_SCRAPE_RETRIES,
+    REQUEST_TIMEOUT_SECONDS,
+    DEFAULT_RSS_INTERVAL_SECONDS,
+    DEFAULT_PPR_INTERVAL_SECONDS,
+    SCRAPE_DELAY_MIN_SECONDS,
+    SCRAPE_DELAY_MAX_SECONDS,
+)
 from pydantic import model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
@@ -60,19 +70,19 @@ class Settings(BaseSettings):
     bedrock_max_tokens: int = 4096
 
     # ── Scraping ──────────────────────────────────
-    scrape_poll_interval_seconds: int = 900
-    rss_poll_interval_seconds: int = 300
-    ppr_poll_interval_seconds: int = 604800
-    max_scrape_retries: int = 3
-    request_timeout_seconds: int = 30
-    scrape_delay_min_seconds: float = 2.0
-    scrape_delay_max_seconds: float = 5.0
+    scrape_poll_interval_seconds: int = DEFAULT_SCRAPE_INTERVAL_SECONDS
+    rss_poll_interval_seconds: int = DEFAULT_RSS_INTERVAL_SECONDS
+    ppr_poll_interval_seconds: int = DEFAULT_PPR_INTERVAL_SECONDS
+    max_scrape_retries: int = MAX_SCRAPE_RETRIES
+    request_timeout_seconds: int = REQUEST_TIMEOUT_SECONDS
+    scrape_delay_min_seconds: float = SCRAPE_DELAY_MIN_SECONDS
+    scrape_delay_max_seconds: float = SCRAPE_DELAY_MAX_SECONDS
     user_agent: str = "PropertySearch/1.0 (+https://github.com/property-search)"
 
     # ── Geocoding ─────────────────────────────────
     geocoder_provider: str = "nominatim"
     geocoder_user_agent: str = "PropertySearch/1.0"
-    geocoder_rate_limit: int = 1
+    geocoder_rate_limit: float = GEOCODER_RATE_LIMIT_SECONDS
 
     # ── Observability ─────────────────────────────
     enable_metrics: bool = True

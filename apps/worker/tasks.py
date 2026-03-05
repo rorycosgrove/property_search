@@ -13,6 +13,13 @@ import asyncio
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
+from packages.shared.constants import (
+    ALERT_CLEANUP_DAYS,
+    LLM_BATCH_SIZE,
+    NEARBY_SOLD_LIMIT,
+    NEARBY_SOLD_RADIUS_KM,
+    SOURCE_ERROR_THRESHOLD,
+)
 from packages.shared.logging import get_logger
 
 logger = get_logger(__name__)
@@ -20,15 +27,7 @@ logger = get_logger(__name__)
 
 def _run_async(coro):
     """Helper to run async code in sync task functions."""
-    try:
-        loop = asyncio.get_event_loop()
-        if loop.is_running():
-            import concurrent.futures
-            with concurrent.futures.ThreadPoolExecutor() as pool:
-                return pool.submit(asyncio.run, coro).result()
-        return loop.run_until_complete(coro)
-    except RuntimeError:
-        return asyncio.run(coro)
+    return asyncio.run(coro)
 
 
 # ── Source scraping tasks ─────────────────────────────────────────────────────
@@ -183,12 +182,12 @@ def scrape_source(source_id: str) -> dict[str, Any]:
 
         except Exception as exc:
             logger.error(f"Scrape failed for {source.name}: {exc}")
+            # Use existing session for error marking
             try:
-                from packages.storage.database import get_session as _get_err_session
-                with _get_err_session() as err_db:
-                    SourceRepository(err_db).mark_poll_error(source_id, str(exc))
-            except Exception:
-                logger.warning("Failed to persist scrape error status")
+                source_repo.mark_poll_error(source_id, str(exc))
+                db.commit()
+            except Exception as mark_err:
+                logger.warning(f"Failed to persist scrape error status: {mark_err}")
             raise
 
 
@@ -274,8 +273,8 @@ def enrich_property_llm(property_id: str) -> dict[str, Any]:
             sold_props = sold_repo.get_nearby_sold(
                 lat=prop.latitude,
                 lng=prop.longitude,
-                radius_km=5,
-                limit=10,
+                radius_km=NEARBY_SOLD_RADIUS_KM,
+                limit=NEARBY_SOLD_LIMIT,
             )
             nearby_sold = [
                 {
@@ -310,7 +309,7 @@ def enrich_property_llm(property_id: str) -> dict[str, Any]:
             raise
 
 
-def enrich_batch_llm(limit: int = 50) -> dict[str, Any]:
+def enrich_batch_llm(limit: int = LLM_BATCH_SIZE) -> dict[str, Any]:
     """Enrich a batch of un-enriched properties."""
     from packages.shared.queue import send_task
     from packages.storage.database import get_session
@@ -338,7 +337,7 @@ def enrich_batch_llm(limit: int = 50) -> dict[str, Any]:
 # ── Cleanup tasks ─────────────────────────────────────────────────────────────
 
 
-def cleanup_old_alerts(days: int = 90) -> dict[str, int]:
+def cleanup_old_alerts(days: int = ALERT_CLEANUP_DAYS) -> dict[str, int]:
     """Remove acknowledged alerts older than N days."""
     from packages.storage.database import get_session
     from packages.storage.models import Alert

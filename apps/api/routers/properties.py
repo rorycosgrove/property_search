@@ -5,6 +5,7 @@ from __future__ import annotations
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
 
+from packages.shared.constants import DEFAULT_PAGE_SIZE, MAX_PAGE_SIZE
 from packages.shared.schemas import PropertyFilters, PropertyListResponse, PropertyResponse
 from packages.storage.database import get_db_session
 from packages.storage.repositories import PropertyRepository
@@ -14,25 +15,41 @@ router = APIRouter()
 
 @router.get("", response_model=PropertyListResponse)
 def list_properties(
-    page: int = Query(1, ge=1),
-    size: int = Query(20, ge=1, le=100),
-    county: str | None = None,
-    min_price: float | None = None,
-    max_price: float | None = None,
-    min_beds: int | None = None,
-    max_beds: int | None = None,
+    page: int = Query(1, ge=1, description="Page number"),
+    size: int = Query(DEFAULT_PAGE_SIZE, ge=1, le=MAX_PAGE_SIZE, description="Items per page"),
+    county: str | None = Query(None, max_length=100),
+    min_price: float | None = Query(None, ge=0),
+    max_price: float | None = Query(None, ge=0),
+    min_beds: int | None = Query(None, ge=0, le=20),
+    max_beds: int | None = Query(None, ge=0, le=20),
     property_types: str | None = Query(None, description="Comma-separated types"),
     sale_type: str | None = None,
-    keywords: str | None = None,
+    keywords: str | None = Query(None, max_length=500),
     ber_ratings: str | None = Query(None, description="Comma-separated BER ratings"),
-    sort_by: str = "first_listed_at",
-    sort_dir: str = "desc",
-    lat: float | None = None,
-    lng: float | None = None,
-    radius_km: float | None = None,
+    sort_by: str = Query("first_listed_at", regex="^(price|created_at|date|beds|bedrooms)$"),
+    sort_dir: str = Query("desc", regex="^(asc|desc)$"),
+    lat: float | None = Query(None, ge=-90, le=90),
+    lng: float | None = Query(None, ge=-180, le=180),
+    radius_km: float | None = Query(None, ge=0.1, le=100),
     db: Session = Depends(get_db_session),
 ):
     """List/search properties with full filtering, sorting, and pagination."""
+    # Validate price range
+    if min_price is not None and max_price is not None and min_price > max_price:
+        raise HTTPException(status_code=400, detail="min_price cannot be greater than max_price")
+    
+    # Validate bedroom range
+    if min_beds is not None and max_beds is not None and min_beds > max_beds:
+        raise HTTPException(status_code=400, detail="min_beds cannot be greater than max_beds")
+    
+    # Validate geospatial params
+    if (lat is not None or lng is not None or radius_km is not None):
+        if not (lat is not None and lng is not None and radius_km is not None):
+            raise HTTPException(
+                status_code=400,
+                detail="lat, lng, and radius_km must all be provided together"
+            )
+    
     repo = PropertyRepository(db)
 
     # Parse comma-separated lists
@@ -78,12 +95,18 @@ def get_property(property_id: str, db: Session = Depends(get_db_session)):
 
 
 @router.get("/{property_id}/price-history")
-def get_price_history(property_id: str, db: Session = Depends(get_db_session)):
+def get_price_history(
+    property_id: str = Query(..., min_length=36, max_length=36),
+    limit: int = Query(100, ge=1, le=1000, description="Max number of history entries"),
+    db: Session = Depends(get_db_session),
+):
     """Get price history for a property."""
     from packages.storage.repositories import PriceHistoryRepository
 
     repo = PriceHistoryRepository(db)
     history = repo.get_for_property(property_id)
+    # Limit results to prevent large responses
+    history = history[-limit:] if len(history) > limit else history
     return [
         {
             "id": str(h.id),
