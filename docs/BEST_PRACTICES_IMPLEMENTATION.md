@@ -288,32 +288,26 @@ except Exception as e:
 
 ## 🔄 MIGRATION GUIDE
 
-### For Existing Deployments:
+### Status: ✅ COMPLETED
 
-1. **Backup Database:**
+All changes have been merged to master and deployed to production.
+
+### For New Deployments:
+
+1. **Clone Repository:**
    ```bash
-   pg_dump propertysearch > backup_$(date +%Y%m%d).sql
+   git clone https://github.com/rorycosgrove/property_search.git
+   cd property_search
    ```
 
-2. **Deploy Code:**
+2. **Deploy to AWS:**
    ```bash
-   git checkout feature/best-practices-refactor
-   make deploy
+   python deploy.py
    ```
 
-3. **Run Migration:**
+3. **Verify Deployment:**
    ```bash
-   curl -X POST https://<api-url>/api/v1/admin/migrate
-   ```
-
-4. **Verify Indexes:**
-   ```sql
-   SELECT indexname FROM pg_indexes WHERE tablename = 'properties';
-   ```
-
-5. **Monitor Logs:**
-   ```bash
-   aws logs tail /aws/lambda/property-search-api --follow
+   curl https://<api-url>/health
    ```
 
 ### Breaking Changes:
@@ -445,5 +439,61 @@ For questions or issues with these changes:
 ---
 
 **Last Updated:** 2024-01-01  
-**Branch:** feature/best-practices-refactor  
-**Commit:** 5991ed9
+**Branch:** master (merged from feature/best-practices-refactor)  
+**Status:** Production deployed
+
+---
+
+## 🆕 ADDITIONAL FIXES (Post-Merge)
+
+### 13. TypeScript Type Definitions
+**Files:** `web/package.json`, `web/tsconfig.json`
+
+**Problem:** Missing type definitions for d3-array, geojson, and node.
+
+**Fix:**
+```bash
+npm install --save-dev @types/d3-array @types/geojson
+```
+
+**Impact:** Resolved TypeScript compilation errors in frontend.
+
+---
+
+### 14. SSRF Vulnerability in API Client
+**File:** `web/src/lib/api.ts`
+
+**Problem:** CWE-918 - Server-side request forgery via unvalidated API_BASE URL.
+
+**Fix:**
+```typescript
+function validateAPIBase(base: string): void {
+  try {
+    const url = new URL(base);
+    const allowedHosts = ['localhost', '127.0.0.1', 'execute-api.eu-west-1.amazonaws.com'];
+    if (!allowedHosts.some(host => url.hostname === host || url.hostname.endsWith(`.${host}`))) {
+      throw new Error('Invalid API host');
+    }
+  } catch {
+    throw new Error('Invalid API URL');
+  }
+}
+```
+
+**Impact:** Prevents attackers from manipulating NEXT_PUBLIC_API_URL to make requests to arbitrary servers.
+
+---
+
+### 15. VS Code CSS Linting Configuration
+**File:** `.vscode/settings.json` (NEW)
+
+**Problem:** False warnings for Tailwind CSS `@tailwind` directives.
+
+**Fix:**
+```json
+{
+  "css.lint.unknownAtRules": "ignore"
+}
+```
+
+**Impact:** Suppresses false-positive CSS warnings in IDE.

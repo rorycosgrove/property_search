@@ -4,6 +4,21 @@
 
 const API_BASE = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000';
 
+// Validate API_BASE to prevent SSRF
+function validateAPIBase(base: string): void {
+  try {
+    const url = new URL(base);
+    const allowedHosts = ['localhost', '127.0.0.1', 'execute-api.eu-west-1.amazonaws.com'];
+    if (!allowedHosts.some(host => url.hostname === host || url.hostname.endsWith(`.${host}`))) {
+      throw new Error('Invalid API host');
+    }
+  } catch {
+    throw new Error('Invalid API URL');
+  }
+}
+
+validateAPIBase(API_BASE);
+
 async function fetchJSON<T>(path: string, options?: RequestInit): Promise<T> {
   const res = await fetch(`${API_BASE}${path}`, {
     ...options,

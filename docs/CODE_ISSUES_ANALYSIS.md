@@ -4,6 +4,28 @@
 
 The codebase is **functionally correct** and ready for deployment. All tests pass (63/63), imports work, and there are no runtime errors.
 
+**Last Updated:** 2024-01-01  
+**Branch:** master  
+**Status:** Production deployed
+
+---
+
+## Recent Security Fixes
+
+### 1. SSRF Vulnerability (CRITICAL) - FIXED ✅
+**File:** `web/src/lib/api.ts`
+- **Issue:** CWE-918 - Unvalidated API_BASE URL allowing server-side request forgery
+- **Fix:** Added URL validation restricting API_BASE to allowed hosts only
+- **Impact:** Prevents attackers from making requests to arbitrary servers
+
+### 2. TypeScript Type Safety - FIXED ✅
+**Files:** `web/package.json`, `web/tsconfig.json`
+- **Issue:** Missing type definitions causing compilation errors
+- **Fix:** Installed @types/d3-array, @types/geojson, configured node types
+- **Impact:** Improved type safety in frontend code
+
+---
+
 ## Type Checking Issues (Non-Critical)
 
 The following mypy warnings are **type annotation issues only** and do not affect runtime behavior:
