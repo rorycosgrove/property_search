@@ -50,19 +50,19 @@ def _colour(text: str, colour: str) -> str:
 
 
 def info(msg: str) -> None:
-    print(f"  {_colour('✓', 'green')} {msg}")
+    print(f"  [OK] {msg}")
 
 
 def warn(msg: str) -> None:
-    print(f"  {_colour('⚠', 'yellow')} {msg}")
+    print(f"  [WARN] {msg}")
 
 
 def error(msg: str) -> None:
-    print(f"  {_colour('✗', 'red')} {msg}")
+    print(f"  [ERROR] {msg}")
 
 
 def heading(msg: str) -> None:
-    print(f"\n{_colour(f'── {msg} ', 'cyan')}" + "─" * max(0, 60 - len(msg)))
+    print(f"\n{_colour(f'-- {msg} ', 'cyan')}" + "-" * max(0, 60 - len(msg)))
 
 
 def ask(prompt: str, default: str = "") -> str:
@@ -206,7 +206,7 @@ def install_cdk_deps() -> bool:
         error("infra/package.json not found")
         return False
     try:
-        run(["npm", "install"], cwd=INFRA_DIR)
+        run(["npm.cmd", "install"], cwd=INFRA_DIR)
         info("CDK dependencies installed")
         return True
     except subprocess.CalledProcessError:
@@ -220,7 +220,7 @@ def install_frontend_deps() -> bool:
         error("web/package.json not found")
         return False
     try:
-        run(["npm", "install"], cwd=WEB_DIR)
+        run(["npm.cmd", "install"], cwd=WEB_DIR)
         info("Frontend dependencies installed")
         return True
     except subprocess.CalledProcessError:
