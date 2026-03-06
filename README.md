@@ -59,6 +59,14 @@ python deploy.py --deploy   # Deploy only (deps already installed)
 
 ### Local Development
 
+**Windows Users:** See [WINDOWS_SETUP.md](WINDOWS_SETUP.md) for detailed Windows setup instructions.
+
+**Quick Start (Windows):**
+```cmd
+start-local.cmd
+```
+
+**Quick Start (Mac/Linux):**
 ```bash
 # 1. Install Python deps
 pip install -e ".[dev]"
