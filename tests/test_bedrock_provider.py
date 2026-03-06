@@ -109,20 +109,22 @@ class TestBedrockProvider:
 
     @pytest.mark.asyncio
     async def test_health_check_ok(self):
-        with patch("packages.ai.bedrock_provider.boto3") as mock_boto3:
+        import boto3
+        with patch.object(boto3, "client") as mock_client_func:
             mock_client = MagicMock()
             mock_client.list_foundation_models.return_value = {
                 "modelSummaries": [{"modelId": "amazon.titan-text-express-v1"}]
             }
-            mock_boto3.client.return_value = mock_client
+            mock_client_func.return_value = mock_client
 
             result = await self.provider.health_check()
             assert result is True
 
     @pytest.mark.asyncio
     async def test_health_check_failure(self):
-        with patch("packages.ai.bedrock_provider.boto3") as mock_boto3:
-            mock_boto3.client.side_effect = Exception("Connection error")
+        import boto3
+        with patch.object(boto3, "client") as mock_client_func:
+            mock_client_func.side_effect = Exception("Connection error")
 
             result = await self.provider.health_check()
             assert result is False

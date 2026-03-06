@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Path, Query
 from sqlalchemy.orm import Session
 
 from packages.shared.constants import DEFAULT_PAGE_SIZE, MAX_PAGE_SIZE
@@ -26,8 +26,8 @@ def list_properties(
     sale_type: str | None = None,
     keywords: str | None = Query(None, max_length=500),
     ber_ratings: str | None = Query(None, description="Comma-separated BER ratings"),
-    sort_by: str = Query("first_listed_at", regex="^(price|created_at|date|beds|bedrooms)$"),
-    sort_dir: str = Query("desc", regex="^(asc|desc)$"),
+    sort_by: str = Query("created_at", pattern="^(price|created_at|date|beds|bedrooms)$"),
+    sort_dir: str = Query("desc", pattern="^(asc|desc)$"),
     lat: float | None = Query(None, ge=-90, le=90),
     lng: float | None = Query(None, ge=-180, le=180),
     radius_km: float | None = Query(None, ge=0.1, le=100),
@@ -96,7 +96,7 @@ def get_property(property_id: str, db: Session = Depends(get_db_session)):
 
 @router.get("/{property_id}/price-history")
 def get_price_history(
-    property_id: str = Query(..., min_length=36, max_length=36),
+    property_id: str = Path(..., min_length=36, max_length=36),
     limit: int = Query(100, ge=1, le=1000, description="Max number of history entries"),
     db: Session = Depends(get_db_session),
 ):
