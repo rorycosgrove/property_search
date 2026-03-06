@@ -82,7 +82,7 @@ class RSSAdapter(SourceAdapter):
                 published = None
                 if hasattr(entry, "published_parsed") and entry.published_parsed:
                     try:
-                        published = datetime(*entry.published_parsed[:6], tzinfo=UTC)
+                        published = datetime(*entry.published_parsed[:6]).replace(tzinfo=UTC)
                     except (TypeError, ValueError):
                         pass
 
