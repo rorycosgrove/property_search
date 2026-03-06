@@ -5,7 +5,7 @@ from __future__ import annotations
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 
-from packages.shared.schemas import SourceCreate, SourceResponse, SourceUpdate
+from packages.shared.schemas import SourceCreate, SourceUpdate
 from packages.sources.registry import get_adapter_names, list_adapters
 from packages.storage.database import get_db_session
 from packages.storage.repositories import SourceRepository

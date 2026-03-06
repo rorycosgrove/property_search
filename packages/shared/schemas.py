@@ -13,10 +13,9 @@ from typing import Any
 
 from pydantic import BaseModel, Field
 
-
 # ── Enums ─────────────────────────────────────────────────────────────────────
 
-class PropertyType(str, enum.Enum):
+class PropertyType(enum.StrEnum):
     HOUSE = "house"
     APARTMENT = "apartment"
     DUPLEX = "duplex"
@@ -26,14 +25,14 @@ class PropertyType(str, enum.Enum):
     OTHER = "other"
 
 
-class SaleType(str, enum.Enum):
+class SaleType(enum.StrEnum):
     SALE = "sale"
     AUCTION = "auction"
     NEW_HOME = "new_home"
     SITE = "site"
 
 
-class PropertyStatus(str, enum.Enum):
+class PropertyStatus(enum.StrEnum):
     NEW = "new"
     ACTIVE = "active"
     PRICE_CHANGED = "price_changed"
@@ -42,13 +41,13 @@ class PropertyStatus(str, enum.Enum):
     WITHDRAWN = "withdrawn"
 
 
-class AdapterType(str, enum.Enum):
+class AdapterType(enum.StrEnum):
     SCRAPER = "scraper"
     RSS = "rss"
     CSV = "csv"
 
 
-class AlertType(str, enum.Enum):
+class AlertType(enum.StrEnum):
     NEW_LISTING = "new_listing"
     PRICE_DROP = "price_drop"
     PRICE_INCREASE = "price_increase"
@@ -57,13 +56,13 @@ class AlertType(str, enum.Enum):
     BACK_ON_MARKET = "back_on_market"
 
 
-class AlertSeverity(str, enum.Enum):
+class AlertSeverity(enum.StrEnum):
     LOW = "low"
     MEDIUM = "medium"
     HIGH = "high"
 
 
-class NotifyMethod(str, enum.Enum):
+class NotifyMethod(enum.StrEnum):
     IN_APP = "in_app"
     EMAIL = "email"
     BOTH = "both"

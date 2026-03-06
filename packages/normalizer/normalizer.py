@@ -172,7 +172,7 @@ class PropertyNormalizer:
         )
 
         # Fuzzy address hash for cross-source matching
-        a_hash = fuzzy_address_hash(address)
+        fuzzy_address_hash(address)
 
         record = {
             "title": prop.title.strip() if prop.title else "",

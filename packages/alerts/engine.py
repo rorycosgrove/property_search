@@ -7,8 +7,7 @@ alerts for price drops, new listings matching criteria, sale agreed, etc.
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
-from decimal import Decimal
+from datetime import UTC, datetime
 from typing import Any
 
 from sqlalchemy.orm import Session
@@ -174,7 +173,7 @@ class AlertEngine:
             filters["keywords"] = criteria["keywords"]
 
         # Find matching properties listed since last notification
-        last_notified = search.last_matched_at or datetime(2000, 1, 1, tzinfo=timezone.utc)
+        last_notified = search.last_matched_at or datetime(2000, 1, 1, tzinfo=UTC)
 
         from packages.shared.schemas import PropertyFilters
         property_filters = PropertyFilters(
@@ -223,7 +222,7 @@ class AlertEngine:
 
         # Update last matched timestamp
         if count > 0:
-            search.last_matched_at = datetime.now(timezone.utc)
+            search.last_matched_at = datetime.now(UTC)
             self.db.add(search)
 
         return count

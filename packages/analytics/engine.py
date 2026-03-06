@@ -7,8 +7,7 @@ from property and sold property data.
 
 from __future__ import annotations
 
-from datetime import datetime, timedelta, timezone
-from typing import Any
+from datetime import UTC, datetime, timedelta
 
 from sqlalchemy import func, text
 from sqlalchemy.orm import Session
@@ -41,7 +40,7 @@ class AnalyticsEngine:
 
     def get_summary(self) -> AnalyticsSummary:
         """Get high-level analytics summary."""
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
         day_ago = now - timedelta(hours=24)
 
         total_listings = self.db.query(func.count(Property.id)).scalar() or 0
@@ -118,7 +117,7 @@ class AnalyticsEngine:
         months: int = 12,
     ) -> list[PriceTrend]:
         """Get monthly average price trends."""
-        cutoff = datetime.now(timezone.utc) - timedelta(days=months * 30)
+        cutoff = datetime.now(UTC) - timedelta(days=months * 30)
 
         query = (
             self.db.query(

@@ -11,8 +11,6 @@ from __future__ import annotations
 import json
 from typing import Any
 
-from packages.shared.config import settings
-from packages.shared.logging import get_logger
 from packages.ai.bedrock_provider import BedrockProvider
 from packages.ai.prompts import (
     COMPARISON_PROMPT,
@@ -21,6 +19,8 @@ from packages.ai.prompts import (
     SYSTEM_PROMPT,
 )
 from packages.ai.provider import LLMProvider, LLMResponse
+from packages.shared.config import settings
+from packages.shared.logging import get_logger
 
 logger = get_logger(__name__)
 
@@ -33,7 +33,7 @@ def get_provider(provider_name: str | None = None, model: str | None = None) -> 
 
     Checks DynamoDB for runtime config override, then falls back to settings.
     """
-    name = provider_name or _get_active_provider_name()
+    provider_name or _get_active_provider_name()
     active_model = model or _get_active_model()
 
     return BedrockProvider(model_id=active_model)

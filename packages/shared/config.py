@@ -10,18 +10,19 @@ from __future__ import annotations
 import json
 import os
 
+from pydantic import model_validator
+from pydantic_settings import BaseSettings, SettingsConfigDict
+
 from packages.shared.constants import (
+    DEFAULT_PPR_INTERVAL_SECONDS,
+    DEFAULT_RSS_INTERVAL_SECONDS,
     DEFAULT_SCRAPE_INTERVAL_SECONDS,
     GEOCODER_RATE_LIMIT_SECONDS,
     MAX_SCRAPE_RETRIES,
     REQUEST_TIMEOUT_SECONDS,
-    DEFAULT_RSS_INTERVAL_SECONDS,
-    DEFAULT_PPR_INTERVAL_SECONDS,
-    SCRAPE_DELAY_MIN_SECONDS,
     SCRAPE_DELAY_MAX_SECONDS,
+    SCRAPE_DELAY_MIN_SECONDS,
 )
-from pydantic import model_validator
-from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
 class Settings(BaseSettings):
@@ -89,7 +90,7 @@ class Settings(BaseSettings):
     enable_tracing: bool = False
 
     @model_validator(mode="after")
-    def _resolve_secrets(self) -> "Settings":
+    def _resolve_secrets(self) -> Settings:
         """Fetch DB credentials from Secrets Manager when running in Lambda."""
         if self.aws_secrets_arn and os.environ.get("AWS_LAMBDA_FUNCTION_NAME"):
             import boto3

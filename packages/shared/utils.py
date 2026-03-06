@@ -8,10 +8,9 @@ from __future__ import annotations
 
 import hashlib
 import re
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 from dateutil import parser as dateutil_parser
-
 
 # ── Irish Counties ────────────────────────────────────────────────────────────
 
@@ -222,7 +221,7 @@ def parse_date(date_str: str | None) -> datetime | None:
     try:
         dt = dateutil_parser.parse(date_str)
         if dt.tzinfo is None:
-            dt = dt.replace(tzinfo=timezone.utc)
+            dt = dt.replace(tzinfo=UTC)
         return dt
     except (ValueError, TypeError):
         return None
@@ -230,7 +229,7 @@ def parse_date(date_str: str | None) -> datetime | None:
 
 def utc_now() -> datetime:
     """Current UTC datetime, timezone-aware."""
-    return datetime.now(timezone.utc)
+    return datetime.now(UTC)
 
 
 # ── Currency Formatting ──────────────────────────────────────────────────────

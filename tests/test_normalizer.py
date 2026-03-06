@@ -1,7 +1,6 @@
 """Tests for packages.normalizer."""
-import pytest
+from packages.normalizer.ber import ber_category, ber_color_hex, ber_is_better_than, ber_to_score
 from packages.normalizer.normalizer import PropertyNormalizer
-from packages.normalizer.ber import ber_to_score, ber_category, ber_is_better_than, ber_color_hex
 from packages.sources.base import NormalizedProperty
 
 

@@ -4,8 +4,9 @@ from __future__ import annotations
 
 import asyncio
 import time
+from collections.abc import Callable
 from functools import wraps
-from typing import Any, Callable, TypeVar
+from typing import Any, TypeVar
 
 from packages.shared.logging import get_logger
 
@@ -23,7 +24,7 @@ def retry_with_backoff(
 ):
     """
     Decorator for retrying functions with exponential backoff.
-    
+
     Args:
         max_retries: Maximum number of retry attempts
         initial_delay: Initial delay in seconds
@@ -36,7 +37,7 @@ def retry_with_backoff(
         def sync_wrapper(*args: Any, **kwargs: Any) -> T:
             delay = initial_delay
             last_exception = None
-            
+
             for attempt in range(max_retries + 1):
                 try:
                     return func(*args, **kwargs)
@@ -50,7 +51,7 @@ def retry_with_backoff(
                             error=str(e),
                         )
                         raise
-                    
+
                     logger.warning(
                         "retry_attempt",
                         func=func.__name__,
@@ -61,14 +62,14 @@ def retry_with_backoff(
                     )
                     time.sleep(delay)
                     delay = min(delay * exponential_base, max_delay)
-            
+
             raise last_exception  # Should never reach here
-        
+
         @wraps(func)
         async def async_wrapper(*args: Any, **kwargs: Any) -> T:
             delay = initial_delay
             last_exception = None
-            
+
             for attempt in range(max_retries + 1):
                 try:
                     return await func(*args, **kwargs)
@@ -82,7 +83,7 @@ def retry_with_backoff(
                             error=str(e),
                         )
                         raise
-                    
+
                     logger.warning(
                         "retry_attempt",
                         func=func.__name__,
@@ -93,26 +94,26 @@ def retry_with_backoff(
                     )
                     await asyncio.sleep(delay)
                     delay = min(delay * exponential_base, max_delay)
-            
+
             raise last_exception  # Should never reach here
-        
+
         if asyncio.iscoroutinefunction(func):
             return async_wrapper
         return sync_wrapper
-    
+
     return decorator
 
 
 class CircuitBreaker:
     """
     Circuit breaker pattern implementation for external service calls.
-    
+
     States:
     - CLOSED: Normal operation, requests pass through
     - OPEN: Too many failures, requests fail immediately
     - HALF_OPEN: Testing if service recovered
     """
-    
+
     def __init__(
         self,
         failure_threshold: int = 5,
@@ -125,7 +126,7 @@ class CircuitBreaker:
         self.failure_count = 0
         self.last_failure_time: float | None = None
         self.state = "CLOSED"
-    
+
     def call(self, func: Callable[..., T], *args: Any, **kwargs: Any) -> T:
         """Execute function with circuit breaker protection."""
         if self.state == "OPEN":
@@ -134,7 +135,7 @@ class CircuitBreaker:
                 logger.info("circuit_breaker_half_open", func=func.__name__)
             else:
                 raise Exception(f"Circuit breaker OPEN for {func.__name__}")
-        
+
         try:
             result = func(*args, **kwargs)
             if self.state == "HALF_OPEN":
@@ -142,10 +143,10 @@ class CircuitBreaker:
                 self.failure_count = 0
                 logger.info("circuit_breaker_closed", func=func.__name__)
             return result
-        except self.expected_exception as e:
+        except self.expected_exception:
             self.failure_count += 1
             self.last_failure_time = time.time()
-            
+
             if self.failure_count >= self.failure_threshold:
                 self.state = "OPEN"
                 logger.error(
@@ -154,7 +155,7 @@ class CircuitBreaker:
                     failures=self.failure_count,
                 )
             raise
-    
+
     async def call_async(self, func: Callable[..., T], *args: Any, **kwargs: Any) -> T:
         """Execute async function with circuit breaker protection."""
         if self.state == "OPEN":
@@ -163,7 +164,7 @@ class CircuitBreaker:
                 logger.info("circuit_breaker_half_open", func=func.__name__)
             else:
                 raise Exception(f"Circuit breaker OPEN for {func.__name__}")
-        
+
         try:
             result = await func(*args, **kwargs)
             if self.state == "HALF_OPEN":
@@ -171,10 +172,10 @@ class CircuitBreaker:
                 self.failure_count = 0
                 logger.info("circuit_breaker_closed", func=func.__name__)
             return result
-        except self.expected_exception as e:
+        except self.expected_exception:
             self.failure_count += 1
             self.last_failure_time = time.time()
-            
+
             if self.failure_count >= self.failure_threshold:
                 self.state = "OPEN"
                 logger.error(

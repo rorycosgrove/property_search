@@ -1,6 +1,7 @@
 """Tests for the source adapter registry."""
 import pytest
-from packages.sources.registry import get_adapter, list_adapters, get_adapter_names
+
+from packages.sources.registry import get_adapter, get_adapter_names, list_adapters
 
 
 class TestAdapterRegistry:

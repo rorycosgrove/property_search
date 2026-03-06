@@ -1,7 +1,7 @@
 """Shared test fixtures."""
+
 import pytest
-from unittest.mock import MagicMock, patch
-from sqlalchemy import create_engine, event
+from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
 

@@ -1,6 +1,7 @@
 """Tests for FastAPI endpoints (uses TestClient)."""
+from unittest.mock import MagicMock, patch
+
 import pytest
-from unittest.mock import patch, MagicMock
 from fastapi.testclient import TestClient
 
 from apps.api.main import app
@@ -13,8 +14,9 @@ def client():
 
 class TestHealthEndpoint:
     def test_health_ok(self, client):
-        from packages.storage.database import get_db_session
         import boto3
+
+        from packages.storage.database import get_db_session
 
         mock_session = MagicMock()
         mock_session.execute.return_value = None
@@ -39,10 +41,10 @@ class TestHealthEndpoint:
 class TestPropertiesEndpoint:
     def test_list_properties(self, client):
         from packages.storage.database import get_db_session
-        
+
         mock_session = MagicMock()
         app.dependency_overrides[get_db_session] = lambda: mock_session
-        
+
         try:
             with patch("apps.api.routers.properties.PropertyRepository") as MockRepo:
                 instance = MockRepo.return_value
@@ -57,10 +59,10 @@ class TestPropertiesEndpoint:
 
     def test_get_property_not_found(self, client):
         from packages.storage.database import get_db_session
-        
+
         mock_session = MagicMock()
         app.dependency_overrides[get_db_session] = lambda: mock_session
-        
+
         try:
             with patch("apps.api.routers.properties.PropertyRepository") as MockRepo:
                 instance = MockRepo.return_value
@@ -74,10 +76,10 @@ class TestPropertiesEndpoint:
 class TestSourcesEndpoint:
     def test_list_sources(self, client):
         from packages.storage.database import get_db_session
-        
+
         mock_session = MagicMock()
         app.dependency_overrides[get_db_session] = lambda: mock_session
-        
+
         try:
             with patch("apps.api.routers.sources.SourceRepository") as MockRepo:
                 instance = MockRepo.return_value

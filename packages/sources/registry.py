@@ -9,7 +9,7 @@ any other code changes.
 from __future__ import annotations
 
 from packages.shared.logging import get_logger
-from packages.shared.schemas import AdapterInfo, AdapterType
+from packages.shared.schemas import AdapterInfo
 from packages.sources.base import SourceAdapter
 from packages.sources.daft import DaftAdapter
 from packages.sources.myhome import MyHomeAdapter

@@ -12,7 +12,7 @@ import asyncio
 import json
 import random
 import re
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Any
 
 import httpx
@@ -192,7 +192,7 @@ class PropertyPalAdapter(SourceAdapter):
         """
         soup = BeautifulSoup(html, "lxml")
         listings: list[RawListing] = []
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
 
         # Parse __NEXT_DATA__ JSON
         next_data_script = soup.find("script", id="__NEXT_DATA__")

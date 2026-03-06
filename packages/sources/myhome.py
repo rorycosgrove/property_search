@@ -12,7 +12,7 @@ import asyncio
 import json
 import random
 import re
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Any
 
 import httpx
@@ -218,7 +218,7 @@ class MyHomeAdapter(SourceAdapter):
         """
         soup = BeautifulSoup(html, "lxml")
         listings: list[RawListing] = []
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
 
         # Parse Angular transfer state
         ng_state = soup.find("script", id="ng-state")

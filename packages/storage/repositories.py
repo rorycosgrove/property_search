@@ -8,11 +8,10 @@ never ORM model instances. This decouples persistence from domain logic.
 
 from __future__ import annotations
 
-import math
-from datetime import datetime, timedelta, timezone
+from datetime import datetime
 
 from geoalchemy2.functions import ST_DWithin, ST_MakePoint, ST_SetSRID
-from sqlalchemy import and_, desc, func, or_, select, text
+from sqlalchemy import and_, func, select
 from sqlalchemy.orm import Session, joinedload
 
 from packages.shared.constants import (
@@ -22,8 +21,6 @@ from packages.shared.constants import (
     SOURCE_ERROR_THRESHOLD,
 )
 from packages.shared.schemas import (
-    AlertSeverity,
-    AlertType,
     CountyPriceStats,
     PropertyFilters,
     SoldPropertyFilters,
@@ -38,7 +35,6 @@ from packages.storage.models import (
     SoldProperty,
     Source,
 )
-
 
 # ──────────────────────────────────────────────────────────────────────────────
 # SourceRepository

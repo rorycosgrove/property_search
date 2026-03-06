@@ -74,6 +74,10 @@ target-version = "py312"
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "N", "W", "UP"]
+ignore = [
+    "E501",  # Line too long (handled by formatter)
+    "N806",  # Variable in function should be lowercase (allow PascalCase for mocks)
+]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

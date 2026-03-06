@@ -1,14 +1,13 @@
 """Tests for packages.shared.utils."""
-import pytest
 from packages.shared.utils import (
-    normalize_address,
+    NI_COUNTIES,
+    REPUBLIC_COUNTIES,
+    content_hash,
     extract_county,
     extract_eircode,
-    parse_price,
+    normalize_address,
     normalize_ber,
-    content_hash,
-    REPUBLIC_COUNTIES,
-    NI_COUNTIES,
+    parse_price,
 )
 
 

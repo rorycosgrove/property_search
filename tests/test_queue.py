@@ -1,9 +1,10 @@
 """Tests for SQS queue publisher utility."""
 import json
-import pytest
-from unittest.mock import patch, MagicMock
+from unittest.mock import MagicMock, patch
 
-from packages.shared.queue import send_task, _resolve_queue_url
+import pytest
+
+from packages.shared.queue import _resolve_queue_url, send_task
 
 
 class TestSendTask:

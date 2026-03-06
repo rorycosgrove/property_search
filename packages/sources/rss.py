@@ -7,7 +7,7 @@ Can be used for Irish Times Property, TheJournal, RTE, etc.
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Any
 
 import feedparser
@@ -67,7 +67,7 @@ class RSSAdapter(SourceAdapter):
                 return []
 
             listings: list[RawListing] = []
-            now = datetime.now(timezone.utc)
+            now = datetime.now(UTC)
 
             for entry in feed.entries[:max_entries]:
                 title = entry.get("title", "")
@@ -82,7 +82,7 @@ class RSSAdapter(SourceAdapter):
                 published = None
                 if hasattr(entry, "published_parsed") and entry.published_parsed:
                     try:
-                        published = datetime(*entry.published_parsed[:6], tzinfo=timezone.utc)
+                        published = datetime(*entry.published_parsed[:6], tzinfo=UTC)
                     except (TypeError, ValueError):
                         pass
 

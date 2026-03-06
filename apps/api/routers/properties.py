@@ -37,11 +37,11 @@ def list_properties(
     # Validate price range
     if min_price is not None and max_price is not None and min_price > max_price:
         raise HTTPException(status_code=400, detail="min_price cannot be greater than max_price")
-    
+
     # Validate bedroom range
     if min_beds is not None and max_beds is not None and min_beds > max_beds:
         raise HTTPException(status_code=400, detail="min_beds cannot be greater than max_beds")
-    
+
     # Validate geospatial params
     if (lat is not None or lng is not None or radius_km is not None):
         if not (lat is not None and lng is not None and radius_km is not None):
@@ -49,7 +49,7 @@ def list_properties(
                 status_code=400,
                 detail="lat, lng, and radius_km must all be provided together"
             )
-    
+
     repo = PropertyRepository(db)
 
     # Parse comma-separated lists

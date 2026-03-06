@@ -12,9 +12,6 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from packages.shared.config import settings
-from packages.shared.logging import setup_logging, get_logger
-
 from apps.api.routers import (
     admin,
     alerts,
@@ -26,6 +23,8 @@ from apps.api.routers import (
     sold,
     sources,
 )
+from packages.shared.config import settings
+from packages.shared.logging import get_logger, setup_logging
 
 logger = get_logger(__name__)
 

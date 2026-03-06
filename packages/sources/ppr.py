@@ -10,7 +10,7 @@ from __future__ import annotations
 import hashlib
 import io
 import zipfile
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Any
 
 import httpx
@@ -107,7 +107,7 @@ class PPRAdapter(SourceAdapter):
 
             # Convert to RawListings
             listings = []
-            now = datetime.now(timezone.utc)
+            now = datetime.now(UTC)
             for _, row in df.iterrows():
                 listings.append(
                     RawListing(
@@ -159,7 +159,7 @@ class PPRAdapter(SourceAdapter):
 
             # Content hash for dedup
             content_hash = hashlib.sha256(
-                f"{address}|{date_str}|{price_str}".encode("utf-8")
+                f"{address}|{date_str}|{price_str}".encode()
             ).hexdigest()
 
             return NormalizedProperty(

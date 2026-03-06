@@ -10,7 +10,7 @@ Tasks are invoked by SQS Lambda handlers (replacing Celery).
 from __future__ import annotations
 
 import asyncio
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 from packages.shared.constants import (
@@ -18,7 +18,6 @@ from packages.shared.constants import (
     LLM_BATCH_SIZE,
     NEARBY_SOLD_LIMIT,
     NEARBY_SOLD_RADIUS_KM,
-    SOURCE_ERROR_THRESHOLD,
 )
 from packages.shared.logging import get_logger
 
@@ -155,7 +154,7 @@ def scrape_source(source_id: str) -> dict[str, Any]:
                     # 5. Store new property
                     record["source_id"] = source_id
                     record["status"] = "new"
-                    record["first_listed_at"] = datetime.now(timezone.utc)
+                    record["first_listed_at"] = datetime.now(UTC)
                     property_repo.create(**record)
                     new_count += 1
 
@@ -342,7 +341,7 @@ def cleanup_old_alerts(days: int = ALERT_CLEANUP_DAYS) -> dict[str, int]:
     from packages.storage.database import get_session
     from packages.storage.models import Alert
 
-    cutoff = datetime.now(timezone.utc) - timedelta(days=days)
+    cutoff = datetime.now(UTC) - timedelta(days=days)
 
     with get_session() as db:
         deleted = (

@@ -11,7 +11,7 @@ from __future__ import annotations
 import asyncio
 import random
 import re
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Any
 
 import httpx
@@ -137,7 +137,7 @@ class DaftAdapter(SourceAdapter):
                             logger.info("daft_no_more_listings", area=area, page=page)
                             break
 
-                        now = datetime.now(timezone.utc)
+                        now = datetime.now(UTC)
                         for entry in api_listings:
                             listing_data = entry.get("listing", {})
                             if listing_data:
@@ -223,7 +223,7 @@ class DaftAdapter(SourceAdapter):
             publish_ts = data.get("publishDate")
             first_listed = None
             if publish_ts and isinstance(publish_ts, (int, float)):
-                first_listed = datetime.fromtimestamp(publish_ts / 1000, tz=timezone.utc)
+                first_listed = datetime.fromtimestamp(publish_ts / 1000, tz=UTC)
 
             return NormalizedProperty(
                 title=title,

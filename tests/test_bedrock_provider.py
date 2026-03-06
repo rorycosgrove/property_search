@@ -1,7 +1,8 @@
 """Tests for the Amazon Bedrock LLM provider."""
 import json
+from unittest.mock import MagicMock, patch
+
 import pytest
-from unittest.mock import patch, MagicMock
 
 from packages.ai.bedrock_provider import BedrockProvider
 from packages.ai.provider import LLMResponse
