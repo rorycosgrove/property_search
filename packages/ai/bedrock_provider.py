@@ -22,6 +22,7 @@ logger = get_logger(__name__)
 # Model ID → request/response format mapping
 _TITAN_MODELS = {"amazon.titan-text-express-v1", "amazon.titan-text-lite-v1"}
 _NOVA_MODELS = {"amazon.nova-micro-v1:0", "amazon.nova-lite-v1:0", "amazon.nova-pro-v1:0"}
+_CLAUDE_MODELS = {"anthropic.claude-3-haiku-20240307-v1:0", "anthropic.claude-3-sonnet-20240229-v1:0", "anthropic.claude-3-5-sonnet-20240620-v1:0"}
 
 
 class BedrockProvider(LLMProvider):
@@ -127,7 +128,7 @@ class BedrockProvider(LLMProvider):
                 },
             }
 
-        if self.model_id in _NOVA_MODELS:
+        if self.model_id in _NOVA_MODELS or self.model_id in _CLAUDE_MODELS:
             messages = [{"role": "user", "content": [{"text": prompt}]}]
             body: dict[str, Any] = {
                 "messages": messages,

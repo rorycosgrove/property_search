@@ -17,7 +17,7 @@ interface FilterState {
 const DEFAULT_FILTERS: PropertyFilters = {
   page: 1,
   size: 20,
-  sort_by: 'first_listed_at',
+  sort_by: 'created_at',
   sort_dir: 'desc',
 };
 
