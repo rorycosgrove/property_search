@@ -117,8 +117,8 @@ class MyHomeAdapter(SourceAdapter):
             return None
 
         try:
-            address = data.get("Address", "") or data.get("DisplayAddress", "")
-            display_address = data.get("DisplayAddress", address)
+            address = (data.get("Address", "") or data.get("DisplayAddress", "")).strip()
+            display_address = (data.get("DisplayAddress", address) or "").strip()
             price_text = data.get("PriceAsString", "")
             price = parse_price(price_text)
             county = extract_county(display_address)
@@ -149,7 +149,17 @@ class MyHomeAdapter(SourceAdapter):
 
             # Property URL
             brochure_url = data.get("BrochureUrl", "")
-            url = f"{self.BASE_URL}{brochure_url}" if brochure_url else raw.source_url
+            url = (f"{self.BASE_URL}{brochure_url}" if brochure_url else raw.source_url).strip()
+
+            # Required fields for storage model.
+            if not address or not display_address or not url:
+                logger.debug(
+                    "myhome_parse_skipped_missing_required",
+                    has_address=bool(address),
+                    has_title=bool(display_address),
+                    has_url=bool(url),
+                )
+                return None
 
             # Listing ID
             listing_id = str(data.get("PropertyId", ""))

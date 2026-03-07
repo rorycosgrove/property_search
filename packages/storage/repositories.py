@@ -10,6 +10,7 @@ from __future__ import annotations
 
 from datetime import datetime
 
+from geoalchemy2.elements import WKTElement
 from geoalchemy2.functions import ST_DWithin, ST_MakePoint, ST_SetSRID
 from sqlalchemy import and_, func, select
 from sqlalchemy.orm import Session, joinedload
@@ -35,6 +36,18 @@ from packages.storage.models import (
     SoldProperty,
     Source,
 )
+
+
+def _build_location_point(latitude: float | None, longitude: float | None) -> WKTElement | None:
+    """Create a PostGIS point value when coordinates are present and parseable."""
+    if latitude is None or longitude is None:
+        return None
+    try:
+        lat = float(latitude)
+        lng = float(longitude)
+    except (TypeError, ValueError):
+        return None
+    return WKTElement(f"POINT({lng} {lat})", srid=4326)
 
 # ──────────────────────────────────────────────────────────────────────────────
 # SourceRepository
@@ -209,6 +222,9 @@ class PropertyRepository:
         return items, total
 
     def create(self, **kwargs) -> Property:
+        location_point = _build_location_point(kwargs.get("latitude"), kwargs.get("longitude"))
+        if location_point is not None:
+            kwargs["location_point"] = location_point
         prop = Property(**kwargs)
         self.session.add(prop)
         self.session.flush()
@@ -218,6 +234,13 @@ class PropertyRepository:
         prop = self.get_by_id(property_id, include_relations=False)
         if not prop:
             return None
+
+        lat = kwargs.get("latitude", prop.latitude)
+        lng = kwargs.get("longitude", prop.longitude)
+        location_point = _build_location_point(lat, lng)
+        if location_point is not None:
+            kwargs["location_point"] = location_point
+
         for key, value in kwargs.items():
             if value is not None and hasattr(prop, key):
                 setattr(prop, key, value)
@@ -463,6 +486,9 @@ class SoldPropertyRepository:
         )
 
     def create(self, **kwargs) -> SoldProperty:
+        location_point = _build_location_point(kwargs.get("latitude"), kwargs.get("longitude"))
+        if location_point is not None:
+            kwargs["location_point"] = location_point
         sold = SoldProperty(**kwargs)
         self.session.add(sold)
         self.session.flush()

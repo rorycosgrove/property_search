@@ -112,9 +112,17 @@ class PropertyPalAdapter(SourceAdapter):
             return None
 
         try:
-            address = data.get("displayAddress", "")
+            address = str(data.get("displayAddress", "") or "").strip()
             path = data.get("path", "")
-            url = f"{self.BASE_URL}{path}" if path else raw.source_url
+            url = (f"{self.BASE_URL}{path}" if path else raw.source_url).strip()
+
+            if not address or not url:
+                logger.debug(
+                    "propertypal_parse_skipped_missing_required",
+                    has_address=bool(address),
+                    has_url=bool(url),
+                )
+                return None
 
             # Price
             price_info = data.get("price", {}) or {}

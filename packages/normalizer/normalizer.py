@@ -143,7 +143,7 @@ class PropertyNormalizer:
         suitable for PropertyRepository.create().
 
         Returns a dict with all fields populated, including content_hash
-        and address_hash for dedup.
+        and fuzzy address metadata for cross-source matching.
         """
         # Address normalization
         address = normalize_address(prop.address)
@@ -171,8 +171,9 @@ class PropertyNormalizer:
             source=prop.url,
         )
 
-        # Fuzzy address hash for cross-source matching
-        fuzzy_address_hash(address)
+        # Persist fuzzy hash in raw_data metadata so downstream merge logic can use it.
+        raw_data = dict(prop.raw_data or {})
+        raw_data["fuzzy_address_hash"] = fuzzy_address_hash(address)
 
         record = {
             "title": prop.title.strip() if prop.title else "",
@@ -195,7 +196,7 @@ class PropertyNormalizer:
             "ber_number": prop.ber_number,
             "images": prop.images,
             "features": prop.features,
-            "raw_data": prop.raw_data,
+            "raw_data": raw_data,
             "latitude": prop.latitude,
             "longitude": prop.longitude,
         }

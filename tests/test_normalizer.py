@@ -70,6 +70,19 @@ class TestPropertyNormalizer:
         r2 = self.normalizer.normalize(raw)
         assert r1["content_hash"] == r2["content_hash"]
 
+    def test_normalize_stores_fuzzy_hash_in_raw_data(self):
+        raw = NormalizedProperty(
+            url="https://daft.ie/321",
+            title="Test",
+            price=100000,
+            address="12 Main Street, Dublin",
+            raw_data={"source_key": "value"},
+        )
+        result = self.normalizer.normalize(raw)
+        assert result["raw_data"]["source_key"] == "value"
+        assert "fuzzy_address_hash" in result["raw_data"]
+        assert len(result["raw_data"]["fuzzy_address_hash"]) == 16
+
 
 class TestBER:
     def test_ber_to_score_a1(self):

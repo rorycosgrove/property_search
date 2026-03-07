@@ -198,5 +198,7 @@ class PPRAdapter(SourceAdapter):
                 df = df[df[date_col].dt.year >= min_year]
             except Exception:
                 pass
+        else:
+            logger.warning("ppr_date_column_not_found", min_year=min_year, columns=list(df.columns))
 
         return df

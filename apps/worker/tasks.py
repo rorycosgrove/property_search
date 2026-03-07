@@ -10,7 +10,8 @@ Tasks are invoked by SQS Lambda handlers (replacing Celery).
 from __future__ import annotations
 
 import asyncio
-from datetime import UTC, datetime, timedelta
+import os
+from datetime import UTC, date, datetime, timedelta
 from typing import Any
 
 from packages.shared.constants import (
@@ -29,11 +30,21 @@ def _run_async(coro):
     return asyncio.run(coro)
 
 
+def _is_queue_configured(queue_name: str) -> bool:
+    """Return True when queue URL is configured in process env vars."""
+    env_url = os.environ.get(f"{queue_name.upper()}_QUEUE_URL", "")
+    return bool(env_url)
+
+
 # ── Source scraping tasks ─────────────────────────────────────────────────────
 
 
 def scrape_all_sources() -> dict[str, Any]:
-    """Scrape all enabled sources. Dispatches individual scrape tasks via SQS."""
+    """Scrape all enabled sources.
+
+    In cloud environments this dispatches SQS scrape tasks. In local environments
+    without SQS queue URLs, it runs sources inline for easier development.
+    """
     from packages.shared.queue import send_task
     from packages.storage.database import get_session
     from packages.storage.repositories import SourceRepository
@@ -46,11 +57,28 @@ def scrape_all_sources() -> dict[str, Any]:
     logger.info(f"Dispatching scrape for {len(source_ids)} sources")
 
     dispatched = 0
+    processed_inline = 0
+    use_sqs_dispatch = _is_queue_configured("scrape")
+
+    if not use_sqs_dispatch:
+        logger.warning(
+            "scrape_queue_not_configured",
+            message="SCRAPE_QUEUE_URL missing; running scrape_source inline",
+        )
+
     for sid in source_ids:
-        send_task("scrape", "scrape_source", {"source_id": sid})
+        if use_sqs_dispatch:
+            send_task("scrape", "scrape_source", {"source_id": sid})
+        else:
+            scrape_source(sid)
+            processed_inline += 1
         dispatched += 1
 
-    return {"dispatched": dispatched}
+    return {
+        "dispatched": dispatched,
+        "processed_inline": processed_inline,
+        "dispatch_mode": "sqs" if use_sqs_dispatch else "inline",
+    }
 
 
 def scrape_source(source_id: str) -> dict[str, Any]:
@@ -103,11 +131,15 @@ def scrape_source(source_id: str) -> dict[str, Any]:
                 # Check if this is a PPR record (sold property)
                 if parsed.raw_data.get("ppr_record"):
                     try:
-                        _handle_ppr_record(db, parsed)
-                        db.flush()
-                        new_count += 1
-                    except Exception:
-                        db.rollback()
+                        with db.begin_nested():
+                            inserted = _handle_ppr_record(db, parsed)
+                        if inserted:
+                            new_count += 1
+                        else:
+                            skipped_count += 1
+                    except Exception as exc:
+                        skipped_count += 1
+                        logger.warning("ppr_record_insert_failed", source_id=source_id, error=str(exc))
                     continue
 
                 # Normalize
@@ -175,7 +207,16 @@ def scrape_source(source_id: str) -> dict[str, Any]:
             # 6. Dispatch alert evaluation for new/changed properties
             if new_count > 0 or updated_count > 0:
                 from packages.shared.queue import send_task
-                send_task("alert", "evaluate_alerts", {})
+
+                if _is_queue_configured("alert"):
+                    send_task("alert", "evaluate_alerts", {})
+                else:
+                    logger.warning(
+                        "alert_queue_not_configured",
+                        source_id=source_id,
+                        new=new_count,
+                        updated=updated_count,
+                    )
 
             return result
 
@@ -208,23 +249,39 @@ def import_ppr() -> dict[str, Any]:
     with get_session() as db:
         sold_repo = SoldPropertyRepository(db)
         new_count = 0
+        duplicate_count = 0
+        skipped_invalid_count = 0
+        failed_count = 0
 
         for raw in raw_listings:
             parsed = adapter.parse_listing(raw)
             if not parsed:
+                skipped_invalid_count += 1
                 continue
 
             content_hash = parsed.raw_data.get("content_hash", "")
             if sold_repo.get_by_content_hash(content_hash):
+                duplicate_count += 1
                 continue
 
-            _handle_ppr_record(db, parsed)
-            db.flush()
-            new_count += 1
+            try:
+                with db.begin_nested():
+                    inserted = _handle_ppr_record(db, parsed)
+                if inserted:
+                    new_count += 1
+                else:
+                    skipped_invalid_count += 1
+            except Exception as exc:
+                failed_count += 1
+                logger.warning("ppr_import_record_failed", error=str(exc))
 
-        db.commit()
-
-    return {"total_downloaded": len(raw_listings), "new_records": new_count}
+    return {
+        "total_downloaded": len(raw_listings),
+        "new_records": new_count,
+        "duplicates": duplicate_count,
+        "skipped_invalid": skipped_invalid_count,
+        "failed": failed_count,
+    }
 
 
 # ── Alert evaluation ──────────────────────────────────────────────────────────
@@ -366,25 +423,47 @@ async def _geocode_safe(address: str, county: str | None) -> Any:
         return None
 
 
-def _handle_ppr_record(db, parsed) -> None:
+def _handle_ppr_record(db, parsed) -> bool:
     """Insert a parsed PPR record into the SoldProperty table."""
     from packages.storage.repositories import SoldPropertyRepository
 
     # Skip records without a valid price (NOT NULL constraint on sold_properties)
     if parsed.price is None:
-        return
+        logger.debug("ppr_record_skipped", reason="missing_price")
+        return False
 
     repo = SoldPropertyRepository(db)
     raw = parsed.raw_data
+    sale_date = _parse_ppr_sale_date(raw.get("sale_date"))
+    if sale_date is None:
+        logger.debug("ppr_record_skipped", reason="invalid_sale_date", sale_date=raw.get("sale_date"))
+        return False
 
     repo.create(
         address=parsed.address,
         county=parsed.county,
         price=parsed.price,
-        sale_date=raw.get("sale_date"),
+        sale_date=sale_date,
         is_new=raw.get("is_new", False),
         is_full_market_price=raw.get("is_full_market_price", True),
         vat_exclusive=raw.get("vat_exclusive", False),
         property_size_description=raw.get("property_size_description"),
         content_hash=raw.get("content_hash", ""),
     )
+    return True
+
+
+def _parse_ppr_sale_date(value: Any) -> date | None:
+    """Parse PPR sale_date values from adapters into a date instance."""
+    if isinstance(value, date) and not isinstance(value, datetime):
+        return value
+    if isinstance(value, datetime):
+        return value.date()
+    if isinstance(value, str):
+        cleaned = value.strip()
+        for fmt in ("%d/%m/%Y", "%Y-%m-%d"):
+            try:
+                return datetime.strptime(cleaned, fmt).date()
+            except ValueError:
+                continue
+    return None
