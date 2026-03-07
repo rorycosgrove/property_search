@@ -74,7 +74,7 @@ export default function FilterBar() {
 
       {/* Sort */}
       <select
-        value={`${filters.sort_by || 'first_listed_at'}_${filters.sort_dir || 'desc'}`}
+        value={`${filters.sort_by || 'created_at'}_${filters.sort_dir || 'desc'}`}
         onChange={(e) => {
           const [by, dir] = e.target.value.split('_');
           setFilter('sort_by', by);
@@ -82,8 +82,8 @@ export default function FilterBar() {
         }}
         className="bg-[var(--background)] border border-[var(--card-border)] rounded px-2 py-1.5 text-sm"
       >
-        <option value="first_listed_at_desc">Newest first</option>
-        <option value="first_listed_at_asc">Oldest first</option>
+        <option value="created_at_desc">Newest first</option>
+        <option value="created_at_asc">Oldest first</option>
         <option value="price_asc">Price: Low → High</option>
         <option value="price_desc">Price: High → Low</option>
       </select>
