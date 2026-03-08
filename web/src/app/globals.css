@@ -22,6 +22,7 @@ body {
     var(--background);
   color: var(--foreground);
   font-family: var(--font-body), sans-serif;
+  text-rendering: optimizeLegibility;
 }
 
 h1,
@@ -46,10 +47,25 @@ h4 {
   animation: riseIn 280ms ease-out;
 }
 
+.sheet-in {
+  animation: sheetIn 220ms ease-out;
+}
+
 @keyframes riseIn {
   from {
     opacity: 0;
     transform: translateY(6px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@keyframes sheetIn {
+  from {
+    opacity: 0;
+    transform: translateY(14px);
   }
   to {
     opacity: 1;
@@ -68,6 +84,15 @@ h4 {
   background: var(--card-bg) !important;
   color: var(--foreground) !important;
   border-color: var(--card-border) !important;
+}
+
+@media (max-width: 1023px) {
+  .leaflet-control-zoom a {
+    width: 40px !important;
+    height: 40px !important;
+    line-height: 38px !important;
+    font-size: 20px !important;
+  }
 }
 
 .marker-hover-card {

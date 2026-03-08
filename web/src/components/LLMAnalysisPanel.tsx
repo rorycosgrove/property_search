@@ -16,9 +16,10 @@ interface Props {
   analysisIsStale?: boolean;
   onRetry?: () => void;
   canRetry?: boolean;
+  embedded?: boolean;
 }
 
-export default function LLMAnalysisPanel({ result, loading, error, analysisIsStale = false, onRetry, canRetry = true }: Props) {
+export default function LLMAnalysisPanel({ result, loading, error, analysisIsStale = false, onRetry, canRetry = true, embedded = false }: Props) {
     const renderCitation = (citation: Citation, idx: number) => {
       if (citation.type === 'property') {
         return (
@@ -46,7 +47,9 @@ export default function LLMAnalysisPanel({ result, loading, error, analysisIsSta
       );
     };
 
-  const panelClasses = 'w-full xl:w-[390px] xl:shrink-0 border-t xl:border-t-0 xl:border-l border-[var(--card-border)] bg-[var(--card-bg)]/90 p-4 overflow-y-auto rise-in';
+  const panelClasses = embedded
+    ? 'w-full bg-[var(--card-bg)] p-4 overflow-y-auto'
+    : 'w-full xl:w-[390px] xl:shrink-0 border-t xl:border-t-0 xl:border-l border-[var(--card-border)] bg-[var(--card-bg)]/90 p-4 overflow-y-auto rise-in';
 
   if (loading) {
     return (

@@ -1,21 +1,18 @@
 'use client';
 
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { Suspense, useEffect, useMemo, useRef, useState } from 'react';
 import { useSearchParams } from 'next/navigation';
 import {
   type RetrievalContext,
 } from '@/lib/api';
 import { useFilterStore, useMapStore, useUIStore } from '@/lib/stores';
-import FilterBar from '@/components/FilterBar';
-import WorkspaceAskPanel from '@/app/_components/WorkspaceAskPanel';
 import WorkspaceMainLayout from '@/app/_components/WorkspaceMainLayout';
-import WorkspaceStatusStrip from '@/app/_components/WorkspaceStatusStrip';
 import { useAIConversation } from '@/app/_hooks/useAIConversation';
 import { useAutoCompare } from '@/app/_hooks/useAutoCompare';
 import { usePropertySearch } from '@/app/_hooks/usePropertySearch';
 import { useWorkspaceContext } from '@/app/_hooks/useWorkspaceContext';
 
-export default function HomePage() {
+function HomePageContent() {
   const searchParams = useSearchParams();
   const { filters } = useFilterStore();
   const {
@@ -31,6 +28,7 @@ export default function HomePage() {
     setRankingMode,
   } = useUIStore();
   const [autoCompareSessionId, setAutoCompareSessionId] = useState<string>('');
+  const [askPanelOpen, setAskPanelOpen] = useState(true);
   const previousSearchContextKeyRef = useRef<string | null>(null);
 
   const AUTO_COMPARE_SESSION_KEY = 'property_search_auto_compare_session_id';
@@ -158,30 +156,6 @@ export default function HomePage() {
 
   return (
     <div className="flex flex-col h-[calc(100dvh-64px)] lg:h-[calc(100dvh-62px)]">
-      <FilterBar />
-
-      <WorkspaceStatusStrip
-        autoCompareTargetCount={autoCompareTargetCount}
-        guidanceMessage={guidanceMessage}
-        analysisStale={analysisStale}
-        canRunCompare={canRunCompare}
-        compareLoading={compareLoading}
-        onUseContext={applyContextToAIQuery}
-        onRunCompare={() => runCompare(candidateAutoCompareIds)}
-      />
-
-      <WorkspaceAskPanel
-        aiQuery={aiQuery}
-        aiLoading={aiLoading}
-        aiError={aiError}
-        aiReply={aiReply}
-        aiCitations={aiCitations}
-        aiRetrievalContext={aiRetrievalContext}
-        retrievalPreview={retrievalPreview}
-        onQueryChange={setAiQuery}
-        onAsk={askAtlas}
-      />
-
       <WorkspaceMainLayout
         properties={properties}
         total={data?.total || 0}
@@ -196,6 +170,15 @@ export default function HomePage() {
         compareError={compareError}
         canRetry={candidateAutoCompareIds.length >= 2}
         detailPanelProperty={detailPanelProperty}
+        guidanceMessage={guidanceMessage}
+        aiQuery={aiQuery}
+        aiLoading={aiLoading}
+        aiError={aiError}
+        aiReply={aiReply}
+        aiCitations={aiCitations}
+        aiRetrievalContext={aiRetrievalContext}
+        retrievalPreview={retrievalPreview}
+        askPanelOpen={askPanelOpen}
         onRankingModeChange={setRankingMode}
         onRemoveCompared={removeComparedProperty}
         onClearCompared={() => {
@@ -205,7 +188,19 @@ export default function HomePage() {
         onRunCompare={() => runCompare(candidateAutoCompareIds)}
         onRetryCompare={() => runCompare(candidateAutoCompareIds)}
         onCloseDetail={closeDetail}
+        onUseContext={applyContextToAIQuery}
+        onToggleAskPanel={() => setAskPanelOpen((v) => !v)}
+        onQueryChange={setAiQuery}
+        onAsk={askAtlas}
       />
     </div>
+  );
+}
+
+export default function HomePage() {
+  return (
+    <Suspense fallback={<div className="h-[calc(100dvh-64px)] lg:h-[calc(100dvh-62px)] bg-[var(--background)]" />}>
+      <HomePageContent />
+    </Suspense>
   );
 }

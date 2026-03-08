@@ -41,10 +41,10 @@ export default function CompareDock({
   autoCompareTargetCount,
 }: Props) {
   return (
-    <section className="border-t border-[var(--card-border)] bg-[var(--card-bg)]/88 px-4 py-3 rise-in">
-      <div className="flex flex-wrap items-center justify-between gap-3 mb-2">
+    <section className="border-t border-[var(--card-border)] bg-[var(--card-bg)]/88 px-4 py-4 rise-in">
+      <div className="flex flex-wrap items-center justify-between gap-3 mb-3">
         <div>
-          <h2 className="text-sm font-semibold tracking-wide">Comparison shortlist</h2>
+          <h2 className="text-base font-semibold tracking-tight">Comparison shortlist</h2>
           <p className="text-xs text-[var(--muted)]">
             {compared.length}/5 selected for AI ranking.
           </p>
@@ -79,8 +79,8 @@ export default function CompareDock({
         </div>
       </div>
 
-      <p className="text-xs text-[var(--muted)] mb-1">{MODE_HINTS[rankingMode]}</p>
-      <p className="text-xs text-[var(--muted)] mb-3">
+      <p className="text-sm text-[var(--muted)] mb-1">{MODE_HINTS[rankingMode]}</p>
+      <p className="text-xs text-[var(--muted)] mb-4">
         {loading
           ? 'Atlas is running analysis for your current search context...'
           : analysisStale
@@ -90,15 +90,15 @@ export default function CompareDock({
               : 'Analysis becomes available when at least 2 properties are available.'}
       </p>
 
-      <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-5 gap-2">
+      <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 xl:grid-cols-4 gap-3">
         {compared.map((property) => {
           const imageUrl = property.images?.[0]?.url;
           return (
             <article
               key={property.id}
-              className="rounded-lg border border-[var(--card-border)] overflow-hidden bg-[var(--background)]"
+              className="rounded-xl border border-[var(--card-border)] overflow-hidden bg-[var(--background)]"
             >
-              <div className="h-20 bg-neutral-900">
+              <div className="h-24 bg-neutral-900">
                 {imageUrl ? (
                   // eslint-disable-next-line @next/next/no-img-element
                   <img src={imageUrl} alt={property.title} className="w-full h-full object-cover" />
@@ -108,10 +108,10 @@ export default function CompareDock({
                   </div>
                 )}
               </div>
-              <div className="p-2">
+              <div className="p-3">
                 <p className="text-[11px] text-[var(--muted)] mb-1">{property.county || 'Unknown county'}</p>
-                <p className="text-xs font-semibold leading-tight line-clamp-2 min-h-[2rem]">{property.title}</p>
-                <p className="text-sm text-[var(--accent)] font-bold mt-1">{formatEur(property.price)}</p>
+                <p className="text-sm font-semibold leading-tight line-clamp-2 min-h-[2.4rem]">{property.title}</p>
+                <p className="text-base text-[var(--accent)] font-bold mt-1">{formatEur(property.price)}</p>
                 <button
                   onClick={() => onRemove(property.id)}
                   className="text-[11px] text-[var(--danger)] mt-2 hover:opacity-80"
@@ -126,7 +126,7 @@ export default function CompareDock({
         {Array.from({ length: Math.max(0, 5 - compared.length) }).map((_, idx) => (
           <div
             key={`empty-${idx}`}
-            className="rounded-md border border-dashed border-[var(--card-border)] h-[132px] flex items-center justify-center text-xs text-[var(--muted)]"
+            className="rounded-xl border border-dashed border-[var(--card-border)] h-[148px] flex items-center justify-center text-xs text-[var(--muted)]"
           >
             Add property
           </div>

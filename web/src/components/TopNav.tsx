@@ -51,6 +51,15 @@ export default function TopNav() {
 
   const allLinks = PHASE_GROUPS.flatMap((group) => group.links);
 
+  const phaseForHref = (href: string): string => {
+    for (const group of PHASE_GROUPS) {
+      if (group.links.some((item) => item.href === href)) {
+        return group.phase;
+      }
+    }
+    return 'Decide';
+  };
+
   return (
     <div className="border-b border-[var(--card-border)] bg-[var(--card-bg)]/85 backdrop-blur-md">
       <div className="px-4 lg:px-6 py-4 flex flex-wrap items-center justify-between gap-3">
@@ -62,11 +71,26 @@ export default function TopNav() {
           </span>
         </div>
 
-        <div className="hidden lg:flex flex-1 max-w-xl">
-          <p className="text-xs text-[var(--muted)] border border-[var(--card-border)] rounded-full px-3 py-2 bg-[var(--background)]/70">
-            Research -> Decide -> Execute
-          </p>
-        </div>
+        <nav className="hidden lg:flex items-center gap-2" aria-label="Primary">
+          {allLinks.map((item) => {
+            const active = isActiveRoute(item.href);
+            return (
+              <Link
+                key={item.href}
+                href={item.href}
+                className={[
+                  'px-3 py-1.5 rounded-full text-sm border transition-colors focus:outline-none focus:ring-2 focus:ring-cyan-700',
+                  active
+                    ? 'border-[var(--accent)] bg-cyan-900/10 text-[var(--accent-strong)]'
+                    : 'border-transparent text-[var(--muted)] hover:text-[var(--foreground)] hover:border-[var(--card-border)]',
+                ].join(' ')}
+                aria-current={active ? 'page' : undefined}
+              >
+                {item.label}
+              </Link>
+            );
+          })}
+        </nav>
 
         <button
           type="button"
@@ -84,69 +108,64 @@ export default function TopNav() {
             AI ready
           </span>
         </div>
-
-        <nav className="hidden lg:flex items-start gap-4" aria-label="Primary">
-          {PHASE_GROUPS.map((group) => (
-            <div key={group.phase} className="flex flex-col gap-1">
-              <span className="text-[10px] uppercase tracking-[0.14em] text-[var(--muted)]">{group.phase}</span>
-              <div className="flex items-center gap-1 rounded-lg border border-[var(--card-border)] bg-[var(--background)]/70 p-1">
-                {group.links.map((item) => {
-                  const active = isActiveRoute(item.href);
-                  return (
-                    <Link
-                      key={item.href}
-                      href={item.href}
-                      className={[
-                        'px-3 py-1.5 rounded-md text-sm transition-colors focus:outline-none focus:ring-2 focus:ring-cyan-700 whitespace-nowrap',
-                        active
-                          ? 'bg-[var(--accent)] text-white shadow-sm'
-                          : 'text-[var(--muted)] hover:text-[var(--foreground)] hover:bg-[var(--background)]',
-                      ].join(' ')}
-                      aria-current={active ? 'page' : undefined}
-                    >
-                      {item.label}
-                    </Link>
-                  );
-                })}
-              </div>
-            </div>
-          ))}
-        </nav>
       </div>
 
       {mobileOpen && (
-        <nav
-          className="lg:hidden px-4 pb-4 grid grid-cols-2 gap-2"
-          aria-label="Mobile primary"
-          role="navigation"
-        >
-          <Link
-            href="/?focus=ask"
+        <div className="lg:hidden fixed inset-0 z-[720]">
+          <button
+            type="button"
+            className="absolute inset-0 bg-slate-950/35"
             onClick={() => setMobileOpen(false)}
-            className="col-span-2 px-3 py-2 rounded-md text-sm border border-[var(--accent)] bg-cyan-900/10 text-[var(--accent-strong)]"
+            aria-label="Close navigation menu"
+          />
+
+          <nav
+            className="absolute bottom-0 left-0 right-0 rounded-t-2xl border-t border-[var(--card-border)] bg-[var(--card-bg)] p-4 shadow-2xl sheet-in"
+            aria-label="Mobile primary"
+            role="navigation"
           >
-            Open Atlas AI Query
-          </Link>
-          {allLinks.map((item) => {
-            const active = isActiveRoute(item.href);
-            return (
-              <Link
-                key={item.href}
-                href={item.href}
+            <div className="flex items-center justify-between mb-3">
+              <p className="text-sm font-semibold">Navigate</p>
+              <button
+                type="button"
                 onClick={() => setMobileOpen(false)}
-                className={[
-                  'px-3 py-2 rounded-md text-sm border transition-colors focus:outline-none focus:ring-2 focus:ring-cyan-700',
-                  active
-                    ? 'border-cyan-800 bg-cyan-800 text-white'
-                    : 'border-[var(--card-border)] text-[var(--muted)] hover:text-[var(--foreground)] hover:bg-[var(--background)]',
-                ].join(' ')}
-                aria-current={active ? 'page' : undefined}
+                className="px-2 py-1 text-xs border border-[var(--card-border)] rounded-md"
               >
-                {item.label}
+                Close
+              </button>
+            </div>
+
+            <div className="grid grid-cols-1 gap-2 max-h-[58vh] overflow-y-auto pb-1">
+              <Link
+                href="/?focus=ask"
+                onClick={() => setMobileOpen(false)}
+                className="px-3 py-2 rounded-md text-sm border border-[var(--accent)] bg-cyan-900/10 text-[var(--accent-strong)]"
+              >
+                Open Atlas AI Query
               </Link>
-            );
-          })}
-        </nav>
+              {allLinks.map((item) => {
+                const active = isActiveRoute(item.href);
+                return (
+                  <Link
+                    key={item.href}
+                    href={item.href}
+                    onClick={() => setMobileOpen(false)}
+                    className={[
+                      'px-3 py-2 rounded-md text-sm border transition-colors focus:outline-none focus:ring-2 focus:ring-cyan-700 flex items-center justify-between',
+                      active
+                        ? 'border-cyan-800 bg-cyan-800 text-white'
+                        : 'border-[var(--card-border)] text-[var(--muted)] hover:text-[var(--foreground)] hover:bg-[var(--background)]',
+                    ].join(' ')}
+                    aria-current={active ? 'page' : undefined}
+                  >
+                    <span>{item.label}</span>
+                    <span className="text-[10px] uppercase tracking-[0.12em] opacity-70">{phaseForHref(item.href)}</span>
+                  </Link>
+                );
+              })}
+            </div>
+          </nav>
+        </div>
       )}
     </div>
   );
