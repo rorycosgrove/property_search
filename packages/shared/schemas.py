@@ -43,6 +43,7 @@ class PropertyStatus(enum.StrEnum):
 
 class AdapterType(enum.StrEnum):
     SCRAPER = "scraper"
+    API = "api"
     RSS = "rss"
     CSV = "csv"
 

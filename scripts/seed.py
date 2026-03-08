@@ -13,7 +13,7 @@ DEFAULT_SOURCES = [
     {
         "name": "Daft.ie – National",
         "url": "https://www.daft.ie/property-for-sale/ireland",
-        "adapter_type": "scraper",
+        "adapter_type": "api",
         "adapter_name": "daft",
         "enabled": True,
         "config": {"county": None, "sale_type": "sale"},

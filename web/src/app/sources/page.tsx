@@ -14,8 +14,12 @@ export default function SourcesPage() {
   }, []);
 
   const handleTrigger = async (id: string) => {
-    await triggerScrape(id);
-    alert('Scrape triggered');
+    const response = await triggerScrape(id);
+    if (response.status === 'processed_inline') {
+      alert('Source processed inline (local mode).');
+      return;
+    }
+    alert('Scrape dispatched to queue.');
   };
 
   return (

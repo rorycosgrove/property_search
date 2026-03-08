@@ -51,7 +51,7 @@ class Source(Base):
     name: Mapped[str] = mapped_column(String(255), nullable=False)
     url: Mapped[str] = mapped_column(String(1024), unique=True, nullable=False)
     adapter_type: Mapped[str] = mapped_column(
-        Enum("scraper", "rss", "csv", name="adapter_type_enum", create_constraint=True),
+        Enum("scraper", "api", "rss", "csv", name="adapter_type_enum", create_constraint=True),
         nullable=False,
     )
     adapter_name: Mapped[str] = mapped_column(String(100), nullable=False)

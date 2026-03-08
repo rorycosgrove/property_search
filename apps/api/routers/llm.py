@@ -50,6 +50,43 @@ def _llm_runtime_status() -> dict[str, Any]:
     }
 
 
+def _ensure_property_grants(db: Session, prop) -> list:
+    """Return existing grant matches and evaluate when none exist yet."""
+    grant_match_repo = PropertyGrantMatchRepository(db)
+    matches = grant_match_repo.list_for_property(str(prop.id))
+    if matches:
+        return matches
+
+    try:
+        from packages.grants.engine import evaluate_property_grants
+
+        refreshed = evaluate_property_grants(db, property_obj=prop)
+        if refreshed:
+            return refreshed
+    except Exception:
+        return matches
+    return matches
+
+
+def _serialize_grant_citations(matches: list) -> list[dict[str, Any]]:
+    citations: list[dict[str, Any]] = []
+    for match in matches:
+        grant = getattr(match, "grant_program", None)
+        if not grant:
+            continue
+        citations.append(
+            {
+                "type": "grant",
+                "grant_program_id": str(getattr(grant, "id", "")),
+                "code": getattr(grant, "code", None),
+                "label": getattr(grant, "name", None),
+                "url": getattr(grant, "source_url", None),
+                "status": getattr(match, "status", None),
+            }
+        )
+    return citations
+
+
 @router.get("/config")
 def get_llm_config():
     """Get current LLM configuration."""
@@ -220,7 +257,6 @@ async def compare_property_set(data: CompareSetRequest, db: Session = Depends(ge
     """Compare up to 5 properties and return mode-specific value ranking + LLM analysis."""
     property_repo = PropertyRepository(db)
     enrichment_repo = LLMEnrichmentRepository(db)
-    grant_match_repo = PropertyGrantMatchRepository(db)
 
     properties = []
     for pid in data.property_ids:
@@ -239,7 +275,7 @@ async def compare_property_set(data: CompareSetRequest, db: Session = Depends(ge
     metrics = []
     for prop in properties:
         enrichment = enrichment_repo.get_by_property_id(str(prop.id))
-        grant_matches = grant_match_repo.list_for_property(str(prop.id))
+        grant_matches = _ensure_property_grants(db, prop)
 
         price_val = float(prop.price) if prop.price is not None else None
         area_val = float(prop.floor_area_sqm) if prop.floor_area_sqm is not None else None
@@ -384,6 +420,7 @@ async def send_message(
     if data.property_id:
         prop = property_repo.get_by_id(data.property_id)
         if prop:
+            grant_matches = _ensure_property_grants(db, prop)
             property_context = {
                 "id": str(prop.id),
                 "title": prop.title,
@@ -395,6 +432,15 @@ async def send_message(
                 "bathrooms": prop.bathrooms,
                 "ber_rating": prop.ber_rating,
                 "url": prop.url,
+                "grants": [
+                    {
+                        "code": m.grant_program.code if m.grant_program else None,
+                        "name": m.grant_program.name if m.grant_program else None,
+                        "status": m.status,
+                        "estimated_benefit": float(m.estimated_benefit) if m.estimated_benefit is not None else None,
+                    }
+                    for m in grant_matches
+                ],
             }
 
     from packages.ai.service import get_provider
@@ -422,6 +468,7 @@ async def send_message(
                 "label": property_context.get("title"),
             }
         )
+        citations.extend(_serialize_grant_citations(grant_matches))
 
     assistant_msg = convo_repo.add_message(
         conversation_id=conversation_id,
@@ -445,6 +492,18 @@ def _build_chat_prompt(user_content: str, property_context: dict | None) -> str:
     if not property_context:
         return user_content
 
+    grants = property_context.get("grants") or []
+    grant_lines = ""
+    if grants:
+        formatted = []
+        for grant in grants[:5]:
+            name = grant.get("name") or grant.get("code") or "Unknown grant"
+            status = grant.get("status") or "unknown"
+            benefit = grant.get("estimated_benefit")
+            benefit_text = f", est benefit {benefit}" if benefit is not None else ""
+            formatted.append(f"- {name}: {status}{benefit_text}")
+        grant_lines = "Potential grants:\n" + "\n".join(formatted) + "\n"
+
     return (
         "Context property:\n"
         f"- ID: {property_context.get('id')}\n"
@@ -455,6 +514,7 @@ def _build_chat_prompt(user_content: str, property_context: dict | None) -> str:
         f"- Type: {property_context.get('property_type')}\n"
         f"- Beds/Baths: {property_context.get('bedrooms')}/{property_context.get('bathrooms')}\n"
         f"- BER: {property_context.get('ber_rating')}\n"
+        f"{grant_lines}"
         "\n"
         "User question:\n"
         f"{user_content}"

@@ -96,6 +96,49 @@ class TestSourcesEndpoint:
         assert isinstance(data, list)
         assert any(a["name"] == "daft" for a in data)
 
+    def test_trigger_source_dispatches_to_queue(self, client):
+        from packages.storage.database import get_db_session
+
+        mock_session = MagicMock()
+        app.dependency_overrides[get_db_session] = lambda: mock_session
+
+        try:
+            with patch("apps.api.routers.sources.SourceRepository") as MockRepo:
+                repo = MockRepo.return_value
+                repo.get_by_id.return_value = MagicMock(id="source-1")
+
+                with patch("packages.shared.queue.send_task", return_value="task-123"):
+                    resp = client.post("/api/v1/sources/source-1/trigger")
+
+                assert resp.status_code == 200
+                data = resp.json()
+                assert data["status"] == "dispatched"
+                assert data["task_id"] == "task-123"
+        finally:
+            app.dependency_overrides.clear()
+
+    def test_trigger_source_processes_inline_when_queue_missing(self, client):
+        from packages.storage.database import get_db_session
+
+        mock_session = MagicMock()
+        app.dependency_overrides[get_db_session] = lambda: mock_session
+
+        try:
+            with patch("apps.api.routers.sources.SourceRepository") as MockRepo:
+                repo = MockRepo.return_value
+                repo.get_by_id.return_value = MagicMock(id="source-1")
+
+                with patch("packages.shared.queue.send_task", side_effect=ValueError("No queue URL configured")):
+                    with patch("apps.worker.tasks.scrape_source", return_value={"new": 1}):
+                        resp = client.post("/api/v1/sources/source-1/trigger")
+
+                assert resp.status_code == 200
+                data = resp.json()
+                assert data["status"] == "processed_inline"
+                assert data["result"]["new"] == 1
+        finally:
+            app.dependency_overrides.clear()
+
 
 class TestGrantsEndpoint:
     def test_list_grants(self, client):
@@ -111,6 +154,28 @@ class TestGrantsEndpoint:
                 resp = client.get("/api/v1/grants")
                 assert resp.status_code == 200
                 assert resp.json() == []
+        finally:
+            app.dependency_overrides.clear()
+
+    def test_evaluate_property_grants(self, client):
+        from packages.storage.database import get_db_session
+
+        mock_session = MagicMock()
+        app.dependency_overrides[get_db_session] = lambda: mock_session
+
+        try:
+            with patch("apps.api.routers.grants.PropertyRepository") as MockPropertyRepo:
+                prop_repo = MockPropertyRepo.return_value
+                prop_repo.get_by_id.return_value = MagicMock(id="prop-1")
+
+                with patch("apps.api.routers.grants.evaluate_property_grants", return_value=[MagicMock(), MagicMock()]):
+                    resp = client.post("/api/v1/grants/property/prop-1/evaluate")
+
+                assert resp.status_code == 200
+                data = resp.json()
+                assert data["property_id"] == "prop-1"
+                assert data["matches"] == 2
+                assert data["status"] == "evaluated"
         finally:
             app.dependency_overrides.clear()
 

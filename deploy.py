@@ -347,11 +347,46 @@ def seed_sources(api_url: str) -> bool:
         return True
 
     sources = [
-        {"name": "Daft.ie – National", "adapter_name": "daft", "enabled": True, "config": {}},
-        {"name": "MyHome.ie – National", "adapter_name": "myhome", "enabled": True, "config": {}},
-        {"name": "PropertyPal – ROI", "adapter_name": "propertypal", "enabled": True, "config": {"region": "roi"}},
-        {"name": "PropertyPal – NI", "adapter_name": "propertypal", "enabled": True, "config": {"region": "ni"}},
-        {"name": "Property Price Register", "adapter_name": "ppr", "enabled": True, "config": {"years": 2}},
+        {
+            "name": "Daft.ie – National",
+            "url": "https://www.daft.ie/property-for-sale/ireland",
+            "adapter_type": "api",
+            "adapter_name": "daft",
+            "enabled": True,
+            "config": {},
+        },
+        {
+            "name": "MyHome.ie – National",
+            "url": "https://www.myhome.ie/residential/ireland/property-for-sale",
+            "adapter_type": "scraper",
+            "adapter_name": "myhome",
+            "enabled": True,
+            "config": {},
+        },
+        {
+            "name": "PropertyPal – ROI",
+            "url": "https://www.propertypal.com/property-for-sale/republic-of-ireland",
+            "adapter_type": "scraper",
+            "adapter_name": "propertypal",
+            "enabled": True,
+            "config": {"region": "roi"},
+        },
+        {
+            "name": "PropertyPal – NI",
+            "url": "https://www.propertypal.com/property-for-sale/northern-ireland",
+            "adapter_type": "scraper",
+            "adapter_name": "propertypal",
+            "enabled": True,
+            "config": {"region": "ni"},
+        },
+        {
+            "name": "Property Price Register",
+            "url": "https://www.propertypriceregister.ie",
+            "adapter_type": "csv",
+            "adapter_name": "ppr",
+            "enabled": True,
+            "config": {"years": 2},
+        },
     ]
 
     sources_url = f"{api_url}/api/v1/sources"

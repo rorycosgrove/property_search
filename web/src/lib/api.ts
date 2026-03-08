@@ -287,8 +287,13 @@ export async function getAdapters(): Promise<AdapterInfo[]> {
   return fetchJSON<AdapterInfo[]>('/api/v1/sources/adapters');
 }
 
-export async function triggerScrape(sourceId: string): Promise<{ task_id?: string; status: string }> {
-  return fetchJSON<{ task_id?: string; status: string }>(`/api/v1/sources/${sourceId}/trigger`, { method: 'POST' });
+export async function triggerScrape(
+  sourceId: string,
+): Promise<{ task_id?: string; status: string; result?: Record<string, unknown> }> {
+  return fetchJSON<{ task_id?: string; status: string; result?: Record<string, unknown> }>(
+    `/api/v1/sources/${sourceId}/trigger`,
+    { method: 'POST' },
+  );
 }
 
 // ── LLM ─────────────────────────────────────────────────────────────────────

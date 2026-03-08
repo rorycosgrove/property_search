@@ -5,9 +5,10 @@ from __future__ import annotations
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 
+from packages.grants.engine import evaluate_property_grants
 from packages.shared.schemas import GrantProgramCreate, GrantProgramUpdate
 from packages.storage.database import get_db_session
-from packages.storage.repositories import GrantProgramRepository, PropertyGrantMatchRepository
+from packages.storage.repositories import GrantProgramRepository, PropertyGrantMatchRepository, PropertyRepository
 
 router = APIRouter()
 
@@ -55,6 +56,10 @@ def update_grant(grant_id: str, data: GrantProgramUpdate, db: Session = Depends(
 
 @router.get("/property/{property_id}")
 def get_property_grants(property_id: str, db: Session = Depends(get_db_session)):
+    property_repo = PropertyRepository(db)
+    if not property_repo.get_by_id(property_id):
+        raise HTTPException(404, "Property not found")
+
     repo = PropertyGrantMatchRepository(db)
     matches = repo.list_for_property(property_id)
 
@@ -75,6 +80,21 @@ def get_property_grants(property_id: str, db: Session = Depends(get_db_session))
         )
 
     return result
+
+
+@router.post("/property/{property_id}/evaluate")
+def evaluate_property_grants_endpoint(property_id: str, db: Session = Depends(get_db_session)):
+    property_repo = PropertyRepository(db)
+    prop = property_repo.get_by_id(property_id)
+    if not prop:
+        raise HTTPException(404, "Property not found")
+
+    matches = evaluate_property_grants(db, property_obj=prop)
+    return {
+        "property_id": property_id,
+        "matches": len(matches),
+        "status": "evaluated",
+    }
 
 
 def _grant_to_dict(grant) -> dict:

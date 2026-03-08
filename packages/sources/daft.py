@@ -73,7 +73,7 @@ class DaftAdapter(SourceAdapter):
         return "daft"
 
     def get_adapter_type(self) -> AdapterType:
-        return AdapterType.SCRAPER
+        return AdapterType.API
 
     def get_description(self) -> str:
         return "Daft.ie — Ireland's largest property listing site"
