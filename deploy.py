@@ -347,11 +347,46 @@ def seed_sources(api_url: str) -> bool:
         return True
 
     sources = [
-        {"name": "Daft.ie – National", "adapter_name": "daft", "enabled": True, "config": {}},
-        {"name": "MyHome.ie – National", "adapter_name": "myhome", "enabled": True, "config": {}},
-        {"name": "PropertyPal – ROI", "adapter_name": "propertypal", "enabled": True, "config": {"region": "roi"}},
-        {"name": "PropertyPal – NI", "adapter_name": "propertypal", "enabled": True, "config": {"region": "ni"}},
-        {"name": "Property Price Register", "adapter_name": "ppr", "enabled": True, "config": {"years": 2}},
+        {
+            "name": "Daft.ie – National",
+            "url": "https://www.daft.ie/property-for-sale/ireland",
+            "adapter_type": "api",
+            "adapter_name": "daft",
+            "enabled": True,
+            "config": {},
+        },
+        {
+            "name": "MyHome.ie – National",
+            "url": "https://www.myhome.ie/residential/ireland/property-for-sale",
+            "adapter_type": "scraper",
+            "adapter_name": "myhome",
+            "enabled": True,
+            "config": {},
+        },
+        {
+            "name": "PropertyPal – ROI",
+            "url": "https://www.propertypal.com/property-for-sale/republic-of-ireland",
+            "adapter_type": "scraper",
+            "adapter_name": "propertypal",
+            "enabled": True,
+            "config": {"region": "roi"},
+        },
+        {
+            "name": "PropertyPal – NI",
+            "url": "https://www.propertypal.com/property-for-sale/northern-ireland",
+            "adapter_type": "scraper",
+            "adapter_name": "propertypal",
+            "enabled": True,
+            "config": {"region": "ni"},
+        },
+        {
+            "name": "Property Price Register",
+            "url": "https://www.propertypriceregister.ie",
+            "adapter_type": "csv",
+            "adapter_name": "ppr",
+            "enabled": True,
+            "config": {"years": 2},
+        },
     ]
 
     sources_url = f"{api_url}/api/v1/sources"
@@ -379,6 +414,97 @@ def seed_sources(api_url: str) -> bool:
             warn(f"Error seeding {source['name']}: {e}")
 
     info(f"Seeded {seeded}/{len(sources)} sources")
+    return True
+
+
+def seed_grants(api_url: str) -> bool:
+    heading("Seeding Default Grants")
+    if not api_url:
+        warn("API URL not available. Seed manually after deployment.")
+        return True
+
+    grants = [
+        {
+            "code": "IE-SEAI-HOME-ENERGY-2026",
+            "name": "SEAI Home Energy Upgrade Grants",
+            "country": "IE",
+            "authority": "Sustainable Energy Authority of Ireland",
+            "description": "Supports insulation, heat pumps, and energy retrofit measures.",
+            "eligibility_rules": {"country": "IE", "max_ber": "D2"},
+            "benefit_type": "rebate",
+            "max_amount": 8000,
+            "currency": "EUR",
+            "active": True,
+            "source_url": "https://www.seai.ie/grants/home-energy-grants/",
+        },
+        {
+            "code": "IE-HTB-2026",
+            "name": "Help to Buy (HTB)",
+            "country": "IE",
+            "authority": "Revenue Commissioners",
+            "description": "Tax refund support for first-time buyers purchasing or self-building a new home.",
+            "eligibility_rules": {"country": "IE", "property_types": ["house", "apartment"], "max_price": 500000},
+            "benefit_type": "tax_refund",
+            "max_amount": 30000,
+            "currency": "EUR",
+            "active": True,
+            "source_url": "https://www.revenue.ie/en/property/help-to-buy-incentive/index.aspx",
+        },
+        {
+            "code": "IE-FIRST-HOME-SCHEME-2026",
+            "name": "First Home Scheme",
+            "country": "IE",
+            "authority": "First Home Scheme DAC",
+            "description": "Shared equity support for eligible first-time buyers in Ireland.",
+            "eligibility_rules": {"country": "IE", "property_types": ["house", "apartment"]},
+            "benefit_type": "equity_support",
+            "max_amount": 75000,
+            "currency": "EUR",
+            "active": True,
+            "source_url": "https://www.firsthomescheme.ie/",
+        },
+        {
+            "code": "NI-COOWN-2026",
+            "name": "Co-Ownership Scheme (NI)",
+            "country": "NI",
+            "authority": "Co-Ownership Housing",
+            "description": "Shared ownership support for eligible buyers in Northern Ireland.",
+            "eligibility_rules": {
+                "country": "NI",
+                "counties": ["antrim", "armagh", "down", "fermanagh", "derry", "londonderry", "tyrone"],
+            },
+            "benefit_type": "shared_ownership",
+            "currency": "GBP",
+            "active": True,
+            "source_url": "https://www.co-ownership.org/",
+        },
+    ]
+
+    grants_url = f"{api_url}/api/v1/grants"
+    import urllib.request
+    import urllib.error
+
+    seeded = 0
+    for grant in grants:
+        try:
+            data = json.dumps(grant).encode()
+            req = urllib.request.Request(
+                grants_url,
+                data=data,
+                headers={"Content-Type": "application/json"},
+                method="POST",
+            )
+            with urllib.request.urlopen(req, timeout=30):
+                seeded += 1
+        except urllib.error.HTTPError as e:
+            if e.code == 409:
+                info(f"Already exists: {grant['code']}")
+            else:
+                warn(f"Failed to seed {grant['code']}: {e.code}")
+        except Exception as e:
+            warn(f"Error seeding {grant['code']}: {e}")
+
+    info(f"Seeded {seeded}/{len(grants)} grants")
     return True
 
 
@@ -417,7 +543,7 @@ def setup_local_env() -> None:
         if confirm("Seed default sources?"):
             try:
                 run([sys.executable, "scripts/seed.py"])
-                info("Sources seeded")
+                info("Sources and grants seeded")
             except subprocess.CalledProcessError:
                 warn("Seeding failed")
     else:
@@ -501,6 +627,7 @@ def full_deploy() -> None:
 
     if confirm("Seed default property sources?"):
         seed_sources(api_url)
+        seed_grants(api_url)
 
     # Summary
     heading("Deployment Complete!")

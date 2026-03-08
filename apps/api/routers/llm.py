@@ -23,9 +23,16 @@ from packages.storage.repositories import (
     PropertyRepository,
 )
 from packages.shared.config import settings
+from packages.ai.bedrock_provider import BedrockProvider
 
 router = APIRouter()
 
+
+def _model_requires_inference_profile(model_id: str | None) -> bool:
+    """Return True for model families that commonly require inference profiles."""
+    if not model_id:
+        return False
+    return model_id.startswith("amazon.nova-")
 
 def _llm_queue_configured() -> bool:
     return bool(settings.llm_queue_url or os.environ.get("LLM_QUEUE_URL", ""))
@@ -50,6 +57,43 @@ def _llm_runtime_status() -> dict[str, Any]:
     }
 
 
+def _ensure_property_grants(db: Session, prop) -> list:
+    """Return existing grant matches and evaluate when none exist yet."""
+    grant_match_repo = PropertyGrantMatchRepository(db)
+    matches = grant_match_repo.list_for_property(str(prop.id))
+    if matches:
+        return matches
+
+    try:
+        from packages.grants.engine import evaluate_property_grants
+
+        refreshed = evaluate_property_grants(db, property_obj=prop)
+        if refreshed:
+            return refreshed
+    except Exception:
+        return matches
+    return matches
+
+
+def _serialize_grant_citations(matches: list) -> list[dict[str, Any]]:
+    citations: list[dict[str, Any]] = []
+    for match in matches:
+        grant = getattr(match, "grant_program", None)
+        if not grant:
+            continue
+        citations.append(
+            {
+                "type": "grant",
+                "grant_program_id": str(getattr(grant, "id", "")),
+                "code": getattr(grant, "code", None),
+                "label": getattr(grant, "name", None),
+                "url": getattr(grant, "source_url", None),
+                "status": getattr(match, "status", None),
+            }
+        )
+    return citations
+
+
 @router.get("/config")
 def get_llm_config():
     """Get current LLM configuration."""
@@ -69,6 +113,29 @@ def get_llm_config():
     }
 
 
+@router.get("/models")
+def get_llm_models():
+    """Get available LLM models for provider selection UI."""
+    provider = BedrockProvider(region=settings.aws_region)
+    options = provider.get_runtime_ui_model_options()
+    option_ids = {m["id"] for m in options}
+    preferred_default = "amazon.titan-text-lite-v1"
+    if preferred_default in option_ids:
+        default_model = preferred_default
+    elif settings.bedrock_model_id in option_ids:
+        default_model = settings.bedrock_model_id
+    elif options:
+        default_model = options[0]["id"]
+    else:
+        default_model = settings.bedrock_model_id
+
+    return {
+        "provider": "bedrock",
+        "models": options,
+        "default_model": default_model,
+    }
+
+
 @router.put("/config")
 def update_llm_config(data: LLMConfigUpdate):
     """Update LLM provider configuration (stored in DynamoDB)."""
@@ -82,7 +149,24 @@ def update_llm_config(data: LLMConfigUpdate):
             status_code=503,
             detail="Failed to persist LLM config to DynamoDB. Check AWS credentials and table access.",
         )
-    return {"provider": provider_str, "model": model_str, "updated": True}
+    warning = None
+    if (
+        provider_str == "bedrock"
+        and _model_requires_inference_profile(model_str)
+        and not settings.bedrock_inference_profile_id
+    ):
+        warning = (
+            "Selected model may require BEDROCK_INFERENCE_PROFILE_ID for invocation. "
+            "Set it in .env and restart the API."
+        )
+
+    return {
+        "provider": provider_str,
+        "model": model_str,
+        "updated": True,
+        "warning": warning,
+        "inference_profile_configured": bool(settings.bedrock_inference_profile_id),
+    }
 
 
 @router.get("/health")
@@ -96,14 +180,46 @@ async def llm_health():
 
     provider = get_provider()
     healthy = await provider.health_check()
+    model_listed = True
+    invoke_ready = True
+    invoke_error = None
+    if isinstance(provider, BedrockProvider):
+        model_listed = provider.is_model_listed(provider.get_model_name())
+        if not model_listed:
+            healthy = False
+
+        # Ensure status reflects real invoke readiness, not just model listing metadata.
+        try:
+            await provider.generate(
+                prompt='{"ok": true}',
+                system_prompt='Return valid JSON only.',
+                json_mode=True,
+                max_tokens=32,
+                temperature=0.0,
+            )
+        except Exception as exc:
+            invoke_ready = False
+            invoke_error = str(exc)
+            healthy = False
+
+    reason = runtime["reason"]
+    if reason == "ok" and not model_listed:
+        reason = "model_not_listed"
+    if reason == "ok" and not invoke_ready:
+        reason = "model_invoke_failed"
+
     return {
         "enabled": runtime["enabled"],
         "provider": provider.get_provider_name(),
         "model": provider.get_model_name(),
         "queue_configured": runtime["queue_configured"],
         "ready_for_enrichment": runtime["ready_for_enrichment"],
-        "reason": runtime["reason"],
+        "reason": reason,
         "healthy": healthy,
+        "model_listed": model_listed,
+        "invoke_ready": invoke_ready,
+        "invoke_error": invoke_error,
+        "inference_profile_configured": bool(settings.bedrock_inference_profile_id),
     }
 
 
@@ -220,7 +336,6 @@ async def compare_property_set(data: CompareSetRequest, db: Session = Depends(ge
     """Compare up to 5 properties and return mode-specific value ranking + LLM analysis."""
     property_repo = PropertyRepository(db)
     enrichment_repo = LLMEnrichmentRepository(db)
-    grant_match_repo = PropertyGrantMatchRepository(db)
 
     properties = []
     for pid in data.property_ids:
@@ -239,7 +354,7 @@ async def compare_property_set(data: CompareSetRequest, db: Session = Depends(ge
     metrics = []
     for prop in properties:
         enrichment = enrichment_repo.get_by_property_id(str(prop.id))
-        grant_matches = grant_match_repo.list_for_property(str(prop.id))
+        grant_matches = _ensure_property_grants(db, prop)
 
         price_val = float(prop.price) if prop.price is not None else None
         area_val = float(prop.floor_area_sqm) if prop.floor_area_sqm is not None else None
@@ -305,28 +420,18 @@ async def compare_property_set(data: CompareSetRequest, db: Session = Depends(ge
 
     try:
         analysis = await _generate_compare_set_analysis(data.ranking_mode, metrics)
-    except Exception:
-        analysis = {
-            "headline": "Best value recommendation",
-            "recommendation": (
-                "LLM analysis is temporarily unavailable. Ranking is based on structured metrics "
-                "(price, BER, grants, and cached value scores)."
-            ),
-            "key_tradeoffs": [
-                "Live narrative analysis could not be generated.",
-                "Review price per sqm and BER differences in the comparison table.",
-            ],
-            "confidence": "medium",
-            "citations": [
-                {
-                    "type": "property",
-                    "property_id": metric.get("property_id"),
-                    "url": metric.get("url"),
-                    "label": metric.get("title"),
-                }
-                for metric in metrics
-            ],
-        }
+    except Exception as exc:
+        raise HTTPException(
+            status_code=503,
+            detail={
+                "code": "llm_analysis_unavailable",
+                "message": (
+                    "LLM analysis is unavailable because the selected Bedrock model could not be invoked. "
+                    "Check model access approvals/inference profile setup in AWS Bedrock."
+                ),
+                "error": str(exc)[:300],
+            },
+        ) from exc
 
     return {
         "ranking_mode": data.ranking_mode,
@@ -384,6 +489,7 @@ async def send_message(
     if data.property_id:
         prop = property_repo.get_by_id(data.property_id)
         if prop:
+            grant_matches = _ensure_property_grants(db, prop)
             property_context = {
                 "id": str(prop.id),
                 "title": prop.title,
@@ -395,6 +501,15 @@ async def send_message(
                 "bathrooms": prop.bathrooms,
                 "ber_rating": prop.ber_rating,
                 "url": prop.url,
+                "grants": [
+                    {
+                        "code": m.grant_program.code if m.grant_program else None,
+                        "name": m.grant_program.name if m.grant_program else None,
+                        "status": m.status,
+                        "estimated_benefit": float(m.estimated_benefit) if m.estimated_benefit is not None else None,
+                    }
+                    for m in grant_matches
+                ],
             }
 
     from packages.ai.service import get_provider
@@ -422,6 +537,7 @@ async def send_message(
                 "label": property_context.get("title"),
             }
         )
+        citations.extend(_serialize_grant_citations(grant_matches))
 
     assistant_msg = convo_repo.add_message(
         conversation_id=conversation_id,
@@ -445,6 +561,18 @@ def _build_chat_prompt(user_content: str, property_context: dict | None) -> str:
     if not property_context:
         return user_content
 
+    grants = property_context.get("grants") or []
+    grant_lines = ""
+    if grants:
+        formatted = []
+        for grant in grants[:5]:
+            name = grant.get("name") or grant.get("code") or "Unknown grant"
+            status = grant.get("status") or "unknown"
+            benefit = grant.get("estimated_benefit")
+            benefit_text = f", est benefit {benefit}" if benefit is not None else ""
+            formatted.append(f"- {name}: {status}{benefit_text}")
+        grant_lines = "Potential grants:\n" + "\n".join(formatted) + "\n"
+
     return (
         "Context property:\n"
         f"- ID: {property_context.get('id')}\n"
@@ -455,6 +583,7 @@ def _build_chat_prompt(user_content: str, property_context: dict | None) -> str:
         f"- Type: {property_context.get('property_type')}\n"
         f"- Beds/Baths: {property_context.get('bedrooms')}/{property_context.get('bathrooms')}\n"
         f"- BER: {property_context.get('ber_rating')}\n"
+        f"{grant_lines}"
         "\n"
         "User question:\n"
         f"{user_content}"

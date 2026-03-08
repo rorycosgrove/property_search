@@ -68,6 +68,7 @@ class Settings(BaseSettings):
     llm_provider: str = "bedrock"
     llm_enabled: bool = False
     bedrock_model_id: str = "anthropic.claude-3-haiku-20240307-v1:0"
+    bedrock_inference_profile_id: str = ""
     bedrock_max_tokens: int = 4096
 
     # ── Scraping ──────────────────────────────────

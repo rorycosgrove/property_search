@@ -14,8 +14,6 @@ def client():
 
 class TestHealthEndpoint:
     def test_health_ok(self, client):
-        import boto3
-
         from packages.storage.database import get_db_session
 
         mock_session = MagicMock()
@@ -23,12 +21,13 @@ class TestHealthEndpoint:
         app.dependency_overrides[get_db_session] = lambda: mock_session
 
         try:
-            with patch.object(boto3, "client") as mock_client_func:
+            mock_boto3 = MagicMock()
+            with patch.dict("sys.modules", {"boto3": mock_boto3}):
                 mock_client = MagicMock()
                 mock_client.list_foundation_models.return_value = {
                     "modelSummaries": [{"modelId": "amazon.titan-text-express-v1"}]
                 }
-                mock_client_func.return_value = mock_client
+                mock_boto3.client.return_value = mock_client
 
                 resp = client.get("/health")
                 assert resp.status_code == 200
@@ -96,6 +95,49 @@ class TestSourcesEndpoint:
         assert isinstance(data, list)
         assert any(a["name"] == "daft" for a in data)
 
+    def test_trigger_source_dispatches_to_queue(self, client):
+        from packages.storage.database import get_db_session
+
+        mock_session = MagicMock()
+        app.dependency_overrides[get_db_session] = lambda: mock_session
+
+        try:
+            with patch("apps.api.routers.sources.SourceRepository") as MockRepo:
+                repo = MockRepo.return_value
+                repo.get_by_id.return_value = MagicMock(id="source-1")
+
+                with patch("packages.shared.queue.send_task", return_value="task-123"):
+                    resp = client.post("/api/v1/sources/source-1/trigger")
+
+                assert resp.status_code == 200
+                data = resp.json()
+                assert data["status"] == "dispatched"
+                assert data["task_id"] == "task-123"
+        finally:
+            app.dependency_overrides.clear()
+
+    def test_trigger_source_processes_inline_when_queue_missing(self, client):
+        from packages.storage.database import get_db_session
+
+        mock_session = MagicMock()
+        app.dependency_overrides[get_db_session] = lambda: mock_session
+
+        try:
+            with patch("apps.api.routers.sources.SourceRepository") as MockRepo:
+                repo = MockRepo.return_value
+                repo.get_by_id.return_value = MagicMock(id="source-1")
+
+                with patch("packages.shared.queue.send_task", side_effect=ValueError("No queue URL configured")):
+                    with patch("apps.worker.tasks.scrape_source", return_value={"new": 1}):
+                        resp = client.post("/api/v1/sources/source-1/trigger")
+
+                assert resp.status_code == 200
+                data = resp.json()
+                assert data["status"] == "processed_inline"
+                assert data["result"]["new"] == 1
+        finally:
+            app.dependency_overrides.clear()
+
 
 class TestGrantsEndpoint:
     def test_list_grants(self, client):
@@ -111,6 +153,28 @@ class TestGrantsEndpoint:
                 resp = client.get("/api/v1/grants")
                 assert resp.status_code == 200
                 assert resp.json() == []
+        finally:
+            app.dependency_overrides.clear()
+
+    def test_evaluate_property_grants(self, client):
+        from packages.storage.database import get_db_session
+
+        mock_session = MagicMock()
+        app.dependency_overrides[get_db_session] = lambda: mock_session
+
+        try:
+            with patch("apps.api.routers.grants.PropertyRepository") as MockPropertyRepo:
+                prop_repo = MockPropertyRepo.return_value
+                prop_repo.get_by_id.return_value = MagicMock(id="prop-1")
+
+                with patch("apps.api.routers.grants.evaluate_property_grants", return_value=[MagicMock(), MagicMock()]):
+                    resp = client.post("/api/v1/grants/property/prop-1/evaluate")
+
+                assert resp.status_code == 200
+                data = resp.json()
+                assert data["property_id"] == "prop-1"
+                assert data["matches"] == 2
+                assert data["status"] == "evaluated"
         finally:
             app.dependency_overrides.clear()
 
@@ -265,8 +329,60 @@ class TestLLMCompareSetEndpoint:
         finally:
             app.dependency_overrides.clear()
 
+    def test_compare_set_fail_fast_when_llm_unavailable(self, client):
+        from packages.storage.database import get_db_session
+
+        mock_session = MagicMock()
+        app.dependency_overrides[get_db_session] = lambda: mock_session
+
+        try:
+            with patch("apps.api.routers.llm.PropertyRepository") as MockPropRepo:
+                with patch("apps.api.routers.llm.LLMEnrichmentRepository") as MockEnrichRepo:
+                    with patch("apps.api.routers.llm.PropertyGrantMatchRepository") as MockGrantRepo:
+                        with patch("packages.ai.service.get_provider") as mock_get_provider:
+                            prop_repo = MockPropRepo.return_value
+                            enrich_repo = MockEnrichRepo.return_value
+                            grant_repo = MockGrantRepo.return_value
+
+                            prop_repo.get_by_id.side_effect = [
+                                MagicMock(id="p1", title="Home 1", address="Addr 1", county="Dublin", url="https://example.com/1", price=450000, floor_area_sqm=100, bedrooms=3, bathrooms=2, ber_rating="B2", images=[]),
+                                MagicMock(id="p2", title="Home 2", address="Addr 2", county="Cork", url="https://example.com/2", price=430000, floor_area_sqm=95, bedrooms=3, bathrooms=2, ber_rating="C1", images=[]),
+                            ]
+                            enrich_repo.get_by_property_id.side_effect = [MagicMock(value_score=7.0), MagicMock(value_score=6.8)]
+                            grant_repo.list_for_property.return_value = []
+
+                            mock_provider = MagicMock()
+                            mock_provider.generate = AsyncMock(side_effect=RuntimeError("bedrock_configuration_error: invoke failed"))
+                            mock_get_provider.return_value = mock_provider
+
+                            resp = client.post(
+                                "/api/v1/llm/compare-set",
+                                json={"property_ids": ["p1", "p2"], "ranking_mode": "hybrid"},
+                            )
+
+                            assert resp.status_code == 503
+                            body = resp.json()
+                            assert body["detail"]["code"] == "llm_analysis_unavailable"
+                            assert "could not be invoked" in body["detail"]["message"]
+        finally:
+            app.dependency_overrides.clear()
+
 
 class TestLLMEnrichmentDispatch:
+    def test_update_llm_config_warns_for_nova_without_inference_profile(self, client):
+        with patch("apps.api.routers.llm.settings.bedrock_inference_profile_id", ""):
+            with patch("packages.ai.service.set_active_provider", return_value=True):
+                resp = client.put(
+                    "/api/v1/llm/config",
+                    json={"provider": "bedrock", "bedrock_model": "amazon.nova-pro-v1:0"},
+                )
+
+                assert resp.status_code == 200
+                data = resp.json()
+                assert data["updated"] is True
+                assert data["inference_profile_configured"] is False
+                assert "inference_profile" in (data.get("warning") or "").lower()
+
     def test_llm_health_reports_queue_unconfigured(self, client):
         with patch("apps.api.routers.llm.settings.llm_enabled", True):
             with patch("apps.api.routers.llm.settings.llm_queue_url", ""):

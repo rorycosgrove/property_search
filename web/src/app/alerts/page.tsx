@@ -45,12 +45,13 @@ export default function AlertsPage() {
   };
 
   return (
-    <div className="p-6 max-w-4xl mx-auto">
+    <div className="p-6 max-w-4xl mx-auto rise-in">
       <div className="flex items-center justify-between mb-6">
         <div>
-          <h1 className="text-2xl font-bold">Alerts</h1>
+          <p className="text-[11px] uppercase tracking-[0.16em] text-[var(--muted)]">Action Queue</p>
+          <h1 className="text-2xl font-bold">Market alerts and AI priorities</h1>
           {unreadCount > 0 && (
-            <p className="text-sm text-brand-400">{unreadCount} unread</p>
+            <p className="text-sm text-[var(--accent)]">{unreadCount} unread</p>
           )}
         </div>
         <div className="flex gap-2">
@@ -68,11 +69,15 @@ export default function AlertsPage() {
           </select>
           <button
             onClick={handleAckAll}
-            className="px-3 py-1.5 text-sm bg-brand-600 hover:bg-brand-700 rounded transition-colors"
+            className="px-3 py-1.5 text-sm bg-[var(--accent)] text-white hover:bg-[var(--accent-strong)] rounded transition-colors"
           >
             Mark All Read
           </button>
         </div>
+      </div>
+
+      <div className="rounded-lg border border-[var(--card-border)] ai-glass p-3 mb-4 text-sm">
+        Atlas tip: handle critical price-drop and back-on-market alerts first, then queue a compare analysis against your current shortlist.
       </div>
 
       <div className="space-y-2">
@@ -80,7 +85,7 @@ export default function AlertsPage() {
           <div
             key={alert.id}
             className={`bg-[var(--card-bg)] border border-[var(--card-border)] rounded-lg p-4 flex items-start gap-3 ${
-              !alert.acknowledged ? 'border-l-2 border-l-brand-500' : ''
+              !alert.acknowledged ? 'border-l-2 border-l-[var(--accent)]' : ''
             }`}
           >
             <div className="flex-1">

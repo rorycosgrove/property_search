@@ -1,12 +1,34 @@
 'use client';
 
 import { useMemo, useState } from 'react';
+import { useRouter } from 'next/navigation';
 import { useFilterStore } from '@/lib/stores';
+import { useUIStore } from '@/lib/stores';
 import { COUNTIES } from '@/lib/utils';
 
 export default function FilterBar() {
-  const { filters, setFilter, resetFilters } = useFilterStore();
+  const router = useRouter();
+  const { filters, setFilter, setFilters, resetFilters } = useFilterStore();
+  const { setRankingMode } = useUIStore();
   const [advancedOpen, setAdvancedOpen] = useState(false);
+  const [missionPrompt, setMissionPrompt] = useState('Find grant-optimized 3-bed homes under EUR500k in Cork and explain the best value options.');
+
+  const applyMission = (
+    missionFilters: Parameters<typeof setFilters>[0],
+    ranking: 'llm_only' | 'hybrid' | 'user_weighted',
+    prompt: string,
+  ) => {
+    setFilters(missionFilters);
+    setRankingMode(ranking);
+    setMissionPrompt(prompt);
+  };
+
+  const openCopilotWithMission = () => {
+    if (typeof window !== 'undefined') {
+      window.localStorage.setItem('atlas_pending_prompt', missionPrompt);
+    }
+    router.push(`/copilot?prefill=${encodeURIComponent(missionPrompt)}`);
+  };
 
   const activeFilterCount = useMemo(() => {
     let count = 0;
@@ -40,23 +62,67 @@ export default function FilterBar() {
   ].join(' ');
 
   return (
-    <section className="px-3 lg:px-4 py-3 border-b border-[var(--card-border)] bg-gradient-to-r from-stone-950 via-slate-900 to-cyan-950 text-stone-100">
+    <section className="px-3 lg:px-4 py-3 border-b border-[var(--card-border)] ai-glass rise-in">
       <div className="flex flex-wrap items-center justify-between gap-2 mb-3">
         <div>
-          <p className="text-[11px] uppercase tracking-[0.18em] text-stone-400">Search Mission</p>
-          <h2 className="text-base lg:text-lg font-semibold">Find The Best Value Property</h2>
+          <p className="text-[11px] uppercase tracking-[0.18em] text-[var(--muted)]">Active Mission</p>
+          <h2 className="text-base lg:text-lg font-semibold">Find confident property value picks</h2>
         </div>
         <div className="flex items-center gap-2">
-          <span className="text-[11px] text-stone-400 border border-stone-600/80 rounded-full px-2 py-1">
+          <span className="text-[11px] text-[var(--muted)] border border-[var(--card-border)] rounded-full px-2 py-1">
             {activeFilterCount} active
           </span>
           <button
+            type="button"
             onClick={resetFilters}
-            className="px-3 py-1.5 text-xs border border-stone-500 rounded-md hover:bg-stone-700/40 transition-colors focus:outline-none focus:ring-2 focus:ring-cyan-600"
+            className="px-3 py-1.5 text-xs border border-[var(--card-border)] rounded-md hover:bg-[var(--background)] transition-colors"
           >
-            Reset filters
+            Reset
           </button>
         </div>
+      </div>
+
+      <div className="mb-3 flex flex-wrap gap-2 text-xs">
+        <button
+          type="button"
+          onClick={() => applyMission(
+            { max_price: 500000, min_beds: 3, sort_by: 'created_at', sort_dir: 'desc' },
+            'hybrid',
+            'Find best-value homes under EUR500k with 3+ beds and summarize the strongest picks with trade-offs.',
+          )}
+          className="px-3 py-1.5 rounded-full border border-[var(--card-border)] bg-[var(--card-bg)] hover:border-[var(--accent)]"
+        >
+          Best value under EUR500k
+        </button>
+        <button
+          type="button"
+          onClick={() => applyMission(
+            { min_beds: 3, property_types: 'house', sort_by: 'price', sort_dir: 'asc' },
+            'user_weighted',
+            'Prioritize family-ready homes with 3+ beds, balanced price-to-space, and low-risk condition profile.',
+          )}
+          className="px-3 py-1.5 rounded-full border border-[var(--card-border)] bg-[var(--card-bg)] hover:border-[var(--accent)]"
+        >
+          Family-ready homes
+        </button>
+        <button
+          type="button"
+          onClick={() => applyMission(
+            { keywords: 'ber retrofit grant', sort_by: 'created_at', sort_dir: 'desc' },
+            'llm_only',
+            'Build a grant-optimized shortlist and explain where retrofit incentives create the best net value.',
+          )}
+          className="px-3 py-1.5 rounded-full border border-[var(--card-border)] bg-[var(--card-bg)] hover:border-[var(--accent)]"
+        >
+          Grant-optimized shortlist
+        </button>
+        <button
+          type="button"
+          onClick={openCopilotWithMission}
+          className="px-3 py-1.5 rounded-full border border-[var(--accent)] bg-cyan-900/10 text-[var(--accent-strong)] hover:bg-cyan-900/15"
+        >
+          Discuss mission with Atlas
+        </button>
       </div>
 
       <div className="grid grid-cols-1 sm:grid-cols-3 gap-2 text-sm mb-2">
@@ -82,10 +148,10 @@ export default function FilterBar() {
         <button
           type="button"
           onClick={() => setAdvancedOpen((v) => !v)}
-          className="px-3 py-2 text-xs border border-stone-500 rounded-md hover:bg-stone-700/40 transition-colors focus:outline-none focus:ring-2 focus:ring-cyan-600"
+          className="px-3 py-2 text-xs border border-[var(--card-border)] rounded-md hover:bg-[var(--background)] transition-colors"
           aria-expanded={advancedOpen}
         >
-          {advancedOpen ? 'Hide advanced filters' : 'Show advanced filters'}
+          {advancedOpen ? 'Hide mission controls' : 'More mission controls'}
         </button>
       </div>
 

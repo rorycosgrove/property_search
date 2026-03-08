@@ -14,9 +14,15 @@ interface Props {
 }
 
 const MODE_LABELS: Record<RankingMode, string> = {
-  llm_only: 'LLM only',
-  hybrid: 'Hybrid',
-  user_weighted: 'User weighted',
+  llm_only: 'LLM signal first',
+  hybrid: 'Balanced evidence',
+  user_weighted: 'Your priorities',
+};
+
+const MODE_HINTS: Record<RankingMode, string> = {
+  llm_only: 'Best when you want AI-led interpretation of hidden trade-offs.',
+  hybrid: 'Blends AI insight with BER and structured metrics.',
+  user_weighted: 'Use when your personal criteria should dominate.',
 };
 
 export default function CompareDock({
@@ -29,12 +35,12 @@ export default function CompareDock({
   loading,
 }: Props) {
   return (
-    <section className="border-t border-[var(--card-border)] bg-[var(--card-bg)]/90 backdrop-blur px-4 py-3">
+    <section className="border-t border-[var(--card-border)] ai-glass px-4 py-3 rise-in">
       <div className="flex flex-wrap items-center justify-between gap-3 mb-3">
         <div>
-          <h2 className="text-sm font-semibold tracking-wide">Comparison Dock</h2>
+          <h2 className="text-sm font-semibold tracking-wide">Decision Studio</h2>
           <p className="text-xs text-[var(--muted)]">
-            {compared.length}/5 selected for value-for-money analysis
+            {compared.length}/5 selected. Atlas AI will rank, explain trade-offs, and suggest next actions.
           </p>
         </div>
 
@@ -54,9 +60,9 @@ export default function CompareDock({
           <button
             onClick={onAnalyze}
             disabled={loading || compared.length < 2}
-            className="px-3 py-1.5 text-xs font-semibold rounded bg-brand-600 hover:bg-brand-700 disabled:opacity-50"
+            className="px-3 py-1.5 text-xs font-semibold rounded bg-[var(--accent)] text-white hover:bg-[var(--accent-strong)] disabled:opacity-50"
           >
-            {loading ? 'Analyzing...' : 'Analyze best value'}
+            {loading ? 'Running AI mission...' : 'Run AI decision analysis'}
           </button>
           <button
             onClick={onClear}
@@ -67,6 +73,8 @@ export default function CompareDock({
           </button>
         </div>
       </div>
+
+      <p className="text-xs text-[var(--muted)] mb-3">{MODE_HINTS[rankingMode]}</p>
 
       <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-5 gap-2">
         {compared.map((property) => {
@@ -89,10 +97,10 @@ export default function CompareDock({
               <div className="p-2">
                 <p className="text-[11px] text-[var(--muted)] mb-1">{property.county || 'Unknown county'}</p>
                 <p className="text-xs font-semibold leading-tight line-clamp-2 min-h-[2rem]">{property.title}</p>
-                <p className="text-sm text-brand-300 font-bold mt-1">{formatEur(property.price)}</p>
+                <p className="text-sm text-[var(--accent)] font-bold mt-1">{formatEur(property.price)}</p>
                 <button
                   onClick={() => onRemove(property.id)}
-                  className="text-[11px] text-red-300 mt-2 hover:text-red-200"
+                  className="text-[11px] text-[var(--danger)] mt-2 hover:opacity-80"
                 >
                   Remove
                 </button>
