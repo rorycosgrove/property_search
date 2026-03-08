@@ -1,4 +1,5 @@
 """Tests for FastAPI endpoints (uses TestClient)."""
+from datetime import datetime
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -135,6 +136,271 @@ class TestSourcesEndpoint:
                 data = resp.json()
                 assert data["status"] == "processed_inline"
                 assert data["result"]["new"] == 1
+        finally:
+            app.dependency_overrides.clear()
+
+    def test_trigger_full_organic_search_dispatches_all_steps(self, client):
+        from packages.storage.database import get_db_session
+
+        mock_session = MagicMock()
+        app.dependency_overrides[get_db_session] = lambda: mock_session
+
+        try:
+            with patch("packages.shared.queue.send_task") as mock_send_task:
+                mock_send_task.side_effect = ["task-scrape", "task-alert", "task-llm"]
+                with patch("apps.api.routers.sources.OrganicSearchRunRepository") as MockRunRepo:
+                    run_repo = MockRunRepo.return_value
+                    run_repo.create.return_value = MagicMock(id="run-123")
+
+                    resp = client.post("/api/v1/sources/trigger-all")
+
+            assert resp.status_code == 200
+            data = resp.json()
+            assert data["run_id"] == "run-123"
+            assert data["status"] == "dispatched"
+            assert len(data["steps"]) == 3
+            assert data["steps"][0]["step"] == "scrape_all_sources"
+            assert data["steps"][1]["step"] == "evaluate_alerts"
+            assert data["steps"][2]["step"] == "enrich_batch_llm"
+        finally:
+            app.dependency_overrides.clear()
+
+    def test_trigger_full_organic_search_processes_inline_when_queues_missing(self, client):
+        from packages.storage.database import get_db_session
+
+        mock_session = MagicMock()
+        app.dependency_overrides[get_db_session] = lambda: mock_session
+
+        try:
+            with patch("packages.shared.queue.send_task", side_effect=ValueError("No queue URL configured")):
+                with patch(
+                    "apps.worker.tasks.scrape_all_sources",
+                    return_value={
+                        "dispatched": 3,
+                        "discovery_during_scrape": {
+                            "created": 1,
+                            "existing": 2,
+                            "skipped_invalid": 0,
+                            "auto_enable": False,
+                            "enabled": True,
+                            "limit": 10,
+                        },
+                    },
+                ):
+                    with patch("apps.worker.tasks.evaluate_alerts", return_value={"evaluated": 2}):
+                        with patch("apps.worker.tasks.enrich_batch_llm", return_value={"dispatched": 5}):
+                            with patch("apps.api.routers.sources.OrganicSearchRunRepository") as MockRunRepo:
+                                run_repo = MockRunRepo.return_value
+                                run_repo.create.return_value = MagicMock(id="run-456")
+                                resp = client.post("/api/v1/sources/trigger-all?llm_limit=5")
+
+            assert resp.status_code == 200
+            data = resp.json()
+            assert data["run_id"] == "run-456"
+            assert data["status"] == "processed_inline"
+            assert len(data["steps"]) == 3
+            assert data["steps"][0]["result"]["dispatched"] == 3
+            assert data["steps"][0]["result"]["discovery_during_scrape"]["created"] == 1
+            assert data["steps"][1]["result"]["evaluated"] == 2
+            assert data["steps"][2]["result"]["dispatched"] == 5
+        finally:
+            app.dependency_overrides.clear()
+
+    def test_trigger_full_organic_search_history(self, client):
+        from datetime import UTC, datetime
+        from packages.storage.database import get_db_session
+
+        mock_session = MagicMock()
+        app.dependency_overrides[get_db_session] = lambda: mock_session
+
+        try:
+            now = datetime.now(UTC)
+            mock_run = MagicMock(
+                id="run-1",
+                status="dispatched",
+                triggered_from="api_sources_trigger_all",
+                options={"run_alerts": True},
+                steps=[{"step": "scrape_all_sources", "status": "dispatched"}],
+                error=None,
+                created_at=now,
+            )
+            with patch("apps.api.routers.sources.OrganicSearchRunRepository") as MockRunRepo:
+                run_repo = MockRunRepo.return_value
+                run_repo.list_recent.return_value = [mock_run]
+
+                resp = client.get("/api/v1/sources/trigger-all/history?limit=5")
+
+            assert resp.status_code == 200
+            data = resp.json()
+            assert isinstance(data, list)
+            assert len(data) == 1
+            assert data[0]["id"] == "run-1"
+            assert data[0]["status"] == "dispatched"
+        finally:
+            app.dependency_overrides.clear()
+
+    def test_discover_sources_auto_creates_missing_sources(self, client):
+        from packages.storage.database import get_db_session
+
+        mock_session = MagicMock()
+        app.dependency_overrides[get_db_session] = lambda: mock_session
+
+        try:
+            with patch("apps.api.routers.sources.get_adapter_names", return_value=["daft", "myhome", "propertypal"]):
+                with patch("apps.api.routers.sources.load_discovery_candidates", return_value=[
+                    {
+                        "name": "Auto One",
+                        "url": "https://example.com/a",
+                        "adapter_type": "scraper",
+                        "adapter_name": "daft",
+                        "config": {},
+                    }
+                ]):
+                    with patch("apps.api.routers.sources.SourceRepository") as MockRepo:
+                        repo = MockRepo.return_value
+                        repo.get_by_url.return_value = None
+                        created_source = MagicMock(
+                            id="source-new",
+                            name="Auto One",
+                            url="https://example.com/a",
+                            adapter_type="scraper",
+                            adapter_name="daft",
+                            config={},
+                            enabled=False,
+                            poll_interval_seconds=21600,
+                            tags=["auto_discovered", "pending_approval"],
+                            last_polled_at=None,
+                            last_success_at=None,
+                            last_error=None,
+                            error_count=0,
+                            total_listings=0,
+                            created_at=None,
+                            updated_at=None,
+                        )
+                        repo.create.return_value = created_source
+
+                        resp = client.post("/api/v1/sources/discover-auto")
+
+            assert resp.status_code == 200
+            data = resp.json()
+            assert len(data["created"]) == 1
+            assert data["created"][0]["id"] == "source-new"
+            assert data["auto_enable"] is False
+        finally:
+            app.dependency_overrides.clear()
+
+    def test_list_pending_discovered_sources(self, client):
+        from packages.storage.database import get_db_session
+
+        mock_session = MagicMock()
+        app.dependency_overrides[get_db_session] = lambda: mock_session
+
+        try:
+            pending = MagicMock(
+                id="pending-1",
+                name="Pending Feed",
+                url="https://example.com/pending",
+                adapter_type="scraper",
+                adapter_name="daft",
+                config={},
+                enabled=False,
+                poll_interval_seconds=21600,
+                tags=["auto_discovered", "pending_approval"],
+                last_polled_at=None,
+                last_success_at=None,
+                last_error=None,
+                error_count=0,
+                total_listings=0,
+                created_at=None,
+                updated_at=None,
+            )
+            approved = MagicMock(
+                id="approved-1",
+                name="Approved Feed",
+                url="https://example.com/approved",
+                adapter_type="scraper",
+                adapter_name="myhome",
+                config={},
+                enabled=True,
+                poll_interval_seconds=21600,
+                tags=["auto_discovered"],
+                last_polled_at=None,
+                last_success_at=None,
+                last_error=None,
+                error_count=0,
+                total_listings=0,
+                created_at=None,
+                updated_at=None,
+            )
+
+            with patch("apps.api.routers.sources.SourceRepository") as MockRepo:
+                repo = MockRepo.return_value
+                repo.get_all.return_value = [pending, approved]
+
+                resp = client.get("/api/v1/sources/discovery/pending")
+
+            assert resp.status_code == 200
+            data = resp.json()
+            assert len(data) == 1
+            assert data[0]["id"] == "pending-1"
+        finally:
+            app.dependency_overrides.clear()
+
+    def test_approve_discovered_source(self, client):
+        from packages.storage.database import get_db_session
+
+        mock_session = MagicMock()
+        app.dependency_overrides[get_db_session] = lambda: mock_session
+
+        try:
+            source = MagicMock(
+                id="source-approve",
+                name="Pending Feed",
+                url="https://example.com/pending",
+                adapter_type="scraper",
+                adapter_name="daft",
+                config={},
+                enabled=False,
+                poll_interval_seconds=21600,
+                tags=["auto_discovered", "pending_approval"],
+                last_polled_at=None,
+                last_success_at=None,
+                last_error=None,
+                error_count=0,
+                total_listings=0,
+                created_at=None,
+                updated_at=None,
+            )
+
+            with patch("apps.api.routers.sources.SourceRepository") as MockRepo:
+                repo = MockRepo.return_value
+                repo.get_by_id.return_value = source
+                updated = MagicMock(
+                    id="source-approve",
+                    name="Pending Feed",
+                    url="https://example.com/pending",
+                    adapter_type="scraper",
+                    adapter_name="daft",
+                    config={},
+                    enabled=True,
+                    poll_interval_seconds=21600,
+                    tags=["auto_discovered"],
+                    last_polled_at=None,
+                    last_success_at=None,
+                    last_error=None,
+                    error_count=0,
+                    total_listings=0,
+                    created_at=None,
+                    updated_at=None,
+                )
+                repo.update.return_value = updated
+
+                resp = client.post("/api/v1/sources/source-approve/approve-discovered")
+
+            assert resp.status_code == 200
+            data = resp.json()
+            assert data["enabled"] is True
+            assert "pending_approval" not in data["tags"]
         finally:
             app.dependency_overrides.clear()
 
@@ -364,6 +630,232 @@ class TestLLMCompareSetEndpoint:
                             body = resp.json()
                             assert body["detail"]["code"] == "llm_analysis_unavailable"
                             assert "could not be invoked" in body["detail"]["message"]
+        finally:
+            app.dependency_overrides.clear()
+
+    def test_auto_compare_persists_run_and_returns_result(self, client):
+        from packages.storage.database import get_db_session
+
+        mock_session = MagicMock()
+        app.dependency_overrides[get_db_session] = lambda: mock_session
+
+        try:
+            with patch("apps.api.routers.llm.PropertyRepository") as MockPropRepo:
+                with patch("apps.api.routers.llm.LLMEnrichmentRepository") as MockEnrichRepo:
+                    with patch("apps.api.routers.llm.PropertyGrantMatchRepository") as MockGrantRepo:
+                        with patch("apps.api.routers.llm.OrganicSearchRunRepository") as MockRunRepo:
+                            with patch("packages.ai.service.get_provider") as mock_get_provider:
+                                prop_repo = MockPropRepo.return_value
+                                enrich_repo = MockEnrichRepo.return_value
+                                grant_repo = MockGrantRepo.return_value
+                                run_repo = MockRunRepo.return_value
+
+                                prop_repo.get_by_id.side_effect = [
+                                    MagicMock(id="p1", title="Home 1", address="Addr 1", county="Dublin", url="https://example.com/1", price=450000, floor_area_sqm=100, bedrooms=3, bathrooms=2, ber_rating="B2", images=[]),
+                                    MagicMock(id="p2", title="Home 2", address="Addr 2", county="Cork", url="https://example.com/2", price=430000, floor_area_sqm=95, bedrooms=3, bathrooms=2, ber_rating="C1", images=[]),
+                                ]
+                                enrich_repo.get_by_property_id.side_effect = [MagicMock(value_score=7.0), MagicMock(value_score=6.8)]
+                                grant_repo.list_for_property.return_value = []
+                                run_repo.get_latest_for_session.return_value = None
+                                run_repo.create.return_value = MagicMock(id="run-123")
+
+                                mock_provider = MagicMock()
+                                mock_provider.generate = AsyncMock(return_value=MagicMock(
+                                    content='{"headline":"Auto compare","recommendation":"p1","key_tradeoffs":[],"confidence":"medium"}'
+                                ))
+                                mock_get_provider.return_value = mock_provider
+
+                                resp = client.post(
+                                    "/api/v1/llm/auto-compare",
+                                    json={
+                                        "session_id": "session-1",
+                                        "property_ids": ["p1", "p2"],
+                                        "ranking_mode": "hybrid",
+                                        "search_context": {"query": "dublin"},
+                                    },
+                                )
+
+                                assert resp.status_code == 200
+                                data = resp.json()
+                                assert data["session_id"] == "session-1"
+                                assert data["result"]["ranking_mode"] == "hybrid"
+                                assert data["cached"] is False
+                                run_repo.create.assert_called()
+                                persisted_steps = run_repo.create.call_args.kwargs["steps"]
+                                assert persisted_steps[0]["step"] == "compare_property_set"
+                                assert persisted_steps[0]["result"]["ranking_mode"] == "hybrid"
+        finally:
+            app.dependency_overrides.clear()
+
+    def test_auto_compare_uses_cached_run_when_inputs_match(self, client):
+        from packages.storage.database import get_db_session
+
+        mock_session = MagicMock()
+        app.dependency_overrides[get_db_session] = lambda: mock_session
+
+        try:
+            with patch("apps.api.routers.llm.PropertyRepository") as MockPropRepo:
+                with patch("apps.api.routers.llm.OrganicSearchRunRepository") as MockRunRepo:
+                    prop_repo = MockPropRepo.return_value
+                    run_repo = MockRunRepo.return_value
+
+                    run_repo.get_latest_for_session.return_value = MagicMock(
+                        id="run-cached",
+                        status="completed",
+                        options={
+                            "session_id": "session-1",
+                            "ranking_mode": "hybrid",
+                            "property_ids": ["p1", "p2"],
+                        },
+                        steps=[
+                            {
+                                "step": "compare_property_set",
+                                "status": "completed",
+                                "result": {
+                                    "ranking_mode": "hybrid",
+                                    "properties": [{"property_id": "p1"}, {"property_id": "p2"}],
+                                    "winner_property_id": "p1",
+                                    "analysis": {
+                                        "headline": "Cached",
+                                        "recommendation": "p1",
+                                        "key_tradeoffs": [],
+                                        "confidence": "medium",
+                                        "citations": [],
+                                    },
+                                },
+                            }
+                        ],
+                    )
+
+                    resp = client.post(
+                        "/api/v1/llm/auto-compare",
+                        json={
+                            "session_id": "session-1",
+                            "property_ids": ["p1", "p2"],
+                            "ranking_mode": "hybrid",
+                        },
+                    )
+
+                    assert resp.status_code == 200
+                    data = resp.json()
+                    assert data["run_id"] == "run-cached"
+                    assert data["cached"] is True
+                    assert data["result"]["winner_property_id"] == "p1"
+                    prop_repo.get_by_id.assert_not_called()
+                    run_repo.create.assert_not_called()
+        finally:
+            app.dependency_overrides.clear()
+
+    def test_auto_compare_latest_returns_run(self, client):
+        from packages.storage.database import get_db_session
+
+        mock_session = MagicMock()
+        app.dependency_overrides[get_db_session] = lambda: mock_session
+
+        try:
+            with patch("apps.api.routers.llm.OrganicSearchRunRepository") as MockRunRepo:
+                run_repo = MockRunRepo.return_value
+                run_repo.get_latest_for_session.return_value = MagicMock(
+                    id="run-1",
+                    status="completed",
+                    options={"session_id": "session-1"},
+                    steps=[
+                        {
+                            "step": "compare_property_set",
+                            "status": "completed",
+                            "result": {
+                                "ranking_mode": "hybrid",
+                                "properties": [{"property_id": "p1"}, {"property_id": "p2"}],
+                                "winner_property_id": "p1",
+                                "analysis": {
+                                    "headline": "Auto compare",
+                                    "recommendation": "p1",
+                                    "key_tradeoffs": [],
+                                    "confidence": "medium",
+                                    "citations": [],
+                                },
+                            },
+                        }
+                    ],
+                    error=None,
+                    created_at=datetime(2026, 1, 1, 12, 0, 0),
+                )
+
+                resp = client.get("/api/v1/llm/auto-compare/latest?session_id=session-1")
+                assert resp.status_code == 200
+                data = resp.json()
+                assert data["run_id"] == "run-1"
+                assert data["status"] == "completed"
+                assert data["result"]["winner_property_id"] == "p1"
+                run_repo.get_latest_for_session.assert_called_once_with(
+                    session_id="session-1",
+                    triggered_from="auto_compare",
+                )
+        finally:
+            app.dependency_overrides.clear()
+
+    def test_auto_compare_latest_handles_legacy_run_without_result(self, client):
+        from packages.storage.database import get_db_session
+
+        mock_session = MagicMock()
+        app.dependency_overrides[get_db_session] = lambda: mock_session
+
+        try:
+            with patch("apps.api.routers.llm.OrganicSearchRunRepository") as MockRunRepo:
+                run_repo = MockRunRepo.return_value
+                run_repo.get_latest_for_session.return_value = MagicMock(
+                    id="run-legacy",
+                    status="completed",
+                    options={"session_id": "session-legacy", "ranking_mode": "hybrid"},
+                    steps=[{"step": "compare_property_set", "status": "completed"}],
+                    error=None,
+                    created_at=datetime(2026, 1, 2, 8, 30, 0),
+                )
+
+                resp = client.get("/api/v1/llm/auto-compare/latest?session_id=session-legacy")
+                assert resp.status_code == 200
+                data = resp.json()
+                assert data["run_id"] == "run-legacy"
+                assert data["status"] == "completed"
+                assert data["result"] is None
+        finally:
+            app.dependency_overrides.clear()
+
+    def test_auto_compare_rejects_invalid_ranking_mode(self, client):
+        from packages.storage.database import get_db_session
+
+        mock_session = MagicMock()
+        app.dependency_overrides[get_db_session] = lambda: mock_session
+
+        try:
+            resp = client.post(
+                "/api/v1/llm/auto-compare",
+                json={
+                    "session_id": "session-1",
+                    "property_ids": ["p1", "p2"],
+                    "ranking_mode": "invalid_mode",
+                },
+            )
+            assert resp.status_code == 422
+        finally:
+            app.dependency_overrides.clear()
+
+    def test_auto_compare_rejects_too_few_properties(self, client):
+        from packages.storage.database import get_db_session
+
+        mock_session = MagicMock()
+        app.dependency_overrides[get_db_session] = lambda: mock_session
+
+        try:
+            resp = client.post(
+                "/api/v1/llm/auto-compare",
+                json={
+                    "session_id": "session-1",
+                    "property_ids": ["p1"],
+                    "ranking_mode": "hybrid",
+                },
+            )
+            assert resp.status_code == 422
         finally:
             app.dependency_overrides.clear()
 

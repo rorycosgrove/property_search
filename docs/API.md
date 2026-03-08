@@ -173,12 +173,84 @@ Delete a source.
 ### GET /api/v1/sources/adapters
 List available adapter types.
 
+### POST /api/v1/sources/discover-auto?auto_enable=false&limit=25
+Automatically discover and register missing feed/source candidates.
+
+By default, discovered sources are created disabled with a `pending_approval` tag.
+
+### GET /api/v1/sources/discovery/pending
+List auto-discovered sources that are awaiting approval.
+
+### POST /api/v1/sources/{id}/approve-discovered
+Approve a discovered source and enable it for scheduled scraping.
+
 ### POST /api/v1/sources/{id}/trigger
 Manually trigger a scrape for this source. Sends a task to the SQS scrape queue.
 
 **Response** `202`
 ```json
 {"task_id": "sqs-message-id", "status": "queued"}
+```
+
+### POST /api/v1/sources/trigger-all
+Trigger the full organic search pipeline in one request.
+
+`scrape_all_sources` now performs source discovery at the start of each scrape run. By default,
+discovered feeds remain disabled and tagged `pending_approval` until manually approved.
+
+Default steps:
+- `scrape_all_sources`
+- `evaluate_alerts`
+- `enrich_batch_llm`
+
+Optional query params:
+- `run_alerts=true|false` (default `true`)
+- `run_llm_batch=true|false` (default `true`)
+- `llm_limit=1..500` (default `50`)
+
+**Response** `200`
+```json
+{
+  "run_id": "f2f3f4c2-...",
+  "status": "dispatched",
+  "steps": [
+    {"step": "scrape_all_sources", "status": "dispatched", "task_id": "..."},
+    {"step": "evaluate_alerts", "status": "dispatched", "task_id": "..."},
+    {"step": "enrich_batch_llm", "status": "dispatched", "task_id": "..."}
+  ]
+}
+```
+
+When the scrape step runs inline (local/no queue), `steps[0].result` includes:
+- `discovery_during_scrape.created`
+- `discovery_during_scrape.existing`
+- `discovery_during_scrape.skipped_invalid`
+- `discovery_during_scrape.auto_enable` (default `false`)
+
+Worker env controls for discovery-during-scrape:
+- `DISCOVERY_DURING_SCRAPE_ENABLED` (default `true`)
+- `DISCOVERY_DURING_SCRAPE_AUTO_ENABLE` (default `false`)
+- `DISCOVERY_DURING_SCRAPE_LIMIT` (default `10`, bounded)
+
+### GET /api/v1/sources/trigger-all/history?limit=20
+List recent full organic search runs from the shared backend ledger.
+
+**Response** `200`
+```json
+[
+  {
+    "id": "f2f3f4c2-...",
+    "status": "mixed",
+    "triggered_from": "api_sources_trigger_all",
+    "options": {"run_alerts": true, "run_llm_batch": true, "llm_limit": 50},
+    "steps": [
+      {"step": "scrape_all_sources", "status": "processed_inline"},
+      {"step": "evaluate_alerts", "status": "dispatched", "task_id": "..."}
+    ],
+    "error": null,
+    "created_at": "2026-03-08T04:20:12.123456+00:00"
+  }
+]
 ```
 
 ---
@@ -351,6 +423,83 @@ Compare 2-5 properties and return ranked metrics plus LLM narrative.
 {
   "property_ids": ["id-1", "id-2"],
   "ranking_mode": "hybrid"
+}
+```
+
+### POST /api/v1/llm/auto-compare
+Run a server-driven comparison for the active workspace session and persist a run ledger row.
+
+Validation rules:
+- `session_id`: required, 1..120 chars
+- `property_ids`: required, 2..5 entries
+- `ranking_mode`: one of `llm_only | hybrid | user_weighted`
+
+**Body**
+```json
+{
+  "session_id": "session-abc",
+  "property_ids": ["id-1", "id-2", "id-3"],
+  "ranking_mode": "hybrid",
+  "search_context": {
+    "query": "dublin detached",
+    "filters": {"max_price": 550000}
+  }
+}
+```
+
+**Response** `200`
+```json
+{
+  "run_id": "run-123",
+  "session_id": "session-abc",
+  "cached": false,
+  "result": {
+    "ranking_mode": "hybrid",
+    "winner_property_id": "id-1",
+    "properties": [{"property_id": "id-1"}, {"property_id": "id-2"}],
+    "analysis": {
+      "headline": "Value result",
+      "recommendation": "id-1",
+      "key_tradeoffs": [],
+      "confidence": "medium",
+      "citations": []
+    }
+  }
+}
+```
+
+When an identical `session_id + ranking_mode + property_ids` request is repeated and a completed run exists, the API may return the existing run with `"cached": true`.
+
+### GET /api/v1/llm/auto-compare/latest?session_id={session_id}
+Return the latest persisted auto-compare run for a session.
+
+**Response** `200`
+```json
+{
+  "run_id": "run-123",
+  "status": "completed",
+  "options": {
+    "session_id": "session-abc",
+    "ranking_mode": "hybrid",
+    "property_ids": ["id-1", "id-2"]
+  },
+  "steps": [
+    {"step": "compare_property_set", "status": "completed"}
+  ],
+  "result": {
+    "ranking_mode": "hybrid",
+    "winner_property_id": "id-1",
+    "properties": [{"property_id": "id-1"}, {"property_id": "id-2"}],
+    "analysis": {
+      "headline": "Value result",
+      "recommendation": "id-1",
+      "key_tradeoffs": [],
+      "confidence": "medium",
+      "citations": []
+    }
+  },
+  "error": null,
+  "created_at": "2026-03-08T12:34:56.000000+00:00"
 }
 ```
 

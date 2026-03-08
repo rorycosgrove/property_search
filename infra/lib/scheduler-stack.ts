@@ -100,5 +100,20 @@ export class SchedulerStack extends cdk.Stack {
         }),
       ],
     });
+
+    // Discover new source/feed candidates daily at 4am (approval required before enablement)
+    new events.Rule(this, "DiscoverSourcesRule", {
+      ruleName: "property-search-discover-sources",
+      schedule: events.Schedule.cron({ minute: "0", hour: "4" }),
+      targets: [
+        new targets.SqsQueue(props.scrapeQueue, {
+          message: events.RuleTargetInput.fromObject({
+            task_type: "discover_sources",
+            task_id: "scheduled",
+            payload: { auto_enable: false, limit: 25 },
+          }),
+        }),
+      ],
+    });
   }
 }

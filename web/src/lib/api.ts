@@ -380,6 +380,77 @@ export async function triggerScrape(
   );
 }
 
+export interface SourceDiscoveryRunResult {
+  created: Source[];
+  existing: Array<{ id: string; url: string; name: string }>;
+  skipped_invalid: Array<{ url?: string; reason: string }>;
+  auto_enable: boolean;
+}
+
+export async function discoverSourcesAuto(
+  autoEnable = false,
+  limit = 25,
+): Promise<SourceDiscoveryRunResult> {
+  return fetchJSON<SourceDiscoveryRunResult>(
+    `/api/v1/sources/discover-auto?auto_enable=${String(autoEnable)}&limit=${limit}`,
+    { method: 'POST' },
+  );
+}
+
+export async function getPendingDiscoveredSources(): Promise<Source[]> {
+  return fetchJSON<Source[]>('/api/v1/sources/discovery/pending');
+}
+
+export async function approveDiscoveredSource(sourceId: string): Promise<Source> {
+  return fetchJSON<Source>(`/api/v1/sources/${sourceId}/approve-discovered`, { method: 'POST' });
+}
+
+export interface OrganicSearchStepResult {
+  step: string;
+  status: 'dispatched' | 'processed_inline';
+  task_id?: string;
+  result?: Record<string, unknown>;
+}
+
+export interface OrganicSearchRunResult {
+  run_id?: string;
+  status: 'dispatched' | 'processed_inline' | 'mixed';
+  steps: OrganicSearchStepResult[];
+}
+
+export interface OrganicSearchHistoryItem {
+  id: string;
+  status: 'dispatched' | 'processed_inline' | 'mixed' | 'failed' | string;
+  triggered_from: string;
+  options: Record<string, unknown>;
+  steps: OrganicSearchStepResult[];
+  error?: string | null;
+  created_at?: string;
+}
+
+export async function triggerFullOrganicSearch(
+  options?: { runAlerts?: boolean; runLlmBatch?: boolean; llmLimit?: number },
+): Promise<OrganicSearchRunResult> {
+  const params = new URLSearchParams();
+  if (options?.runAlerts !== undefined) {
+    params.set('run_alerts', String(options.runAlerts));
+  }
+  if (options?.runLlmBatch !== undefined) {
+    params.set('run_llm_batch', String(options.runLlmBatch));
+  }
+  if (options?.llmLimit !== undefined) {
+    params.set('llm_limit', String(options.llmLimit));
+  }
+
+  const suffix = params.toString();
+  const path = suffix ? `/api/v1/sources/trigger-all?${suffix}` : '/api/v1/sources/trigger-all';
+  return fetchJSON<OrganicSearchRunResult>(path, { method: 'POST' });
+}
+
+export async function getOrganicSearchHistory(limit = 20): Promise<OrganicSearchHistoryItem[]> {
+  return fetchJSON<OrganicSearchHistoryItem[]>(`/api/v1/sources/trigger-all/history?limit=${limit}`);
+}
+
 // ── LLM ─────────────────────────────────────────────────────────────────────
 
 export interface LLMConfig {
@@ -476,12 +547,44 @@ export interface ConversationMessage {
   conversation_id: string;
   role: 'user' | 'assistant' | string;
   content: string;
-  citations: Array<Record<string, unknown>>;
+  citations: Citation[];
   prompt_tokens?: number;
   completion_tokens?: number;
   total_tokens?: number;
   processing_time_ms?: number;
   created_at?: string;
+}
+
+export interface PropertyCitation {
+  type: 'property';
+  property_id: string;
+  url?: string | null;
+  label?: string | null;
+  county?: string | null;
+  price?: number | null;
+}
+
+export interface GrantCitation {
+  type: 'grant';
+  grant_program_id?: string;
+  code?: string | null;
+  label?: string | null;
+  url?: string | null;
+  status?: string | null;
+  estimated_benefit?: number | null;
+}
+
+export type Citation = PropertyCitation | GrantCitation;
+
+export interface RetrievalContext {
+  selected_property_id?: string | null;
+  selected_property_title?: string | null;
+  ranking_mode?: RankingMode | null;
+  shortlist_size?: number;
+  winner_property_id?: string | null;
+  winner_property_title?: string | null;
+  grant_count?: number;
+  grants_considered?: Array<{ code?: string | null; status?: string | null; estimated_benefit?: number | null }>;
 }
 
 export interface Conversation {
@@ -498,6 +601,7 @@ export interface ChatTurnResponse {
   conversation_id: string;
   user_message: ConversationMessage;
   assistant_message: ConversationMessage;
+  retrieval_context?: RetrievalContext;
 }
 
 export type RankingMode = 'llm_only' | 'hybrid' | 'user_weighted';
@@ -531,8 +635,34 @@ export interface CompareSetResponse {
     recommendation: string;
     key_tradeoffs: string[];
     confidence: 'low' | 'medium' | 'high';
-    citations: Array<Record<string, unknown>>;
+    citations: Citation[];
+    reasoning?: string;
   };
+}
+
+export interface AutoCompareRequest {
+  session_id: string;
+  property_ids: string[];
+  ranking_mode: RankingMode;
+  search_context?: Record<string, unknown>;
+  weights?: { value?: number; location?: number; condition?: number; potential?: number };
+}
+
+export interface AutoCompareRunResponse {
+  run_id: string;
+  session_id: string;
+  result: CompareSetResponse;
+  cached?: boolean;
+}
+
+export interface AutoCompareLatestResponse {
+  run_id: string;
+  status: string;
+  options: Record<string, unknown>;
+  steps: Array<Record<string, unknown>>;
+  result?: CompareSetResponse | null;
+  error?: string | null;
+  created_at?: string | null;
 }
 
 export async function createConversation(userIdentifier: string, title?: string) {
@@ -550,10 +680,11 @@ export async function sendConversationMessage(
   conversationId: string,
   content: string,
   propertyId?: string,
+  retrievalContext?: RetrievalContext,
 ) {
   return fetchJSON<ChatTurnResponse>(`/api/v1/llm/chat/conversations/${conversationId}/messages`, {
     method: 'POST',
-    body: JSON.stringify({ content, property_id: propertyId }),
+    body: JSON.stringify({ content, property_id: propertyId, retrieval_context: retrievalContext }),
   });
 }
 
@@ -566,6 +697,18 @@ export async function comparePropertySet(
     method: 'POST',
     body: JSON.stringify({ property_ids: propertyIds, ranking_mode: rankingMode, weights }),
   });
+}
+
+export async function triggerAutoCompare(payload: AutoCompareRequest) {
+  return fetchJSON<AutoCompareRunResponse>('/api/v1/llm/auto-compare', {
+    method: 'POST',
+    body: JSON.stringify(payload),
+  });
+}
+
+export async function getLatestAutoCompare(sessionId: string) {
+  const params = new URLSearchParams({ session_id: sessionId });
+  return fetchJSON<AutoCompareLatestResponse>(`/api/v1/llm/auto-compare/latest?${params.toString()}`);
 }
 
 // ── Grants ──────────────────────────────────────────────────────────────────

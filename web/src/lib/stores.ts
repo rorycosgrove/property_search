@@ -48,6 +48,7 @@ interface MapState {
   setCenter: (center: [number, number]) => void;
   setZoom: (zoom: number) => void;
   selectProperty: (id: string | null) => void;
+  setComparedProperties: (ids: string[]) => void;
   toggleCompareProperty: (id: string) => void;
   removeComparedProperty: (id: string) => void;
   clearComparedProperties: () => void;
@@ -61,6 +62,16 @@ export const useMapStore = create<MapState>((set) => ({
   setCenter: (center) => set({ center }),
   setZoom: (zoom) => set({ zoom }),
   selectProperty: (id) => set({ selectedPropertyId: id }),
+  setComparedProperties: (ids) => {
+    const normalized = Array.from(
+      new Set(
+        (ids || [])
+          .filter((id): id is string => typeof id === 'string' && id.length > 0)
+          .slice(0, 5),
+      ),
+    );
+    set({ comparedPropertyIds: normalized });
+  },
   toggleCompareProperty: (id) =>
     set((state) => {
       const exists = state.comparedPropertyIds.includes(id);

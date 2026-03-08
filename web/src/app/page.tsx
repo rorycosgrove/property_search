@@ -1,16 +1,20 @@
 'use client';
 
-import { useEffect, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useRouter, useSearchParams } from 'next/navigation';
 import {
-  comparePropertySet,
+  type AutoCompareLatestResponse,
+  type Citation,
   createConversation,
   type CompareSetResponse,
+  getLatestAutoCompare,
   getConversation,
   getProperties,
   type Property,
   type PropertyListResponse,
+  type RetrievalContext,
   sendConversationMessage,
+  triggerAutoCompare,
 } from '@/lib/api';
 import { useFilterStore, useMapStore, useUIStore } from '@/lib/stores';
 import FilterBar from '@/components/FilterBar';
@@ -26,12 +30,17 @@ interface CompareErrorState {
   raw?: string;
 }
 
+const isRankingMode = (value: unknown): value is 'llm_only' | 'hybrid' | 'user_weighted' => {
+  return value === 'llm_only' || value === 'hybrid' || value === 'user_weighted';
+};
+
 export default function HomePage() {
   const router = useRouter();
   const searchParams = useSearchParams();
   const { filters } = useFilterStore();
   const {
     comparedPropertyIds,
+    setComparedProperties,
     removeComparedProperty,
     clearComparedProperties,
   } = useMapStore();
@@ -40,10 +49,6 @@ export default function HomePage() {
     closeDetail,
     rankingMode,
     setRankingMode,
-    feedPanelOpen,
-    analysisPanelOpen,
-    toggleFeedPanel,
-    toggleAnalysisPanel,
   } = useUIStore();
   const [data, setData] = useState<PropertyListResponse | null>(null);
   const [loading, setLoading] = useState(true);
@@ -52,12 +57,17 @@ export default function HomePage() {
   const [compareError, setCompareError] = useState<CompareErrorState | null>(null);
   const [aiQuery, setAiQuery] = useState('');
   const [aiReply, setAiReply] = useState<string | null>(null);
+  const [aiCitations, setAiCitations] = useState<Citation[]>([]);
+  const [aiRetrievalContext, setAiRetrievalContext] = useState<RetrievalContext | null>(null);
   const [aiLoading, setAiLoading] = useState(false);
   const [aiError, setAiError] = useState<string | null>(null);
   const [conversationId, setConversationId] = useState<string | null>(null);
+  const [autoCompareSessionId, setAutoCompareSessionId] = useState<string>('');
+  const [autoCompareTargetCount, setAutoCompareTargetCount] = useState(0);
+  const lastAutoCompareKeyRef = useRef<string>('');
 
   const CONVERSATION_KEY = 'property_search_conversation_id';
-  const MAIN_QUERY_KEY = 'atlas_main_query';
+  const AUTO_COMPARE_SESSION_KEY = 'property_search_auto_compare_session_id';
 
   const parseCompareError = (err: unknown): CompareErrorState => {
     const fallback: CompareErrorState = {
@@ -101,6 +111,22 @@ export default function HomePage() {
   }, [filters]);
 
   useEffect(() => {
+    if (typeof window === 'undefined') {
+      return;
+    }
+
+    const existing = window.localStorage.getItem(AUTO_COMPARE_SESSION_KEY);
+    if (existing) {
+      setAutoCompareSessionId(existing);
+      return;
+    }
+
+    const generated = `web-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
+    window.localStorage.setItem(AUTO_COMPARE_SESSION_KEY, generated);
+    setAutoCompareSessionId(generated);
+  }, []);
+
+  useEffect(() => {
     let active = true;
 
     const bootConversation = async () => {
@@ -142,13 +168,20 @@ export default function HomePage() {
     }
 
     const queryPrompt = searchParams.get('ask') || '';
-    const localPrompt = window.localStorage.getItem(MAIN_QUERY_KEY) || window.localStorage.getItem('atlas_pending_prompt') || '';
-    const prompt = queryPrompt || localPrompt;
+    const prompt = queryPrompt;
 
     if (prompt) {
       setAiQuery(prompt);
-      window.localStorage.removeItem(MAIN_QUERY_KEY);
-      window.localStorage.removeItem('atlas_pending_prompt');
+    }
+  }, [searchParams]);
+
+  useEffect(() => {
+    if (searchParams.get('focus') !== 'ask') {
+      return;
+    }
+    const panel = document.getElementById('ask-panel');
+    if (panel) {
+      panel.scrollIntoView({ behavior: 'smooth', block: 'start' });
     }
   }, [searchParams]);
 
@@ -158,15 +191,90 @@ export default function HomePage() {
     .map((id) => propertyMap.get(id))
     .filter((p): p is Property => Boolean(p));
 
-  const runCompare = async () => {
-    if (comparedPropertyIds.length < 2) {
+  const winnerMetric = compareResult?.properties?.[0];
+  const selectedPropertyId = detailPanelProperty?.id || winnerMetric?.property_id || null;
+
+  const buildRetrievalContext = (): RetrievalContext => ({
+    selected_property_id: selectedPropertyId,
+    selected_property_title: detailPanelProperty?.title || winnerMetric?.title || null,
+    ranking_mode: rankingMode,
+    shortlist_size: comparedPropertyIds.length,
+    winner_property_id: compareResult?.winner_property_id || null,
+    winner_property_title: winnerMetric?.title || null,
+    grant_count: winnerMetric?.grants_count ?? 0,
+  });
+
+  const candidateAutoCompareIds = useMemo(() => {
+    if (comparedPropertyIds.length >= 2) {
+      return comparedPropertyIds.slice(0, 5);
+    }
+    return properties.slice(0, 5).map((p) => p.id);
+  }, [comparedPropertyIds, properties]);
+
+  const hydrateAutoCompareFromLatest = useCallback((latest: AutoCompareLatestResponse) => {
+    if (latest.result) {
+      setCompareResult(latest.result);
+      setCompareError(null);
+    } else if (latest.status === 'failed' && latest.error) {
+      setCompareResult(null);
+      setCompareError({
+        code: 'auto_compare_failed',
+        message: 'The latest automatic comparison run failed.',
+        raw: latest.error,
+      });
+    }
+
+    const rankingModeFromRun = latest.options?.ranking_mode;
+    const propertyIdsFromOptions = Array.isArray(latest.options?.property_ids)
+      ? latest.options.property_ids.filter((value): value is string => typeof value === 'string' && value.length > 0)
+      : [];
+    const propertyIdsFromResult = Array.isArray(latest.result?.properties)
+      ? latest.result.properties
+        .map((metric) => metric.property_id)
+        .filter((value): value is string => typeof value === 'string' && value.length > 0)
+      : [];
+
+    const normalizedIds = Array.from(new Set(
+      (propertyIdsFromOptions.length > 0 ? propertyIdsFromOptions : propertyIdsFromResult).slice(0, 5),
+    ));
+    if (typeof rankingModeFromRun === 'string' && normalizedIds.length >= 2) {
+      if (isRankingMode(rankingModeFromRun) && rankingModeFromRun !== rankingMode) {
+        setRankingMode(rankingModeFromRun);
+      }
+      setComparedProperties(normalizedIds);
+      lastAutoCompareKeyRef.current = `${rankingModeFromRun}:${normalizedIds.join(',')}`;
+    } else if (normalizedIds.length >= 2) {
+      setComparedProperties(normalizedIds);
+    }
+  }, [rankingMode, setComparedProperties, setRankingMode]);
+
+  const runCompare = async (propertyIds: string[]) => {
+    const sessionId = autoCompareSessionId;
+    if (propertyIds.length < 2 || !sessionId) {
       return;
     }
+
     setCompareLoading(true);
     setCompareError(null);
     try {
-      const result = await comparePropertySet(comparedPropertyIds, rankingMode);
-      setCompareResult(result);
+      const searchContext = {
+        filters,
+        compared_property_ids: comparedPropertyIds,
+        selected_property_id: selectedPropertyId,
+      };
+      const run = await triggerAutoCompare({
+        session_id: sessionId,
+        property_ids: propertyIds,
+        ranking_mode: rankingMode,
+        search_context: searchContext,
+      });
+
+      const latest = await getLatestAutoCompare(sessionId).catch(() => null);
+      if (latest) {
+        hydrateAutoCompareFromLatest(latest);
+      } else {
+        setCompareResult(run.result);
+      }
     } catch (err) {
       setCompareResult(null);
       setCompareError(parseCompareError(err));
@@ -175,11 +283,64 @@ export default function HomePage() {
     }
   };
 
+  useEffect(() => {
+    if (!autoCompareSessionId) {
+      return;
+    }
+
+    let active = true;
+    getLatestAutoCompare(autoCompareSessionId)
+      .then((latest) => {
+        if (!active) {
+          return;
+        }
+        hydrateAutoCompareFromLatest(latest);
+      })
+      .catch(() => undefined);
+
+    return () => {
+      active = false;
+    };
+  }, [autoCompareSessionId, hydrateAutoCompareFromLatest]);
+
+  useEffect(() => {
+    const ids = candidateAutoCompareIds;
+    setAutoCompareTargetCount(ids.length);
+    if (ids.length < 2) {
+      // Prevent stale winner/analysis from a previous larger shortlist.
+      setCompareResult(null);
+      setCompareError(null);
+      lastAutoCompareKeyRef.current = '';
+      return;
+    }
+
+    const compareKey = `${rankingMode}:${ids.join(',')}`;
+    if (compareKey === lastAutoCompareKeyRef.current) {
+      return;
+    }
+
+    const timeout = window.setTimeout(() => {
+      lastAutoCompareKeyRef.current = compareKey;
+      runCompare(ids).catch(console.error);
+    }, 800);
+
+    return () => {
+      window.clearTimeout(timeout);
+    };
+  }, [
+    candidateAutoCompareIds,
+    rankingMode,
+    autoCompareSessionId,
+    filters,
+    comparedPropertyIds,
+    selectedPropertyId,
+  ]);
+
   const guidanceMessage = compareResult
-    ? 'Analysis complete. Ask Atlas to stress-test the winner against grants, BER, and renovation risk.'
-    : comparedPropertyIds.length >= 2
-      ? 'You are ready to run Decision Studio. Atlas can also pre-brief your comparison strategy.'
-      : 'Select at least 2 homes to unlock AI decision analysis and evidence-backed trade-offs.';
+    ? 'Atlas has a live recommendation. Ask follow-up questions to challenge risk, grant eligibility, and long-term value.'
+    : autoCompareTargetCount >= 2
+      ? 'Atlas is preparing a live comparison for your current search.'
+      : 'Narrow your search to at least 2 properties and Atlas will compare them automatically.';
 
   const applyContextToAIQuery = () => {
     const winner = compareResult?.properties?.[0];
@@ -199,6 +360,7 @@ export default function HomePage() {
 
     setAiLoading(true);
     setAiError(null);
+    setAiCitations([]);
 
     try {
       let convId = conversationId;
@@ -215,8 +377,16 @@ export default function HomePage() {
         throw new Error('Could not initialize AI session.');
       }
 
-      const result = await sendConversationMessage(convId, prompt);
+      const retrievalContext = buildRetrievalContext();
+      const result = await sendConversationMessage(
+        convId,
+        prompt,
+        selectedPropertyId || undefined,
+        retrievalContext,
+      );
       setAiReply(result.assistant_message.content);
+      setAiCitations(result.assistant_message.citations || []);
+      setAiRetrievalContext(result.retrieval_context || retrievalContext);
     } catch (err) {
       setAiError(err instanceof Error ? err.message : 'Failed to query Atlas AI.');
     } finally {
@@ -224,46 +394,18 @@ export default function HomePage() {
     }
   };
 
+  const retrievalPreview = buildRetrievalContext();
+
   return (
     <div className="flex flex-col h-[calc(100dvh-64px)] lg:h-[calc(100dvh-62px)]">
       <FilterBar />
 
       <div className="px-3 py-2 border-b border-[var(--card-border)] ai-glass flex flex-wrap items-center gap-2">
         <div className="px-3 py-1.5 rounded-full text-xs border border-[var(--card-border)] bg-[var(--card-bg)]">
-          AI Mission: shortlist + compare + explain
+          LLM Workspace: search -> auto-compare -> ask Atlas
         </div>
-        <button
-          onClick={toggleFeedPanel}
-          className={[
-            'px-2.5 py-1.5 rounded-md text-xs border focus:outline-none focus:ring-2 focus:ring-cyan-700',
-            feedPanelOpen
-              ? 'border-[var(--accent)] bg-cyan-900/10 text-[var(--accent-strong)]'
-              : 'border-[var(--card-border)] hover:bg-[var(--background)]',
-          ].join(' ')}
-        >
-          {feedPanelOpen ? 'Hide shortlist' : 'Show shortlist'}
-        </button>
-        <button
-          onClick={toggleAnalysisPanel}
-          className={[
-            'px-2.5 py-1.5 rounded-md text-xs border focus:outline-none focus:ring-2 focus:ring-cyan-700',
-            analysisPanelOpen
-              ? 'border-[var(--accent)] bg-cyan-900/10 text-[var(--accent-strong)]'
-              : 'border-[var(--card-border)] hover:bg-[var(--background)]',
-          ].join(' ')}
-        >
-          {analysisPanelOpen ? 'Hide decision studio' : 'Show decision studio'}
-        </button>
-        {detailPanelProperty && (
-          <button
-            onClick={closeDetail}
-            className="px-2.5 py-1.5 rounded-md text-xs border border-[var(--card-border)] hover:bg-[var(--background)] focus:outline-none focus:ring-2 focus:ring-cyan-700"
-          >
-            Close detail
-          </button>
-        )}
         <div className="ml-auto text-[11px] text-[var(--muted)] px-2 py-1 border border-[var(--card-border)] rounded-full">
-          Compare selected: {comparedPropertyIds.length}/5
+          Auto-compare target: {autoCompareTargetCount}/5
         </div>
       </div>
 
@@ -278,7 +420,16 @@ export default function HomePage() {
         </button>
       </div>
 
-      <div className="px-3 py-3 border-b border-[var(--card-border)] ai-glass">
+      <div id="ask-panel" className="px-3 py-3 border-b border-[var(--card-border)] ai-glass">
+        <div className="mb-2 rounded-md border border-[var(--card-border)] bg-[var(--background)]/60 px-3 py-2">
+          <p className="text-[11px] uppercase tracking-wide text-[var(--muted)]">Retrieved context preview</p>
+          <p className="text-xs text-[var(--muted)] mt-1">
+            Mode: {retrievalPreview.ranking_mode} | Shortlist: {retrievalPreview.shortlist_size} |
+            Selected: {retrievalPreview.selected_property_title || 'None'} |
+            Winner: {retrievalPreview.winner_property_title || 'None'}
+          </p>
+        </div>
+
         <div className="flex flex-col lg:flex-row gap-2">
           <input
             value={aiQuery}
@@ -304,20 +455,57 @@ export default function HomePage() {
           <div className="mt-3 rounded-lg border border-[var(--card-border)] bg-[var(--card-bg)] p-3">
             <p className="text-xs uppercase tracking-wide text-[var(--muted)] mb-1">Atlas response</p>
             <p className="text-sm whitespace-pre-wrap leading-relaxed">{aiReply}</p>
+
+            {aiRetrievalContext ? (
+              <p className="text-xs text-[var(--muted)] mt-2">
+                Grounded on: {aiRetrievalContext.selected_property_title || 'no focused property'};
+                shortlist size {aiRetrievalContext.shortlist_size ?? 0};
+                ranking mode {aiRetrievalContext.ranking_mode || 'n/a'}.
+              </p>
+            ) : null}
+
+            {aiCitations.length > 0 ? (
+              <div className="mt-3 pt-2 border-t border-[var(--card-border)]">
+                <p className="text-xs uppercase tracking-wide text-[var(--muted)] mb-2">Evidence</p>
+                <div className="space-y-2">
+                  {aiCitations.map((citation, idx) => {
+                    if (citation.type === 'property') {
+                      return (
+                        <a
+                          key={`ai-citation-${idx}`}
+                          href={citation.url || '#'}
+                          target="_blank"
+                          rel="noreferrer"
+                          className="block rounded border border-[var(--card-border)] px-2 py-1.5 hover:bg-[var(--background)] text-xs"
+                        >
+                          {citation.label || 'Property citation'}
+                        </a>
+                      );
+                    }
+
+                    return (
+                      <div key={`ai-citation-${idx}`} className="rounded border border-[var(--card-border)] px-2 py-1.5 text-xs">
+                        {citation.label || citation.code || 'Grant citation'}
+                        {citation.status ? ` • ${citation.status}` : ''}
+                        {citation.estimated_benefit ? ` • est ${citation.estimated_benefit}` : ''}
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+            ) : null}
           </div>
         ) : null}
       </div>
 
       <div className="flex flex-1 min-h-0 overflow-hidden flex-col lg:flex-row">
-        {feedPanelOpen && (
-          <div className="w-full lg:w-[340px] lg:shrink-0 border-b lg:border-b-0 lg:border-r border-[var(--card-border)] overflow-y-auto bg-[var(--card-bg)]/65 rise-in">
-            <PropertyFeed
-              properties={properties}
-              total={data?.total || 0}
-              loading={loading}
-            />
-          </div>
-        )}
+        <div className="w-full lg:w-[340px] lg:shrink-0 border-b lg:border-b-0 lg:border-r border-[var(--card-border)] overflow-y-auto bg-[var(--card-bg)]/65 rise-in">
+          <PropertyFeed
+            properties={properties}
+            total={data?.total || 0}
+            loading={loading}
+          />
+        </div>
 
         <div className="flex-1 flex flex-col min-h-0">
           <div className="flex-1 relative min-h-0">
@@ -332,21 +520,20 @@ export default function HomePage() {
               clearComparedProperties();
               setCompareResult(null);
               setCompareError(null);
+              lastAutoCompareKeyRef.current = '';
             }}
-            onAnalyze={runCompare}
             loading={compareLoading}
+            autoCompareTargetCount={autoCompareTargetCount}
           />
         </div>
 
-        {analysisPanelOpen && (
-          <LLMAnalysisPanel
-            result={compareResult}
-            loading={compareLoading}
-            error={compareError}
-            onRetry={runCompare}
-            canRetry={comparedPropertyIds.length >= 2}
-          />
-        )}
+        <LLMAnalysisPanel
+          result={compareResult}
+          loading={compareLoading}
+          error={compareError}
+          onRetry={() => runCompare(candidateAutoCompareIds)}
+          canRetry={candidateAutoCompareIds.length >= 2}
+        />
 
         {detailPanelProperty && (
           <div className="w-full xl:w-[420px] xl:shrink-0 border-t xl:border-t-0 xl:border-l border-[var(--card-border)] overflow-y-auto bg-[var(--background)] rise-in">
