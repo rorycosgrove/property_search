@@ -24,6 +24,9 @@ from packages.shared.logging import get_logger
 
 logger = get_logger(__name__)
 
+_runtime_provider_override: str | None = None
+_runtime_model_override: str | None = None
+
 # ── Provider factory ──────────────────────────────────────────────────────────
 
 
@@ -44,6 +47,9 @@ def get_provider(provider_name: str | None = None, model: str | None = None) -> 
 
 def _get_active_provider_name() -> str:
     """Get the active provider name, checking DynamoDB cache first."""
+    if _runtime_provider_override:
+        return _runtime_provider_override
+
     try:
         return _get_dynamo_config("llm_provider") or settings.llm_provider
     except Exception:
@@ -52,14 +58,24 @@ def _get_active_provider_name() -> str:
 
 def _get_active_model() -> str | None:
     """Get the active model name from DynamoDB cache."""
+    if _runtime_model_override:
+        return _runtime_model_override
+
     try:
-        return _get_dynamo_config("llm_model") or None
+        return _get_dynamo_config("llm_model") or settings.bedrock_model_id
     except Exception:
-        return None
+        return settings.bedrock_model_id
 
 
 def set_active_provider(provider: str, model: str | None = None) -> bool:
     """Set the active LLM provider in DynamoDB (runtime config)."""
+    global _runtime_provider_override, _runtime_model_override
+
+    # Always keep a local runtime override so local dev still works without DynamoDB access.
+    _runtime_provider_override = provider
+    if model:
+        _runtime_model_override = model
+
     try:
         _set_dynamo_config("llm_provider", provider)
         if model:
@@ -67,8 +83,13 @@ def set_active_provider(provider: str, model: str | None = None) -> bool:
         logger.info("llm_provider_changed", provider=provider, model=model)
         return True
     except Exception as e:
-        logger.error("llm_config_dynamo_error", error=str(e))
-        return False
+        logger.warning(
+            "llm_config_dynamo_unavailable_using_runtime_override",
+            error=str(e),
+            provider=provider,
+            model=model,
+        )
+        return True
 
 
 # ── DynamoDB config helpers ───────────────────────────────────────────────────

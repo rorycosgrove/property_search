@@ -16,6 +16,12 @@ import PropertyDetail from '@/components/PropertyDetail';
 import CompareDock from '@/components/CompareDock';
 import LLMAnalysisPanel from '@/components/LLMAnalysisPanel';
 
+interface CompareErrorState {
+  code?: string;
+  message: string;
+  raw?: string;
+}
+
 export default function HomePage() {
   const { filters } = useFilterStore();
   const {
@@ -37,6 +43,40 @@ export default function HomePage() {
   const [loading, setLoading] = useState(true);
   const [compareLoading, setCompareLoading] = useState(false);
   const [compareResult, setCompareResult] = useState<CompareSetResponse | null>(null);
+  const [compareError, setCompareError] = useState<CompareErrorState | null>(null);
+
+  const parseCompareError = (err: unknown): CompareErrorState => {
+    const fallback: CompareErrorState = {
+      message: 'Failed to run AI analysis. Check LLM health and model configuration.',
+    };
+
+    if (!(err instanceof Error)) {
+      return fallback;
+    }
+
+    const match = err.message.match(/API error \d+:\s*(.*)$/);
+    if (!match) {
+      return { ...fallback, raw: err.message };
+    }
+
+    try {
+      const payload = JSON.parse(match[1]) as {
+        detail?: { code?: string; message?: string; error?: string };
+      };
+      const detail = payload.detail;
+      if (detail?.message) {
+        return {
+          code: detail.code,
+          message: detail.message,
+          raw: detail.error,
+        };
+      }
+    } catch {
+      // Keep fallback with raw message.
+    }
+
+    return { ...fallback, raw: err.message };
+  };
 
   useEffect(() => {
     setLoading(true);
@@ -57,11 +97,13 @@ export default function HomePage() {
       return;
     }
     setCompareLoading(true);
+    setCompareError(null);
     try {
       const result = await comparePropertySet(comparedPropertyIds, rankingMode);
       setCompareResult(result);
     } catch (err) {
-      console.error(err);
+      setCompareResult(null);
+      setCompareError(parseCompareError(err));
     } finally {
       setCompareLoading(false);
     }
@@ -130,6 +172,7 @@ export default function HomePage() {
             onClear={() => {
               clearComparedProperties();
               setCompareResult(null);
+              setCompareError(null);
             }}
             onAnalyze={runCompare}
             loading={compareLoading}
@@ -137,7 +180,13 @@ export default function HomePage() {
         </div>
 
         {analysisPanelOpen && (
-          <LLMAnalysisPanel result={compareResult} loading={compareLoading} />
+          <LLMAnalysisPanel
+            result={compareResult}
+            loading={compareLoading}
+            error={compareError}
+            onRetry={runCompare}
+            canRetry={comparedPropertyIds.length >= 2}
+          />
         )}
 
         {detailPanelProperty && (

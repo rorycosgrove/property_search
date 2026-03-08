@@ -152,3 +152,39 @@ class TestBedrockProvider:
 
         with pytest.raises(RuntimeError, match="bedrock_throttle_error"):
             await self.provider.generate("Test prompt")
+
+    @pytest.mark.asyncio
+    async def test_generate_restricted_model_falls_back(self):
+        class AccessDeniedException(Exception):
+            pass
+
+        restricted_provider = BedrockProvider(model_id="anthropic.claude-3-haiku-20240307-v1:0")
+
+        runtime_client = MagicMock()
+        fallback_body = MagicMock()
+        fallback_body.read.return_value = json.dumps(
+            {
+                "usage": {"inputTokens": 5, "outputTokens": 7, "totalTokens": 12},
+                "output": {"message": {"content": [{"text": "fallback response"}]}},
+            }
+        ).encode()
+
+        runtime_client.invoke_model.side_effect = [
+            AccessDeniedException("AccessDeniedException: not authorized to invoke model"),
+            {"body": fallback_body},
+        ]
+
+        control_client = MagicMock()
+        control_client.list_foundation_models.return_value = {
+            "modelSummaries": [{"modelId": "amazon.nova-micro-v1:0"}]
+        }
+
+        restricted_provider._client = runtime_client
+        restricted_provider._control_client = control_client
+        restricted_provider.inference_profile_id = None
+
+        result = await restricted_provider.generate("Test prompt")
+
+        assert result.content == "fallback response"
+        assert result.model == "amazon.nova-micro-v1:0"
+        assert restricted_provider.get_model_name() == "anthropic.claude-3-haiku-20240307-v1:0"

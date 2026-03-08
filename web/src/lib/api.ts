@@ -3,6 +3,8 @@
  */
 
 const API_BASE = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000';
+let resolvedAPIBase = API_BASE;
+let discoveringAPIBase: Promise<string | null> | null = null;
 
 // Validate API_BASE to prevent SSRF
 function validateAPIBase(base: string): void {
@@ -19,14 +21,96 @@ function validateAPIBase(base: string): void {
 
 validateAPIBase(API_BASE);
 
+function isLocalhostBase(base: string): boolean {
+  try {
+    const url = new URL(base);
+    return url.hostname === 'localhost' || url.hostname === '127.0.0.1';
+  } catch {
+    return false;
+  }
+}
+
+function buildCandidateBases(base: string): string[] {
+  try {
+    const url = new URL(base);
+    const fallbackPort = (url.hostname === 'localhost' || url.hostname === '127.0.0.1') ? 8000 : 443;
+    const currentPort = Number(url.port || fallbackPort);
+    const candidates = [currentPort, 8000, 8001, 8002, 8003, 8004, 8005];
+    const uniquePorts = Array.from(new Set(candidates.filter((p) => Number.isInteger(p) && p > 0)));
+    return uniquePorts.map((port) => `${url.protocol}//${url.hostname}:${port}`);
+  } catch {
+    return [base];
+  }
+}
+
+async function discoverLocalAPIBase(excludeBase?: string): Promise<string | null> {
+  if (!isLocalhostBase(API_BASE)) {
+    return null;
+  }
+
+  if (!discoveringAPIBase) {
+    discoveringAPIBase = (async () => {
+      const candidates = buildCandidateBases(API_BASE);
+      const healthyCandidates: string[] = [];
+
+      for (const candidate of candidates) {
+        if (excludeBase && candidate === excludeBase) {
+          continue;
+        }
+
+        try {
+          const health = await fetch(`${candidate}/health`, { method: 'GET' });
+          if (!health.ok) {
+            continue;
+          }
+
+          healthyCandidates.push(candidate);
+
+          // Prefer API instances that expose the newer LLM models endpoint.
+          const llmModels = await fetch(`${candidate}/api/v1/llm/models`, { method: 'GET' });
+          if (llmModels.ok) {
+            return candidate;
+          }
+        } catch {
+          // Try next candidate port.
+        }
+      }
+
+      if (healthyCandidates.length > 0) {
+        return healthyCandidates[0];
+      }
+
+      return null;
+    })();
+  }
+
+  const found = await discoveringAPIBase;
+  discoveringAPIBase = null;
+  return found;
+}
+
 async function fetchJSON<T>(path: string, options?: RequestInit): Promise<T> {
-  const res = await fetch(`${API_BASE}${path}`, {
+  let res = await fetch(`${resolvedAPIBase}${path}`, {
     ...options,
     headers: {
       'Content-Type': 'application/json',
       ...options?.headers,
     },
   });
+
+  if (!res.ok && isLocalhostBase(API_BASE)) {
+    const discovered = await discoverLocalAPIBase(resolvedAPIBase);
+    if (discovered && discovered !== resolvedAPIBase) {
+      resolvedAPIBase = discovered;
+      res = await fetch(`${resolvedAPIBase}${path}`, {
+        ...options,
+        headers: {
+          'Content-Type': 'application/json',
+          ...options?.headers,
+        },
+      });
+    }
+  }
 
   if (!res.ok) {
     const body = await res.text().catch(() => '');
@@ -307,16 +391,39 @@ export interface LLMConfig {
   reason?: string;
 }
 
+export interface LLMModelOption {
+  id: string;
+  label: string;
+}
+
+export interface LLMModelsResponse {
+  provider: string;
+  models: LLMModelOption[];
+  default_model: string;
+}
+
 export async function getLLMConfig(): Promise<LLMConfig> {
   return fetchJSON<LLMConfig>('/api/v1/llm/config');
 }
 
-export async function updateLLMConfig(provider: string, model?: string): Promise<{ provider: string; model?: string; updated: boolean }> {
+export async function getLLMModels(): Promise<LLMModelsResponse> {
+  return fetchJSON<LLMModelsResponse>('/api/v1/llm/models');
+}
+
+export interface UpdateLLMConfigResponse {
+  provider: string;
+  model?: string;
+  updated: boolean;
+  warning?: string | null;
+  inference_profile_configured?: boolean;
+}
+
+export async function updateLLMConfig(provider: string, model?: string): Promise<UpdateLLMConfigResponse> {
   const body: Record<string, string> = { provider };
   if (model) {
     body.bedrock_model = model;
   }
-  return fetchJSON<{ provider: string; model?: string; updated: boolean }>('/api/v1/llm/config', {
+  return fetchJSON<UpdateLLMConfigResponse>('/api/v1/llm/config', {
     method: 'PUT',
     body: JSON.stringify(body),
   });
@@ -346,6 +453,10 @@ export interface LLMHealth {
   queue_configured?: boolean;
   ready_for_enrichment?: boolean;
   reason?: string;
+  model_listed?: boolean;
+  invoke_ready?: boolean;
+  invoke_error?: string | null;
+  inference_profile_configured?: boolean;
 }
 
 export async function getEnrichment(propertyId: string): Promise<LLMEnrichment> {

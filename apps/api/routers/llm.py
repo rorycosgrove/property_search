@@ -23,9 +23,16 @@ from packages.storage.repositories import (
     PropertyRepository,
 )
 from packages.shared.config import settings
+from packages.ai.bedrock_provider import BedrockProvider
 
 router = APIRouter()
 
+
+def _model_requires_inference_profile(model_id: str | None) -> bool:
+    """Return True for model families that commonly require inference profiles."""
+    if not model_id:
+        return False
+    return model_id.startswith("amazon.nova-")
 
 def _llm_queue_configured() -> bool:
     return bool(settings.llm_queue_url or os.environ.get("LLM_QUEUE_URL", ""))
@@ -106,6 +113,29 @@ def get_llm_config():
     }
 
 
+@router.get("/models")
+def get_llm_models():
+    """Get available LLM models for provider selection UI."""
+    provider = BedrockProvider(region=settings.aws_region)
+    options = provider.get_runtime_ui_model_options()
+    option_ids = {m["id"] for m in options}
+    preferred_default = "amazon.titan-text-lite-v1"
+    if preferred_default in option_ids:
+        default_model = preferred_default
+    elif settings.bedrock_model_id in option_ids:
+        default_model = settings.bedrock_model_id
+    elif options:
+        default_model = options[0]["id"]
+    else:
+        default_model = settings.bedrock_model_id
+
+    return {
+        "provider": "bedrock",
+        "models": options,
+        "default_model": default_model,
+    }
+
+
 @router.put("/config")
 def update_llm_config(data: LLMConfigUpdate):
     """Update LLM provider configuration (stored in DynamoDB)."""
@@ -119,7 +149,24 @@ def update_llm_config(data: LLMConfigUpdate):
             status_code=503,
             detail="Failed to persist LLM config to DynamoDB. Check AWS credentials and table access.",
         )
-    return {"provider": provider_str, "model": model_str, "updated": True}
+    warning = None
+    if (
+        provider_str == "bedrock"
+        and _model_requires_inference_profile(model_str)
+        and not settings.bedrock_inference_profile_id
+    ):
+        warning = (
+            "Selected model may require BEDROCK_INFERENCE_PROFILE_ID for invocation. "
+            "Set it in .env and restart the API."
+        )
+
+    return {
+        "provider": provider_str,
+        "model": model_str,
+        "updated": True,
+        "warning": warning,
+        "inference_profile_configured": bool(settings.bedrock_inference_profile_id),
+    }
 
 
 @router.get("/health")
@@ -133,14 +180,46 @@ async def llm_health():
 
     provider = get_provider()
     healthy = await provider.health_check()
+    model_listed = True
+    invoke_ready = True
+    invoke_error = None
+    if isinstance(provider, BedrockProvider):
+        model_listed = provider.is_model_listed(provider.get_model_name())
+        if not model_listed:
+            healthy = False
+
+        # Ensure status reflects real invoke readiness, not just model listing metadata.
+        try:
+            await provider.generate(
+                prompt='{"ok": true}',
+                system_prompt='Return valid JSON only.',
+                json_mode=True,
+                max_tokens=32,
+                temperature=0.0,
+            )
+        except Exception as exc:
+            invoke_ready = False
+            invoke_error = str(exc)
+            healthy = False
+
+    reason = runtime["reason"]
+    if reason == "ok" and not model_listed:
+        reason = "model_not_listed"
+    if reason == "ok" and not invoke_ready:
+        reason = "model_invoke_failed"
+
     return {
         "enabled": runtime["enabled"],
         "provider": provider.get_provider_name(),
         "model": provider.get_model_name(),
         "queue_configured": runtime["queue_configured"],
         "ready_for_enrichment": runtime["ready_for_enrichment"],
-        "reason": runtime["reason"],
+        "reason": reason,
         "healthy": healthy,
+        "model_listed": model_listed,
+        "invoke_ready": invoke_ready,
+        "invoke_error": invoke_error,
+        "inference_profile_configured": bool(settings.bedrock_inference_profile_id),
     }
 
 
@@ -341,28 +420,18 @@ async def compare_property_set(data: CompareSetRequest, db: Session = Depends(ge
 
     try:
         analysis = await _generate_compare_set_analysis(data.ranking_mode, metrics)
-    except Exception:
-        analysis = {
-            "headline": "Best value recommendation",
-            "recommendation": (
-                "LLM analysis is temporarily unavailable. Ranking is based on structured metrics "
-                "(price, BER, grants, and cached value scores)."
-            ),
-            "key_tradeoffs": [
-                "Live narrative analysis could not be generated.",
-                "Review price per sqm and BER differences in the comparison table.",
-            ],
-            "confidence": "medium",
-            "citations": [
-                {
-                    "type": "property",
-                    "property_id": metric.get("property_id"),
-                    "url": metric.get("url"),
-                    "label": metric.get("title"),
-                }
-                for metric in metrics
-            ],
-        }
+    except Exception as exc:
+        raise HTTPException(
+            status_code=503,
+            detail={
+                "code": "llm_analysis_unavailable",
+                "message": (
+                    "LLM analysis is unavailable because the selected Bedrock model could not be invoked. "
+                    "Check model access approvals/inference profile setup in AWS Bedrock."
+                ),
+                "error": str(exc)[:300],
+            },
+        ) from exc
 
     return {
         "ranking_mode": data.ranking_mode,

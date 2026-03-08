@@ -1,24 +1,103 @@
 'use client';
 
 import { useEffect, useState } from 'react';
-import { getLLMConfig, updateLLMConfig } from '@/lib/api';
+import { getLLMConfig, getLLMModels, type LLMModelOption, updateLLMConfig } from '@/lib/api';
+
+const FALLBACK_MODELS: LLMModelOption[] = [
+  { id: 'amazon.titan-text-express-v1', label: 'Amazon Titan Text Express' },
+  { id: 'amazon.titan-text-lite-v1', label: 'Amazon Titan Text Lite' },
+  { id: 'amazon.nova-micro-v1:0', label: 'Amazon Nova Micro' },
+  { id: 'amazon.nova-lite-v1:0', label: 'Amazon Nova Lite' },
+  { id: 'amazon.nova-pro-v1:0', label: 'Amazon Nova Pro' },
+  { id: 'anthropic.claude-3-haiku-20240307-v1:0', label: 'Anthropic Claude 3 Haiku' },
+  { id: 'anthropic.claude-3-sonnet-20240229-v1:0', label: 'Anthropic Claude 3 Sonnet' },
+  { id: 'anthropic.claude-3-5-sonnet-20240620-v1:0', label: 'Anthropic Claude 3.5 Sonnet' },
+];
 
 export default function SettingsPage() {
   const [provider, setProvider] = useState('bedrock');
   const [model, setModel] = useState('');
+  const [models, setModels] = useState<LLMModelOption[]>([]);
+  const [modelsSource, setModelsSource] = useState<'api' | 'fallback'>('api');
+  const [saveWarning, setSaveWarning] = useState<string | null>(null);
+  const [saveError, setSaveError] = useState<string | null>(null);
+  const [isSaving, setIsSaving] = useState(false);
+  const [isLoading, setIsLoading] = useState(true);
   const [saved, setSaved] = useState(false);
 
   useEffect(() => {
-    getLLMConfig().then((config) => {
-      setProvider(config.provider);
-      setModel(config.model);
-    }).catch(console.error);
+    let isMounted = true;
+
+    getLLMConfig()
+      .then((config) => {
+        if (!isMounted) {
+          return;
+        }
+        setProvider(config.provider);
+        setModel(config.model);
+      })
+      .catch(console.error)
+      .finally(() => {
+        if (isMounted) {
+          setIsLoading(false);
+        }
+      });
+
+    getLLMModels()
+      .then((modelResponse) => {
+        if (!isMounted) {
+          return;
+        }
+
+        const apiModels = modelResponse.models;
+        if (!apiModels.length) {
+          setModels(FALLBACK_MODELS);
+          setModelsSource('fallback');
+          setModel((current) => current || FALLBACK_MODELS[0]?.id || '');
+          return;
+        }
+
+        setModels(apiModels);
+        setModelsSource('api');
+        setModel((current) => current || modelResponse.default_model || apiModels[0]?.id || '');
+      })
+      .catch((error) => {
+        console.error(error);
+        if (!isMounted) {
+          return;
+        }
+
+        setModels(FALLBACK_MODELS);
+        setModelsSource('fallback');
+        setModel((current) => current || FALLBACK_MODELS[0]?.id || '');
+      });
+
+    return () => {
+      isMounted = false;
+    };
   }, []);
 
   const handleSave = async () => {
-    await updateLLMConfig(provider, model || undefined);
-    setSaved(true);
-    setTimeout(() => setSaved(false), 2000);
+    if (!model || isSaving) {
+      return;
+    }
+
+    try {
+      setIsSaving(true);
+      setSaveError(null);
+      setSaveWarning(null);
+
+      const result = await updateLLMConfig(provider, model || undefined);
+      setSaveWarning(result.warning || null);
+      setSaved(true);
+      setTimeout(() => setSaved(false), 2000);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Failed to save LLM settings.';
+      setSaveError(message);
+      setSaved(false);
+    } finally {
+      setIsSaving(false);
+    }
   };
 
   return (
@@ -43,24 +122,48 @@ export default function SettingsPage() {
 
           <div>
             <label className="block text-sm text-[var(--muted)] mb-1">Model</label>
-            <input
-              type="text"
+            <select
               value={model}
               onChange={(e) => setModel(e.target.value)}
-              placeholder="amazon.titan-text-express-v1"
+              disabled={isLoading}
               className="w-full bg-[var(--background)] border border-[var(--card-border)] rounded px-3 py-2"
-            />
+            >
+              <option value="" disabled>{isLoading ? 'Loading models...' : 'Select an LLM model'}</option>
+              {models.map((modelOption) => (
+                <option key={modelOption.id} value={modelOption.id}>
+                  {modelOption.label} ({modelOption.id})
+                </option>
+              ))}
+              {model && !models.some((modelOption) => modelOption.id === model) ? (
+                <option value={model}>{`Current custom model (${model})`}</option>
+              ) : null}
+            </select>
             <p className="text-xs text-[var(--muted)] mt-1">
-              Available models: amazon.titan-text-express-v1, amazon.nova-micro-v1:0, amazon.nova-lite-v1:0
+              {modelsSource === 'api'
+                ? 'Models shown are fetched from the API.'
+                : 'Using built-in fallback models because the models endpoint is unavailable.'}
             </p>
           </div>
 
           <button
             onClick={handleSave}
-            className="px-4 py-2 bg-brand-600 hover:bg-brand-700 rounded text-sm font-medium transition-colors"
+            disabled={!model || isSaving || isLoading}
+            className="px-4 py-2 bg-brand-600 hover:bg-brand-700 disabled:bg-brand-800/50 disabled:cursor-not-allowed rounded text-sm font-medium transition-colors"
           >
-            {saved ? '✓ Saved' : 'Save'}
+            {isSaving ? 'Saving...' : saved ? '✓ Saved' : 'Save'}
           </button>
+
+          {saveError ? (
+            <div className="rounded border border-red-500/40 bg-red-500/10 px-3 py-2 text-sm text-red-300">
+              {saveError}
+            </div>
+          ) : null}
+
+          {saveWarning ? (
+            <div className="rounded border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-sm text-amber-300">
+              {saveWarning}
+            </div>
+          ) : null}
         </div>
       </div>
 
