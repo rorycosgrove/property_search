@@ -21,8 +21,8 @@ export default function PropertyFeed({ properties, total, loading }: Props) {
   return (
     <div className="flex flex-col h-full">
       {/* Header */}
-      <div className="px-4 py-3 border-b border-[var(--card-border)] text-sm text-[var(--muted)] bg-[var(--card-bg)]/80">
-        {loading ? 'Building your shortlist...' : `${total.toLocaleString()} homes found for your mission`}
+      <div className="px-4 py-3 border-b border-[var(--card-border)] text-sm text-[var(--muted)] bg-[var(--card-bg)]/88">
+        {loading ? 'Updating your shortlist...' : `${total.toLocaleString()} homes match your search`}
       </div>
 
       {/* List */}
@@ -34,7 +34,7 @@ export default function PropertyFeed({ properties, total, loading }: Props) {
             return (
           <div
             key={prop.id}
-            className="p-3 border-b border-[var(--card-border)] hover:bg-[var(--card-bg)] cursor-pointer transition-colors focus:outline-none focus:ring-2 focus:ring-cyan-700/50"
+            className="p-3 border-b border-[var(--card-border)] hover:bg-[var(--card-bg)]/85 cursor-pointer transition-colors focus:outline-none focus:ring-2 focus:ring-cyan-700/50"
             onClick={() => {
               selectProperty(prop.id);
               openDetail(prop);
@@ -78,7 +78,7 @@ export default function PropertyFeed({ properties, total, loading }: Props) {
                   )}
                 </div>
 
-                <h3 className="text-sm font-semibold leading-tight mb-0.5">{truncate(prop.title, 76)}</h3>
+                <h3 className="text-sm font-semibold leading-tight mb-0.5">{truncate(prop.title, 72)}</h3>
                 <p className="text-xs text-[var(--muted)] mb-1">
                   {prop.county && `${prop.county} · `}
                   {truncate(prop.address, 50)}
@@ -87,7 +87,7 @@ export default function PropertyFeed({ properties, total, loading }: Props) {
                 <div className="flex gap-2 text-[11px] text-[var(--muted)] mb-1">
                   {prop.bedrooms != null && <span>{prop.bedrooms} bed</span>}
                   {prop.bathrooms != null && <span>{prop.bathrooms} bath</span>}
-                  {prop.floor_area_sqm != null && <span>{prop.floor_area_sqm} m2</span>}
+                  {prop.floor_area_sqm != null && <span>{prop.floor_area_sqm} sqm</span>}
                 </div>
 
                 <button
@@ -102,7 +102,7 @@ export default function PropertyFeed({ properties, total, loading }: Props) {
                       ? 'border-[var(--accent)] text-[var(--accent)] bg-cyan-900/10'
                       : compareFull
                         ? 'border-[var(--card-border)] text-[var(--muted)]'
-                      : 'border-[var(--card-border)] hover:bg-[var(--card-border)]',
+                      : 'border-[var(--card-border)] hover:bg-[var(--background)]',
                   ].join(' ')}
                 >
                   {inCompare ? 'In compare' : compareFull ? 'Compare full (5/5)' : 'Add to compare'}
@@ -116,7 +116,7 @@ export default function PropertyFeed({ properties, total, loading }: Props) {
 
         {!loading && properties.length === 0 && (
           <div className="text-center py-12 text-[var(--muted)]">
-            No properties match your filters
+            No homes match these filters
           </div>
         )}
       </div>

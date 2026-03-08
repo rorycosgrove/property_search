@@ -35,12 +35,12 @@ export default function CompareDock({
   autoCompareTargetCount,
 }: Props) {
   return (
-    <section className="border-t border-[var(--card-border)] ai-glass px-4 py-3 rise-in">
-      <div className="flex flex-wrap items-center justify-between gap-3 mb-3">
+    <section className="border-t border-[var(--card-border)] bg-[var(--card-bg)]/88 px-4 py-3 rise-in">
+      <div className="flex flex-wrap items-center justify-between gap-3 mb-2">
         <div>
-          <h2 className="text-sm font-semibold tracking-wide">Decision Studio</h2>
+          <h2 className="text-sm font-semibold tracking-wide">Comparison shortlist</h2>
           <p className="text-xs text-[var(--muted)]">
-            {compared.length}/5 selected. Atlas AI will rank, explain trade-offs, and suggest next actions.
+            {compared.length}/5 selected for AI ranking.
           </p>
         </div>
 
@@ -48,7 +48,7 @@ export default function CompareDock({
           <select
             value={rankingMode}
             onChange={(e) => onRankingModeChange(e.target.value as RankingMode)}
-            className="bg-[var(--background)] border border-[var(--card-border)] rounded px-2 py-1.5 text-xs"
+            className="bg-[var(--background)] border border-[var(--card-border)] rounded px-2 py-1.5 text-xs focus-ring"
           >
             {Object.entries(MODE_LABELS).map(([key, label]) => (
               <option key={key} value={key}>
@@ -59,19 +59,19 @@ export default function CompareDock({
           <button
             onClick={onClear}
             disabled={compared.length === 0}
-            className="px-3 py-1.5 text-xs rounded border border-[var(--card-border)] hover:bg-[var(--card-border)] disabled:opacity-50"
+            className="px-3 py-1.5 text-xs rounded border border-[var(--card-border)] hover:bg-[var(--background)] disabled:opacity-50"
           >
             Clear
           </button>
         </div>
       </div>
 
-      <p className="text-xs text-[var(--muted)] mb-3">{MODE_HINTS[rankingMode]}</p>
+      <p className="text-xs text-[var(--muted)] mb-1">{MODE_HINTS[rankingMode]}</p>
       <p className="text-xs text-[var(--muted)] mb-3">
         {loading
           ? 'Atlas is auto-comparing your current search context...'
           : autoCompareTargetCount >= 2
-            ? `Auto-compare active for top ${autoCompareTargetCount} properties in this search.`
+            ? `Auto-compare is live for top ${autoCompareTargetCount} homes in this search.`
             : 'Auto-compare will start when at least 2 properties are available.'}
       </p>
 
@@ -81,7 +81,7 @@ export default function CompareDock({
           return (
             <article
               key={property.id}
-              className="rounded-md border border-[var(--card-border)] overflow-hidden bg-[var(--background)]"
+              className="rounded-lg border border-[var(--card-border)] overflow-hidden bg-[var(--background)]"
             >
               <div className="h-20 bg-neutral-900">
                 {imageUrl ? (
