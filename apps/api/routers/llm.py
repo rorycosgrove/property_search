@@ -6,10 +6,11 @@ import json
 import os
 from typing import Any
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
 
 from packages.shared.schemas import (
+    AutoCompareRequest,
     CompareSetRequest,
     ConversationCreate,
     ConversationMessageCreate,
@@ -19,6 +20,7 @@ from packages.storage.database import get_db_session
 from packages.storage.repositories import (
     ConversationRepository,
     LLMEnrichmentRepository,
+    OrganicSearchRunRepository,
     PropertyGrantMatchRepository,
     PropertyRepository,
 )
@@ -81,6 +83,7 @@ def _serialize_grant_citations(matches: list) -> list[dict[str, Any]]:
         grant = getattr(match, "grant_program", None)
         if not grant:
             continue
+        estimated = getattr(match, "estimated_benefit", None)
         citations.append(
             {
                 "type": "grant",
@@ -89,9 +92,23 @@ def _serialize_grant_citations(matches: list) -> list[dict[str, Any]]:
                 "label": getattr(grant, "name", None),
                 "url": getattr(grant, "source_url", None),
                 "status": getattr(match, "status", None),
+                "estimated_benefit": float(estimated) if estimated is not None else None,
             }
         )
     return citations
+
+
+def _extract_compare_result_from_steps(steps: list[Any] | None) -> dict[str, Any] | None:
+    """Extract persisted compare-set payload from run steps when present."""
+    for step in steps or []:
+        if not isinstance(step, dict):
+            continue
+        if step.get("step") != "compare_property_set":
+            continue
+        step_result = step.get("result")
+        if isinstance(step_result, dict) and "ranking_mode" in step_result and "properties" in step_result:
+            return step_result
+    return None
 
 
 @router.get("/config")
@@ -334,17 +351,150 @@ def get_llm_stats(db: Session = Depends(get_db_session)):
 @router.post("/compare-set")
 async def compare_property_set(data: CompareSetRequest, db: Session = Depends(get_db_session)):
     """Compare up to 5 properties and return mode-specific value ranking + LLM analysis."""
+    result = await _compute_compare_set(
+        db=db,
+        property_ids=data.property_ids,
+        ranking_mode=data.ranking_mode,
+        weights=data.weights.model_dump() if data.weights else None,
+    )
+    return result
+
+
+@router.post("/auto-compare")
+async def auto_compare(
+    data: AutoCompareRequest,
+    db: Session = Depends(get_db_session),
+):
+    """Run an auto-compare for current search context and persist run metadata."""
+    session_id = data.session_id.strip()
+    property_ids = data.property_ids
+    ranking_mode = data.ranking_mode
+    weights = data.weights.model_dump() if data.weights else None
+    search_context = data.search_context
+
+    run_repo = OrganicSearchRunRepository(db)
+
+    latest_run = run_repo.get_latest_for_session(session_id=session_id, triggered_from="auto_compare")
+    if latest_run and latest_run.status == "completed":
+        latest_options = latest_run.options or {}
+        latest_ids = latest_options.get("property_ids") if isinstance(latest_options, dict) else None
+        if isinstance(latest_ids, list):
+            normalized_latest_ids = [
+                pid for pid in latest_ids if isinstance(pid, str) and pid
+            ][:5]
+            normalized_requested_ids = [pid for pid in property_ids if isinstance(pid, str) and pid][:5]
+            latest_result = _extract_compare_result_from_steps(latest_run.steps)
+            if (
+                latest_options.get("ranking_mode") == ranking_mode
+                and normalized_latest_ids == normalized_requested_ids
+                and latest_result is not None
+            ):
+                return {
+                    "run_id": str(latest_run.id),
+                    "session_id": session_id,
+                    "result": latest_result,
+                    "cached": True,
+                }
+
+    try:
+        result = await _compute_compare_set(
+            db=db,
+            property_ids=property_ids,
+            ranking_mode=ranking_mode,
+            weights=weights,
+        )
+        run = run_repo.create(
+            status="completed",
+            triggered_from="auto_compare",
+            options={
+                "session_id": session_id,
+                "ranking_mode": ranking_mode,
+                "property_ids": property_ids,
+                "search_context": search_context,
+            },
+            steps=[
+                {
+                    "step": "compare_property_set",
+                    "status": "completed",
+                    "result": result,
+                }
+            ],
+        )
+        return {
+            "run_id": str(run.id),
+            "session_id": session_id,
+            "result": result,
+            "cached": False,
+        }
+    except HTTPException:
+        raise
+    except Exception as exc:
+        run = run_repo.create(
+            status="failed",
+            triggered_from="auto_compare",
+            options={
+                "session_id": session_id,
+                "ranking_mode": ranking_mode,
+                "property_ids": property_ids,
+                "search_context": search_context,
+            },
+            steps=[],
+            error=str(exc),
+        )
+        raise HTTPException(
+            status_code=503,
+            detail={
+                "code": "auto_compare_failed",
+                "message": "Automatic comparison failed.",
+                "run_id": str(run.id),
+                "error": str(exc)[:300],
+            },
+        ) from exc
+
+
+@router.get("/auto-compare/latest")
+def get_latest_auto_compare(
+    session_id: str = Query(..., min_length=1),
+    db: Session = Depends(get_db_session),
+):
+    """Return latest persisted auto-compare run metadata for a session."""
+    run_repo = OrganicSearchRunRepository(db)
+    run = run_repo.get_latest_for_session(session_id=session_id, triggered_from="auto_compare")
+    if not run:
+        raise HTTPException(404, "No auto-compare run for this session")
+
+    latest_result = _extract_compare_result_from_steps(run.steps)
+
+    return {
+        "run_id": str(run.id),
+        "status": run.status,
+        "options": run.options or {},
+        "steps": run.steps or [],
+        "result": latest_result,
+        "error": run.error,
+        "created_at": run.created_at.isoformat() if run.created_at else None,
+    }
+
+
+async def _compute_compare_set(
+    *,
+    db: Session,
+    property_ids: list[str],
+    ranking_mode: str,
+    weights: dict[str, Any] | None,
+) -> dict[str, Any]:
+    """Compute compare-set output used by manual and automatic comparison flows."""
     property_repo = PropertyRepository(db)
     enrichment_repo = LLMEnrichmentRepository(db)
 
     properties = []
-    for pid in data.property_ids:
+    for pid in property_ids:
         prop = property_repo.get_by_id(pid)
         if not prop:
             raise HTTPException(404, f"Property not found: {pid}")
         properties.append(prop)
 
-    weights = data.weights.model_dump() if data.weights else {
+    active_weights = weights or {
         "value": 0.4,
         "location": 0.2,
         "condition": 0.2,
@@ -374,10 +524,10 @@ async def compare_property_set(data: CompareSetRequest, db: Session = Depends(ge
             10.0,
             max(
                 0.0,
-                (llm_score * weights["value"])
-                + (ber_boost * 10 * weights["condition"])
-                + (grants_boost * 10 * weights["potential"])
-                + (_location_score(prop.county) * weights["location"]),
+                (llm_score * active_weights["value"])
+                + (ber_boost * 10 * active_weights["condition"])
+                + (grants_boost * 10 * active_weights["potential"])
+                + (_location_score(prop.county) * active_weights["location"]),
             ),
         )
 
@@ -414,12 +564,12 @@ async def compare_property_set(data: CompareSetRequest, db: Session = Depends(ge
         "hybrid": "hybrid_score",
         "user_weighted": "weighted_score",
     }
-    score_key = mode_to_key.get(data.ranking_mode, "hybrid_score")
+    score_key = mode_to_key.get(ranking_mode, "hybrid_score")
     metrics.sort(key=lambda m: float(m.get(score_key) or 0.0), reverse=True)
     winner = metrics[0]["property_id"] if metrics else None
 
     try:
-        analysis = await _generate_compare_set_analysis(data.ranking_mode, metrics)
+        analysis = await _generate_compare_set_analysis(ranking_mode, metrics)
     except Exception as exc:
         raise HTTPException(
             status_code=503,
@@ -434,7 +584,7 @@ async def compare_property_set(data: CompareSetRequest, db: Session = Depends(ge
         ) from exc
 
     return {
-        "ranking_mode": data.ranking_mode,
+        "ranking_mode": ranking_mode,
         "properties": metrics,
         "winner_property_id": winner,
         "analysis": analysis,
@@ -486,6 +636,7 @@ async def send_message(
 
     # Build a grounded context payload for prompt assembly.
     property_context = None
+    request_context = dict(data.retrieval_context or {})
     if data.property_id:
         prop = property_repo.get_by_id(data.property_id)
         if prop:
@@ -511,11 +662,32 @@ async def send_message(
                     for m in grant_matches
                 ],
             }
+            request_context.update(
+                {
+                    "selected_property_id": str(prop.id),
+                    "selected_property_title": prop.title,
+                    "grant_count": len(grant_matches),
+                    "grants_considered": [
+                        {
+                            "code": m.grant_program.code if m.grant_program else None,
+                            "status": m.status,
+                            "estimated_benefit": float(m.estimated_benefit)
+                            if m.estimated_benefit is not None
+                            else None,
+                        }
+                        for m in grant_matches[:5]
+                    ],
+                }
+            )
 
     from packages.ai.service import get_provider
 
     provider = get_provider()
-    prompt = _build_chat_prompt(data.content, property_context)
+    prompt = _build_chat_prompt(
+        user_content=data.content,
+        property_context=property_context,
+        retrieval_context=request_context,
+    )
     response = await provider.generate(
         prompt=prompt,
         system_prompt=(
@@ -554,12 +726,29 @@ async def send_message(
         "conversation_id": conversation_id,
         "user_message": _message_to_dict(user_msg),
         "assistant_message": _message_to_dict(assistant_msg),
+        "retrieval_context": request_context,
     }
 
 
-def _build_chat_prompt(user_content: str, property_context: dict | None) -> str:
+def _build_chat_prompt(
+    user_content: str,
+    property_context: dict | None,
+    retrieval_context: dict[str, Any] | None,
+) -> str:
+    retrieval = retrieval_context or {}
+    retrieval_lines = ""
+    if retrieval:
+        retrieval_lines = (
+            "Current retrieval context:\n"
+            f"- ranking_mode: {retrieval.get('ranking_mode')}\n"
+            f"- shortlist_size: {retrieval.get('shortlist_size')}\n"
+            f"- winner_property_id: {retrieval.get('winner_property_id')}\n"
+            f"- winner_property_title: {retrieval.get('winner_property_title')}\n"
+            "\n"
+        )
+
     if not property_context:
-        return user_content
+        return f"{retrieval_lines}User question:\n{user_content}" if retrieval_lines else user_content
 
     grants = property_context.get("grants") or []
     grant_lines = ""
@@ -574,6 +763,7 @@ def _build_chat_prompt(user_content: str, property_context: dict | None) -> str:
         grant_lines = "Potential grants:\n" + "\n".join(formatted) + "\n"
 
     return (
+        f"{retrieval_lines}"
         "Context property:\n"
         f"- ID: {property_context.get('id')}\n"
         f"- Title: {property_context.get('title')}\n"
@@ -649,7 +839,7 @@ async def _generate_compare_set_analysis(ranking_mode: str, metrics: list[dict[s
     prompt = (
         "You are evaluating value-for-money in Irish property listings. "
         "Given the property metrics JSON and ranking mode, return JSON only with keys: "
-        "headline, recommendation, key_tradeoffs (array of strings), confidence (low|medium|high).\n\n"
+        "headline, recommendation, key_tradeoffs (array of strings), confidence (low|medium|high), reasoning.\n\n"
         f"Ranking mode: {ranking_mode}\n"
         f"Metrics JSON: {payload}"
     )
@@ -689,5 +879,7 @@ async def _generate_compare_set_analysis(ranking_mode: str, metrics: list[dict[s
         "recommendation": parsed.get("recommendation") or "No recommendation generated.",
         "key_tradeoffs": parsed.get("key_tradeoffs") or [],
         "confidence": parsed.get("confidence") or "medium",
+        "reasoning": parsed.get("reasoning")
+        or f"Ranking mode '{ranking_mode}' was used to optimize winner selection.",
         "citations": citations,
     }

@@ -2,15 +2,26 @@
 
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
 
 from packages.shared.schemas import SourceCreate, SourceUpdate
+from packages.sources.discovery import load_discovery_candidates
 from packages.sources.registry import get_adapter_names, list_adapters
 from packages.storage.database import get_db_session
-from packages.storage.repositories import SourceRepository
+from packages.storage.repositories import OrganicSearchRunRepository, SourceRepository
 
 router = APIRouter()
+
+
+def _merge_tags(existing: list[str] | None, additions: list[str]) -> list[str]:
+    seen: set[str] = set()
+    merged: list[str] = []
+    for value in (existing or []) + additions:
+        if value and value not in seen:
+            seen.add(value)
+            merged.append(value)
+    return merged
 
 
 @router.get("")
@@ -104,6 +115,166 @@ def trigger_scrape(source_id: str, db: Session = Depends(get_db_session)):
         return {"status": "processed_inline", "result": result}
 
 
+@router.post("/trigger-all")
+def trigger_full_organic_search(
+    run_alerts: bool = Query(True, description="Trigger alert evaluation after scrape"),
+    run_llm_batch: bool = Query(True, description="Trigger LLM enrichment batch"),
+    llm_limit: int = Query(50, ge=1, le=500, description="Max properties to enrich"),
+    db: Session = Depends(get_db_session),
+):
+    """Trigger the full organic search pipeline.
+
+    Steps:
+    1) scrape_all_sources
+    2) evaluate_alerts (optional)
+    3) enrich_batch_llm (optional)
+    """
+    from apps.worker.tasks import enrich_batch_llm, evaluate_alerts, scrape_all_sources
+    from packages.shared.queue import send_task
+
+    steps: list[dict] = []
+    run_repo = OrganicSearchRunRepository(db)
+
+    def _dispatch_or_inline(queue_type: str, task_type: str, payload: dict, inline_fn):
+        try:
+            task_id = send_task(queue_type, task_type, payload)
+            return {
+                "step": task_type,
+                "status": "dispatched",
+                "task_id": task_id,
+            }
+        except ValueError:
+            result = inline_fn(**payload)
+            return {
+                "step": task_type,
+                "status": "processed_inline",
+                "result": result,
+            }
+
+    steps.append(_dispatch_or_inline("scrape", "scrape_all_sources", {}, scrape_all_sources))
+
+    if run_alerts:
+        steps.append(_dispatch_or_inline("alert", "evaluate_alerts", {}, evaluate_alerts))
+
+    if run_llm_batch:
+        steps.append(_dispatch_or_inline("llm", "enrich_batch_llm", {"limit": llm_limit}, enrich_batch_llm))
+
+    statuses = {s["status"] for s in steps}
+    if statuses == {"dispatched"}:
+        status = "dispatched"
+    elif statuses == {"processed_inline"}:
+        status = "processed_inline"
+    else:
+        status = "mixed"
+
+    run = run_repo.create(
+        status=status,
+        triggered_from="api_sources_trigger_all",
+        options={
+            "run_alerts": run_alerts,
+            "run_llm_batch": run_llm_batch,
+            "llm_limit": llm_limit,
+        },
+        steps=steps,
+    )
+
+    return {
+        "run_id": str(run.id),
+        "status": status,
+        "steps": steps,
+    }
+
+
+@router.post("/discover-auto")
+def discover_sources_auto(
+    auto_enable: bool = Query(False, description="Enable discovered sources immediately"),
+    limit: int = Query(25, ge=1, le=200),
+    db: Session = Depends(get_db_session),
+):
+    """Auto-discover known feed/source candidates and add missing ones.
+
+    By default discovered sources are created disabled with `pending_approval` tag.
+    """
+    repo = SourceRepository(db)
+    adapter_names = set(get_adapter_names())
+    created = []
+    existing = []
+    skipped_invalid = []
+
+    for candidate in load_discovery_candidates()[:limit]:
+        adapter_name = candidate.get("adapter_name")
+        url = candidate.get("url")
+        if adapter_name not in adapter_names or not url:
+            skipped_invalid.append({"url": url, "reason": "unknown_adapter_or_missing_url"})
+            continue
+
+        current = repo.get_by_url(url)
+        if current:
+            existing.append({"id": str(current.id), "url": current.url, "name": current.name})
+            continue
+
+        tags = _merge_tags(
+            candidate.get("tags", []),
+            ["auto_discovered"] + ([] if auto_enable else ["pending_approval"]),
+        )
+        source = repo.create(
+            name=candidate.get("name") or f"Discovered {adapter_name}",
+            url=url,
+            adapter_type=candidate.get("adapter_type") or "scraper",
+            adapter_name=adapter_name,
+            config=candidate.get("config") or {},
+            enabled=auto_enable,
+            poll_interval_seconds=int(candidate.get("poll_interval_seconds") or 21600),
+            tags=tags,
+        )
+        created.append(_to_dict(source))
+
+    return {
+        "created": created,
+        "existing": existing,
+        "skipped_invalid": skipped_invalid,
+        "auto_enable": auto_enable,
+    }
+
+
+@router.get("/discovery/pending")
+def list_pending_discovered_sources(db: Session = Depends(get_db_session)):
+    """List auto-discovered sources awaiting manual approval."""
+    repo = SourceRepository(db)
+    pending = [
+        s for s in repo.get_all() if isinstance(s.tags, list) and "pending_approval" in s.tags
+    ]
+    return [_to_dict(s) for s in pending]
+
+
+@router.post("/{source_id}/approve-discovered")
+def approve_discovered_source(source_id: str, db: Session = Depends(get_db_session)):
+    """Approve a pending auto-discovered source and enable it."""
+    repo = SourceRepository(db)
+    source = repo.get_by_id(source_id)
+    if not source:
+        raise HTTPException(404, "Source not found")
+
+    if not isinstance(source.tags, list):
+        source.tags = []
+
+    source.tags = [tag for tag in source.tags if tag != "pending_approval"]
+    source.enabled = True
+    updated = repo.update(source_id, tags=source.tags, enabled=True)
+    return _to_dict(updated)
+
+
+@router.get("/trigger-all/history")
+def list_full_organic_search_history(
+    limit: int = Query(20, ge=1, le=100),
+    db: Session = Depends(get_db_session),
+):
+    """List recent full organic search trigger runs."""
+    run_repo = OrganicSearchRunRepository(db)
+    runs = run_repo.list_recent(limit=limit)
+    return [_organic_run_to_dict(r) for r in runs]
+
+
 def _to_dict(source) -> dict:
     return {
         "id": str(source.id),
@@ -122,4 +293,16 @@ def _to_dict(source) -> dict:
         "total_listings": source.total_listings,
         "created_at": source.created_at.isoformat() if source.created_at else None,
         "updated_at": source.updated_at.isoformat() if source.updated_at else None,
+    }
+
+
+def _organic_run_to_dict(run) -> dict:
+    return {
+        "id": str(run.id),
+        "status": run.status,
+        "triggered_from": run.triggered_from,
+        "options": run.options or {},
+        "steps": run.steps or [],
+        "error": run.error,
+        "created_at": run.created_at.isoformat() if run.created_at else None,
     }

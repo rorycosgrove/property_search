@@ -35,6 +35,15 @@ def test_scrape_all_sources_falls_back_inline_when_scrape_queue_missing(monkeypa
     monkeypatch.setattr("packages.storage.database.get_session", lambda: _SessionCtx())
     monkeypatch.setattr("packages.storage.repositories.SourceRepository", FakeSourceRepository)
     monkeypatch.setattr(
+        "apps.worker.tasks.discover_sources",
+        lambda **_kwargs: {
+            "created": 1,
+            "existing": 0,
+            "skipped_invalid": 0,
+            "auto_enable": False,
+        },
+    )
+    monkeypatch.setattr(
         "packages.shared.queue.send_task",
         lambda *args, **kwargs: send_calls.append((args, kwargs)),
     )
@@ -49,6 +58,14 @@ def test_scrape_all_sources_falls_back_inline_when_scrape_queue_missing(monkeypa
         "dispatched": 2,
         "processed_inline": 2,
         "dispatch_mode": "inline",
+        "discovery_during_scrape": {
+            "created": 1,
+            "existing": 0,
+            "skipped_invalid": 0,
+            "auto_enable": False,
+            "enabled": True,
+            "limit": 10,
+        },
     }
     assert inline_calls == ["source-1", "source-2"]
     assert send_calls == []
@@ -74,6 +91,15 @@ def test_scrape_all_sources_uses_sqs_dispatch_when_queue_configured(monkeypatch)
     monkeypatch.setattr("packages.storage.database.get_session", lambda: _SessionCtx())
     monkeypatch.setattr("packages.storage.repositories.SourceRepository", FakeSourceRepository)
     monkeypatch.setattr(
+        "apps.worker.tasks.discover_sources",
+        lambda **_kwargs: {
+            "created": 0,
+            "existing": 2,
+            "skipped_invalid": 0,
+            "auto_enable": False,
+        },
+    )
+    monkeypatch.setattr(
         "packages.shared.queue.send_task",
         lambda *args, **kwargs: send_calls.append((args, kwargs)) or "msg-id",
     )
@@ -88,6 +114,14 @@ def test_scrape_all_sources_uses_sqs_dispatch_when_queue_configured(monkeypatch)
         "dispatched": 2,
         "processed_inline": 0,
         "dispatch_mode": "sqs",
+        "discovery_during_scrape": {
+            "created": 0,
+            "existing": 2,
+            "skipped_invalid": 0,
+            "auto_enable": False,
+            "enabled": True,
+            "limit": 10,
+        },
     }
     assert inline_calls == []
     assert len(send_calls) == 2
@@ -281,3 +315,127 @@ def test_scrape_source_skips_when_source_lock_not_acquired(monkeypatch):
     assert result["source_id"] == "myhome-source-id"
     assert result["skipped"] is True
     assert result["reason"] == "source_in_flight"
+
+
+def test_scrape_all_sources_discovers_but_only_scrapes_enabled_snapshot(monkeypatch):
+    """Discovery during scrape should not force pending sources into current scrape cycle."""
+    monkeypatch.setenv("SCRAPE_QUEUE_URL", "https://example.com/sqs/scrape")
+
+    # Source snapshot from DB remains enabled-only list for this cycle.
+    fake_sources = [SimpleNamespace(id="enabled-source-1")]
+
+    class FakeSourceRepository:
+        def __init__(self, _db):
+            pass
+
+        def get_all(self, enabled_only=True):
+            assert enabled_only is True
+            return fake_sources
+
+    send_calls: list[tuple[tuple, dict]] = []
+
+    monkeypatch.setattr("packages.storage.database.get_session", lambda: _SessionCtx())
+    monkeypatch.setattr("packages.storage.repositories.SourceRepository", FakeSourceRepository)
+    monkeypatch.setattr(
+        "apps.worker.tasks.discover_sources",
+        lambda **_kwargs: {
+            "created": 1,
+            "existing": 0,
+            "skipped_invalid": 0,
+            "auto_enable": False,
+        },
+    )
+    monkeypatch.setattr(
+        "packages.shared.queue.send_task",
+        lambda *args, **kwargs: send_calls.append((args, kwargs)) or "msg-id",
+    )
+
+    result = scrape_all_sources()
+
+    assert result["dispatched"] == 1
+    assert result["dispatch_mode"] == "sqs"
+    assert result["discovery_during_scrape"]["created"] == 1
+    assert send_calls == [(("scrape", "scrape_source", {"source_id": "enabled-source-1"}), {})]
+
+
+def test_scrape_all_sources_can_disable_discovery_via_env(monkeypatch):
+    """Discovery hook can be disabled and scrape dispatch should still run."""
+    monkeypatch.setenv("SCRAPE_QUEUE_URL", "https://example.com/sqs/scrape")
+    monkeypatch.setenv("DISCOVERY_DURING_SCRAPE_ENABLED", "false")
+
+    fake_sources = [SimpleNamespace(id="source-1")]
+
+    class FakeSourceRepository:
+        def __init__(self, _db):
+            pass
+
+        def get_all(self, enabled_only=True):
+            assert enabled_only is True
+            return fake_sources
+
+    send_calls: list[tuple[tuple, dict]] = []
+    discover_calls: list[dict] = []
+
+    monkeypatch.setattr("packages.storage.database.get_session", lambda: _SessionCtx())
+    monkeypatch.setattr("packages.storage.repositories.SourceRepository", FakeSourceRepository)
+    monkeypatch.setattr(
+        "apps.worker.tasks.discover_sources",
+        lambda **kwargs: discover_calls.append(kwargs) or {
+            "created": 999,
+            "existing": 0,
+            "skipped_invalid": 0,
+            "auto_enable": False,
+        },
+    )
+    monkeypatch.setattr(
+        "packages.shared.queue.send_task",
+        lambda *args, **kwargs: send_calls.append((args, kwargs)) or "msg-id",
+    )
+
+    result = scrape_all_sources()
+
+    assert discover_calls == []
+    assert result["dispatched"] == 1
+    assert result["dispatch_mode"] == "sqs"
+    assert result["discovery_during_scrape"]["enabled"] is False
+    assert result["discovery_during_scrape"]["created"] == 0
+    assert send_calls == [(("scrape", "scrape_source", {"source_id": "source-1"}), {})]
+
+
+def test_scrape_all_sources_continues_when_discovery_fails(monkeypatch):
+    """Discovery failure should be non-fatal and scraping should continue."""
+    monkeypatch.setenv("SCRAPE_QUEUE_URL", "https://example.com/sqs/scrape")
+
+    fake_sources = [SimpleNamespace(id="source-1"), SimpleNamespace(id="source-2")]
+
+    class FakeSourceRepository:
+        def __init__(self, _db):
+            pass
+
+        def get_all(self, enabled_only=True):
+            assert enabled_only is True
+            return fake_sources
+
+    send_calls: list[tuple[tuple, dict]] = []
+
+    monkeypatch.setattr("packages.storage.database.get_session", lambda: _SessionCtx())
+    monkeypatch.setattr("packages.storage.repositories.SourceRepository", FakeSourceRepository)
+    monkeypatch.setattr(
+        "apps.worker.tasks.discover_sources",
+        lambda **_kwargs: (_ for _ in ()).throw(RuntimeError("discovery exploded")),
+    )
+    monkeypatch.setattr(
+        "packages.shared.queue.send_task",
+        lambda *args, **kwargs: send_calls.append((args, kwargs)) or "msg-id",
+    )
+
+    result = scrape_all_sources()
+
+    assert result["dispatched"] == 2
+    assert result["dispatch_mode"] == "sqs"
+    assert result["discovery_during_scrape"]["enabled"] is True
+    assert result["discovery_during_scrape"]["error"] == "discovery exploded"
+    assert send_calls == [
+        (("scrape", "scrape_source", {"source_id": "source-1"}), {}),
+        (("scrape", "scrape_source", {"source_id": "source-2"}), {}),
+    ]

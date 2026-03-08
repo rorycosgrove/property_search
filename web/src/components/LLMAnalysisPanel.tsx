@@ -1,6 +1,6 @@
 'use client';
 
-import type { CompareSetResponse } from '@/lib/api';
+import type { Citation, CompareSetResponse } from '@/lib/api';
 import { formatEur } from '@/lib/utils';
 
 interface CompareErrorState {
@@ -18,6 +18,33 @@ interface Props {
 }
 
 export default function LLMAnalysisPanel({ result, loading, error, onRetry, canRetry = true }: Props) {
+    const renderCitation = (citation: Citation, idx: number) => {
+      if (citation.type === 'property') {
+        return (
+          <a
+            key={`citation-${idx}`}
+            href={citation.url || '#'}
+            target="_blank"
+            rel="noreferrer"
+            className="block rounded-md border border-[var(--card-border)] p-2 hover:bg-[var(--background)]"
+          >
+            <p className="text-xs font-semibold">{citation.label || 'Property evidence'}</p>
+            <p className="text-[11px] text-[var(--muted)]">{citation.county || 'Location unavailable'}</p>
+          </a>
+        );
+      }
+
+      return (
+        <div key={`citation-${idx}`} className="rounded-md border border-[var(--card-border)] p-2">
+          <p className="text-xs font-semibold">{citation.label || citation.code || 'Grant evidence'}</p>
+          <p className="text-[11px] text-[var(--muted)]">
+            {citation.status || 'status unknown'}
+            {citation.estimated_benefit ? ` • est ${formatEur(citation.estimated_benefit)}` : ''}
+          </p>
+        </div>
+      );
+    };
+
   const panelClasses = 'w-full xl:w-[390px] xl:shrink-0 border-t xl:border-t-0 xl:border-l border-[var(--card-border)] ai-glass p-4 overflow-y-auto rise-in';
 
   if (loading) {
@@ -81,6 +108,9 @@ export default function LLMAnalysisPanel({ result, loading, error, onRetry, canR
         <p className="text-xs text-[var(--muted)] mb-1">Headline</p>
         <p className="font-semibold text-sm">{result.analysis.headline}</p>
         <p className="text-sm text-[var(--muted)] mt-2 leading-relaxed">{result.analysis.recommendation}</p>
+        {result.analysis.reasoning ? (
+          <p className="text-xs text-[var(--muted)] mt-2">Why this ranking: {result.analysis.reasoning}</p>
+        ) : null}
         <p className="text-xs mt-2">Confidence: <span className="font-semibold uppercase">{result.analysis.confidence}</span></p>
       </div>
 
@@ -109,6 +139,15 @@ export default function LLMAnalysisPanel({ result, loading, error, onRetry, canR
             <li key={`${item}-${idx}`}>- {item}</li>
           )) : <li>- No explicit trade-offs returned.</li>}
         </ul>
+      </div>
+
+      <div className="mb-4">
+        <h3 className="text-sm font-semibold mb-2">Evidence</h3>
+        <div className="space-y-2">
+          {result.analysis.citations.length > 0
+            ? result.analysis.citations.map((citation, idx) => renderCitation(citation, idx))
+            : <p className="text-xs text-[var(--muted)]">No citations were returned.</p>}
+        </div>
       </div>
 
       <div className="rounded-lg border border-[var(--card-border)] bg-[var(--background)] p-3">

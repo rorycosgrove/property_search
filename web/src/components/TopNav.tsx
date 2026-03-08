@@ -1,7 +1,7 @@
 'use client';
 
 import Link from 'next/link';
-import { usePathname, useRouter } from 'next/navigation';
+import { usePathname } from 'next/navigation';
 import { useState } from 'react';
 
 const NAV_ITEMS = [
@@ -13,23 +13,8 @@ const NAV_ITEMS = [
 ];
 
 export default function TopNav() {
-  const router = useRouter();
   const pathname = usePathname();
   const [mobileOpen, setMobileOpen] = useState(false);
-  const [command, setCommand] = useState('');
-
-  const sendCommandToWorkspace = () => {
-    const prompt = command.trim();
-    if (!prompt) {
-      return;
-    }
-
-    if (typeof window !== 'undefined') {
-      window.localStorage.setItem('atlas_main_query', prompt);
-    }
-    setCommand('');
-    router.push(`/?ask=${encodeURIComponent(prompt)}`);
-  };
 
   const isActiveRoute = (href: string): boolean => {
     if (href === '/') {
@@ -49,27 +34,11 @@ export default function TopNav() {
           </span>
         </div>
 
-        <form
-          className="hidden lg:flex items-center flex-1 max-w-xl gap-2"
-          onSubmit={(e) => {
-            e.preventDefault();
-            sendCommandToWorkspace();
-          }}
-        >
-          <input
-            value={command}
-            onChange={(e) => setCommand(e.target.value)}
-            placeholder="Ask Atlas AI anything about your property strategy"
-            className="w-full bg-[var(--background)] border border-[var(--card-border)] rounded-full px-4 py-2 text-xs text-[var(--foreground)]"
-            aria-label="Ask Atlas AI"
-          />
-          <button
-            type="submit"
-            className="px-3 py-2 text-xs rounded-full border border-[var(--accent)] bg-cyan-900/10 text-[var(--accent-strong)] hover:bg-cyan-900/15"
-          >
-            Ask AI
-          </button>
-        </form>
+        <div className="hidden lg:flex flex-1 max-w-xl">
+          <p className="text-xs text-[var(--muted)] border border-[var(--card-border)] rounded-full px-3 py-2 bg-[var(--background)]">
+            AI query lives in Workspace so Atlas always responds with current shortlist and ranking context.
+          </p>
+        </div>
 
         <button
           type="button"

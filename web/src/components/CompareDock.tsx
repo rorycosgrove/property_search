@@ -9,8 +9,8 @@ interface Props {
   onRankingModeChange: (mode: RankingMode) => void;
   onRemove: (propertyId: string) => void;
   onClear: () => void;
-  onAnalyze: () => void;
   loading: boolean;
+  autoCompareTargetCount: number;
 }
 
 const MODE_LABELS: Record<RankingMode, string> = {
@@ -31,8 +31,8 @@ export default function CompareDock({
   onRankingModeChange,
   onRemove,
   onClear,
-  onAnalyze,
   loading,
+  autoCompareTargetCount,
 }: Props) {
   return (
     <section className="border-t border-[var(--card-border)] ai-glass px-4 py-3 rise-in">
@@ -56,14 +56,6 @@ export default function CompareDock({
               </option>
             ))}
           </select>
-
-          <button
-            onClick={onAnalyze}
-            disabled={loading || compared.length < 2}
-            className="px-3 py-1.5 text-xs font-semibold rounded bg-[var(--accent)] text-white hover:bg-[var(--accent-strong)] disabled:opacity-50"
-          >
-            {loading ? 'Running AI mission...' : 'Run AI decision analysis'}
-          </button>
           <button
             onClick={onClear}
             disabled={compared.length === 0}
@@ -75,6 +67,13 @@ export default function CompareDock({
       </div>
 
       <p className="text-xs text-[var(--muted)] mb-3">{MODE_HINTS[rankingMode]}</p>
+      <p className="text-xs text-[var(--muted)] mb-3">
+        {loading
+          ? 'Atlas is auto-comparing your current search context...'
+          : autoCompareTargetCount >= 2
+            ? `Auto-compare active for top ${autoCompareTargetCount} properties in this search.`
+            : 'Auto-compare will start when at least 2 properties are available.'}
+      </p>
 
       <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-5 gap-2">
         {compared.map((property) => {

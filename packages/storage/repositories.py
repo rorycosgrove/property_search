@@ -37,6 +37,7 @@ from packages.storage.models import (
     Property,
     PropertyGrantMatch,
     PropertyPriceHistory,
+    OrganicSearchRun,
     SavedSearch,
     SoldProperty,
     Source,
@@ -960,3 +961,50 @@ class ConversationRepository:
 
         self.session.flush()
         return msg
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# OrganicSearchRunRepository
+# ──────────────────────────────────────────────────────────────────────────────
+
+class OrganicSearchRunRepository:
+    def __init__(self, session: Session):
+        self.session = session
+
+    def create(
+        self,
+        *,
+        status: str,
+        triggered_from: str,
+        options: dict,
+        steps: list,
+        error: str | None = None,
+    ) -> OrganicSearchRun:
+        run = OrganicSearchRun(
+            status=status,
+            triggered_from=triggered_from,
+            options=options,
+            steps=steps,
+            error=error,
+        )
+        self.session.add(run)
+        self.session.flush()
+        return run
+
+    def list_recent(self, limit: int = 20) -> list[OrganicSearchRun]:
+        query = (
+            select(OrganicSearchRun)
+            .order_by(OrganicSearchRun.created_at.desc())
+            .limit(limit)
+        )
+        return list(self.session.scalars(query))
+
+    def get_latest_for_session(self, *, session_id: str, triggered_from: str) -> OrganicSearchRun | None:
+        query = (
+            select(OrganicSearchRun)
+            .where(OrganicSearchRun.triggered_from == triggered_from)
+            .where(OrganicSearchRun.options["session_id"].astext == session_id)
+            .order_by(OrganicSearchRun.created_at.desc())
+            .limit(1)
+        )
+        return self.session.scalar(query)

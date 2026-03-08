@@ -1,25 +1,8 @@
 'use client';
 
 import Link from 'next/link';
-import { useEffect } from 'react';
-import { useRouter, useSearchParams } from 'next/navigation';
 
 export default function CopilotPage() {
-  const router = useRouter();
-  const searchParams = useSearchParams();
-
-  useEffect(() => {
-    const prompt = searchParams.get('prefill');
-    const target = prompt ? `/?ask=${encodeURIComponent(prompt)}` : '/?focus=ask';
-    const timeout = window.setTimeout(() => {
-      router.replace(target);
-    }, 80);
-
-    return () => {
-      window.clearTimeout(timeout);
-    };
-  }, [router, searchParams]);
-
   return (
     <div className="p-6 max-w-3xl mx-auto min-h-[40vh] flex items-center justify-center">
       <div className="w-full rounded-xl border border-[var(--card-border)] ai-glass p-6 text-center">
@@ -36,7 +19,6 @@ export default function CopilotPage() {
           >
             Go to workspace AI query
           </Link>
-          <span className="text-xs text-[var(--muted)]">Redirecting...</span>
         </div>
       </div>
     </div>

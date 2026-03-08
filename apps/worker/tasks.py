@@ -44,6 +44,29 @@ def _is_queue_configured(queue_name: str) -> bool:
     return bool(env_url)
 
 
+def _env_bool(name: str, default: bool) -> bool:
+    raw = os.environ.get(name)
+    if raw is None:
+        return default
+    value = raw.strip().lower()
+    if value in {"1", "true", "yes", "on"}:
+        return True
+    if value in {"0", "false", "no", "off"}:
+        return False
+    return default
+
+
+def _env_int(name: str, default: int, minimum: int = 1, maximum: int = 200) -> int:
+    raw = os.environ.get(name)
+    if raw is None:
+        return default
+    try:
+        parsed = int(raw)
+    except ValueError:
+        return default
+    return max(minimum, min(parsed, maximum))
+
+
 def _nested_tx_or_noop(db: Any):
     """Use SAVEPOINT when available, otherwise no-op context (test doubles)."""
     begin_nested = getattr(db, "begin_nested", None)
@@ -64,6 +87,32 @@ def scrape_all_sources() -> dict[str, Any]:
     from packages.shared.queue import send_task
     from packages.storage.database import get_session
     from packages.storage.repositories import SourceRepository
+
+    discovery_enabled = _env_bool("DISCOVERY_DURING_SCRAPE_ENABLED", True)
+    discovery_auto_enable = _env_bool("DISCOVERY_DURING_SCRAPE_AUTO_ENABLE", False)
+    discovery_limit = _env_int("DISCOVERY_DURING_SCRAPE_LIMIT", 10)
+
+    discovery_summary: dict[str, Any] = {
+        "created": 0,
+        "existing": 0,
+        "skipped_invalid": 0,
+        "auto_enable": discovery_auto_enable,
+        "enabled": discovery_enabled,
+        "limit": discovery_limit,
+    }
+    if discovery_enabled:
+        try:
+            discovery_summary = {
+                **discovery_summary,
+                **discover_sources(auto_enable=discovery_auto_enable, limit=discovery_limit),
+            }
+            logger.info("discovery_during_scrape_complete", **discovery_summary)
+        except Exception as exc:
+            discovery_summary = {
+                **discovery_summary,
+                "error": str(exc),
+            }
+            logger.warning("discovery_during_scrape_failed", error=str(exc))
 
     with get_session() as db:
         repo = SourceRepository(db)
@@ -94,7 +143,66 @@ def scrape_all_sources() -> dict[str, Any]:
         "dispatched": dispatched,
         "processed_inline": processed_inline,
         "dispatch_mode": "sqs" if use_sqs_dispatch else "inline",
+        "discovery_during_scrape": discovery_summary,
     }
+
+
+def discover_sources(auto_enable: bool = False, limit: int = 25) -> dict[str, Any]:
+    """Discover default and configured feed candidates and add missing sources.
+
+    Sources are created disabled by default and require approval unless
+    `auto_enable=True` is passed.
+    """
+    from packages.sources.discovery import load_discovery_candidates
+    from packages.sources.registry import get_adapter_names
+    from packages.storage.database import get_session
+    from packages.storage.repositories import SourceRepository
+
+    adapter_names = set(get_adapter_names())
+    created = 0
+    existing = 0
+    skipped_invalid = 0
+
+    with get_session() as db:
+        repo = SourceRepository(db)
+        for candidate in load_discovery_candidates()[: max(limit, 1)]:
+            adapter_name = candidate.get("adapter_name")
+            url = candidate.get("url")
+
+            if adapter_name not in adapter_names or not url:
+                skipped_invalid += 1
+                continue
+
+            if repo.get_by_url(url):
+                existing += 1
+                continue
+
+            tags = list(candidate.get("tags") or [])
+            if "auto_discovered" not in tags:
+                tags.append("auto_discovered")
+            if not auto_enable and "pending_approval" not in tags:
+                tags.append("pending_approval")
+
+            repo.create(
+                name=candidate.get("name") or f"Discovered {adapter_name}",
+                url=url,
+                adapter_type=candidate.get("adapter_type") or "scraper",
+                adapter_name=adapter_name,
+                config=candidate.get("config") or {},
+                enabled=auto_enable,
+                poll_interval_seconds=int(candidate.get("poll_interval_seconds") or 21600),
+                tags=tags,
+            )
+            created += 1
+
+    result = {
+        "created": created,
+        "existing": existing,
+        "skipped_invalid": skipped_invalid,
+        "auto_enable": auto_enable,
+    }
+    logger.info("source_discovery_complete", **result)
+    return result
 
 
 def scrape_source(source_id: str) -> dict[str, Any]:

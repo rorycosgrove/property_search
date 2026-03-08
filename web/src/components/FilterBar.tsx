@@ -1,33 +1,21 @@
 'use client';
 
 import { useMemo, useState } from 'react';
-import { useRouter } from 'next/navigation';
 import { useFilterStore } from '@/lib/stores';
 import { useUIStore } from '@/lib/stores';
 import { COUNTIES } from '@/lib/utils';
 
 export default function FilterBar() {
-  const router = useRouter();
   const { filters, setFilter, setFilters, resetFilters } = useFilterStore();
   const { setRankingMode } = useUIStore();
   const [advancedOpen, setAdvancedOpen] = useState(false);
-  const [missionPrompt, setMissionPrompt] = useState('Find grant-optimized 3-bed homes under EUR500k in Cork and explain the best value options.');
 
   const applyMission = (
     missionFilters: Parameters<typeof setFilters>[0],
     ranking: 'llm_only' | 'hybrid' | 'user_weighted',
-    prompt: string,
   ) => {
     setFilters(missionFilters);
     setRankingMode(ranking);
-    setMissionPrompt(prompt);
-  };
-
-  const openMainQueryWithMission = () => {
-    if (typeof window !== 'undefined') {
-      window.localStorage.setItem('atlas_main_query', missionPrompt);
-    }
-    router.push(`/?ask=${encodeURIComponent(missionPrompt)}`);
   };
 
   const activeFilterCount = useMemo(() => {
@@ -88,7 +76,6 @@ export default function FilterBar() {
           onClick={() => applyMission(
             { max_price: 500000, min_beds: 3, sort_by: 'created_at', sort_dir: 'desc' },
             'hybrid',
-            'Find best-value homes under EUR500k with 3+ beds and summarize the strongest picks with trade-offs.',
           )}
           className="px-3 py-1.5 rounded-full border border-[var(--card-border)] bg-[var(--card-bg)] hover:border-[var(--accent)]"
         >
@@ -99,7 +86,6 @@ export default function FilterBar() {
           onClick={() => applyMission(
             { min_beds: 3, property_types: 'house', sort_by: 'price', sort_dir: 'asc' },
             'user_weighted',
-            'Prioritize family-ready homes with 3+ beds, balanced price-to-space, and low-risk condition profile.',
           )}
           className="px-3 py-1.5 rounded-full border border-[var(--card-border)] bg-[var(--card-bg)] hover:border-[var(--accent)]"
         >
@@ -110,19 +96,14 @@ export default function FilterBar() {
           onClick={() => applyMission(
             { keywords: 'ber retrofit grant', sort_by: 'created_at', sort_dir: 'desc' },
             'llm_only',
-            'Build a grant-optimized shortlist and explain where retrofit incentives create the best net value.',
           )}
           className="px-3 py-1.5 rounded-full border border-[var(--card-border)] bg-[var(--card-bg)] hover:border-[var(--accent)]"
         >
           Grant-optimized shortlist
         </button>
-        <button
-          type="button"
-          onClick={openMainQueryWithMission}
-          className="px-3 py-1.5 rounded-full border border-[var(--accent)] bg-cyan-900/10 text-[var(--accent-strong)] hover:bg-cyan-900/15"
-        >
-          Use in main AI query
-        </button>
+        <span className="px-3 py-1.5 rounded-full border border-[var(--card-border)] text-[var(--muted)]">
+          Mission presets update shortlist + ranking mode only
+        </span>
       </div>
 
       <div className="grid grid-cols-1 sm:grid-cols-3 gap-2 text-sm mb-2">
