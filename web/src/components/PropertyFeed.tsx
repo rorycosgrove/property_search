@@ -28,13 +28,26 @@ export default function PropertyFeed({ properties, total, loading }: Props) {
       {/* List */}
       <div className="flex-1 overflow-y-auto">
         {properties.map((prop) => (
+          (() => {
+            const inCompare = comparedPropertyIds.includes(prop.id);
+            const compareFull = comparedPropertyIds.length >= 5 && !inCompare;
+            return (
           <div
             key={prop.id}
-            className="p-3 border-b border-[var(--card-border)] hover:bg-[var(--card-bg)] cursor-pointer transition-colors"
+            className="p-3 border-b border-[var(--card-border)] hover:bg-[var(--card-bg)] cursor-pointer transition-colors focus:outline-none focus:ring-2 focus:ring-cyan-700/50"
             onClick={() => {
               selectProperty(prop.id);
               openDetail(prop);
             }}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter' || e.key === ' ') {
+                e.preventDefault();
+                selectProperty(prop.id);
+                openDetail(prop);
+              }
+            }}
+            role="button"
+            tabIndex={0}
           >
             <div className="flex gap-3">
               <div className="w-24 h-20 rounded-md overflow-hidden bg-neutral-900 shrink-0">
@@ -82,18 +95,23 @@ export default function PropertyFeed({ properties, total, loading }: Props) {
                     e.stopPropagation();
                     toggleCompareProperty(prop.id);
                   }}
+                  disabled={compareFull}
                   className={[
-                    'text-[11px] px-2 py-1 rounded border transition-colors',
-                    comparedPropertyIds.includes(prop.id)
+                    'text-[11px] px-2 py-1 rounded border transition-colors disabled:cursor-not-allowed disabled:opacity-60',
+                    inCompare
                       ? 'border-[var(--accent)] text-[var(--accent)] bg-cyan-900/10'
+                      : compareFull
+                        ? 'border-[var(--card-border)] text-[var(--muted)]'
                       : 'border-[var(--card-border)] hover:bg-[var(--card-border)]',
                   ].join(' ')}
                 >
-                  {comparedPropertyIds.includes(prop.id) ? 'In compare' : 'Add to compare'}
+                  {inCompare ? 'In compare' : compareFull ? 'Compare full (5/5)' : 'Add to compare'}
                 </button>
               </div>
             </div>
           </div>
+            );
+          })()
         ))}
 
         {!loading && properties.length === 0 && (
