@@ -77,8 +77,26 @@ export function useAutoCompare({
   const [compareLoading, setCompareLoading] = useState(false);
   const [compareResult, setCompareResult] = useState<CompareSetResponse | null>(null);
   const [compareError, setCompareError] = useState<CompareErrorState | null>(null);
+  const [analysisStale, setAnalysisStale] = useState(false);
   const [autoCompareTargetCount, setAutoCompareTargetCount] = useState(0);
-  const lastAutoCompareKeyRef = useRef<string>('');
+  const lastComparedContextKeyRef = useRef<string>('');
+
+  const filterContextKey = useMemo(() => JSON.stringify({
+    county: filters.county || null,
+    min_price: filters.min_price ?? null,
+    max_price: filters.max_price ?? null,
+    min_beds: filters.min_beds ?? null,
+    max_beds: filters.max_beds ?? null,
+    property_types: filters.property_types || null,
+    sale_type: filters.sale_type || null,
+    keywords: filters.keywords || null,
+    ber_ratings: filters.ber_ratings || null,
+    sort_by: filters.sort_by || null,
+    sort_dir: filters.sort_dir || null,
+    lat: filters.lat ?? null,
+    lng: filters.lng ?? null,
+    radius_km: filters.radius_km ?? null,
+  }), [filters]);
 
   const candidateAutoCompareIds = useMemo(() => {
     if (comparedPropertyIds.length >= 2) {
@@ -86,6 +104,10 @@ export function useAutoCompare({
     }
     return properties.slice(0, 5).map((p) => p.id);
   }, [comparedPropertyIds, properties]);
+
+  const buildCompareContextKey = useCallback((ids: string[], mode: RankingMode, contextFiltersKey: string) => {
+    return `${mode}:${ids.join(',')}:${contextFiltersKey}`;
+  }, []);
 
   const hydrateAutoCompareFromLatest = useCallback((latest: AutoCompareLatestResponse) => {
     if (latest.result) {
@@ -114,15 +136,34 @@ export function useAutoCompare({
       (propertyIdsFromOptions.length > 0 ? propertyIdsFromOptions : propertyIdsFromResult).slice(0, 5),
     ));
     if (typeof rankingModeFromRun === 'string' && normalizedIds.length >= 2) {
-      if (isRankingMode(rankingModeFromRun) && rankingModeFromRun !== rankingMode) {
-        setRankingMode(rankingModeFromRun);
+      const safeRunMode: RankingMode = isRankingMode(rankingModeFromRun) ? rankingModeFromRun : rankingMode;
+      if (safeRunMode !== rankingMode) {
+        setRankingMode(safeRunMode);
       }
       setComparedProperties(normalizedIds);
-      lastAutoCompareKeyRef.current = `${rankingModeFromRun}:${normalizedIds.join(',')}`;
+      const runSearchContext = latest.options?.search_context as { filters?: PropertyFilters } | undefined;
+      const runFiltersKey = JSON.stringify({
+        county: runSearchContext?.filters?.county || null,
+        min_price: runSearchContext?.filters?.min_price ?? null,
+        max_price: runSearchContext?.filters?.max_price ?? null,
+        min_beds: runSearchContext?.filters?.min_beds ?? null,
+        max_beds: runSearchContext?.filters?.max_beds ?? null,
+        property_types: runSearchContext?.filters?.property_types || null,
+        sale_type: runSearchContext?.filters?.sale_type || null,
+        keywords: runSearchContext?.filters?.keywords || null,
+        ber_ratings: runSearchContext?.filters?.ber_ratings || null,
+        sort_by: runSearchContext?.filters?.sort_by || null,
+        sort_dir: runSearchContext?.filters?.sort_dir || null,
+        lat: runSearchContext?.filters?.lat ?? null,
+        lng: runSearchContext?.filters?.lng ?? null,
+        radius_km: runSearchContext?.filters?.radius_km ?? null,
+      });
+      lastComparedContextKeyRef.current = buildCompareContextKey(normalizedIds, safeRunMode, runFiltersKey);
+      setAnalysisStale(lastComparedContextKeyRef.current !== buildCompareContextKey(candidateAutoCompareIds, rankingMode, filterContextKey));
     } else if (normalizedIds.length >= 2) {
       setComparedProperties(normalizedIds);
     }
-  }, [rankingMode, setComparedProperties, setRankingMode]);
+  }, [buildCompareContextKey, candidateAutoCompareIds, filterContextKey, rankingMode, setComparedProperties, setRankingMode]);
 
   const runCompare = useCallback(async (propertyIds: string[]) => {
     const sessionId = autoCompareSessionId;
@@ -130,8 +171,10 @@ export function useAutoCompare({
       return;
     }
 
+    const contextKey = buildCompareContextKey(propertyIds, rankingMode, filterContextKey);
     setCompareLoading(true);
     setCompareError(null);
+    setAnalysisStale(false);
     try {
       const searchContext = {
         filters,
@@ -151,13 +194,14 @@ export function useAutoCompare({
       } else {
         setCompareResult(run.result);
       }
+      lastComparedContextKeyRef.current = contextKey;
     } catch (err) {
       setCompareResult(null);
       setCompareError(parseCompareError(err));
     } finally {
       setCompareLoading(false);
     }
-  }, [autoCompareSessionId, comparedPropertyIds, filters, hydrateAutoCompareFromLatest, rankingMode, selectedPropertyId]);
+  }, [autoCompareSessionId, buildCompareContextKey, comparedPropertyIds, filterContextKey, filters, hydrateAutoCompareFromLatest, rankingMode, selectedPropertyId]);
 
   useEffect(() => {
     if (!autoCompareSessionId) {
@@ -186,41 +230,45 @@ export function useAutoCompare({
       // Prevent stale winner/analysis from a previous larger shortlist.
       setCompareResult(null);
       setCompareError(null);
-      lastAutoCompareKeyRef.current = '';
+      setAnalysisStale(false);
+      lastComparedContextKeyRef.current = '';
       return;
     }
 
-    const compareKey = `${rankingMode}:${ids.join(',')}`;
-    if (compareKey === lastAutoCompareKeyRef.current) {
+    const contextKey = buildCompareContextKey(ids, rankingMode, filterContextKey);
+    const hasAnalysis = Boolean(compareResult || compareError);
+
+    if (!hasAnalysis) {
+      setAnalysisStale(false);
       return;
     }
 
-    const timeout = window.setTimeout(() => {
-      lastAutoCompareKeyRef.current = compareKey;
-      runCompare(ids).catch(console.error);
-    }, 800);
+    setAnalysisStale(lastComparedContextKeyRef.current !== contextKey);
+  }, [buildCompareContextKey, candidateAutoCompareIds, compareError, compareResult, filterContextKey, rankingMode]);
 
-    return () => {
-      window.clearTimeout(timeout);
-    };
-  }, [autoCompareSessionId, candidateAutoCompareIds, comparedPropertyIds, filters, rankingMode, runCompare, selectedPropertyId]);
+  const canRunCompare = autoCompareTargetCount >= 2 && Boolean(autoCompareSessionId);
 
-  const guidanceMessage = compareResult
-    ? 'Atlas has a live recommendation. Ask follow-up questions to challenge risk, grant eligibility, and long-term value.'
-    : autoCompareTargetCount >= 2
-      ? 'Atlas is preparing a live comparison for your current search.'
-      : 'Narrow your search to at least 2 properties and Atlas will compare them automatically.';
+  const guidanceMessage = analysisStale
+    ? 'Search context changed. Re-run analysis to refresh Atlas recommendations.'
+    : compareResult
+      ? 'Atlas has a live recommendation. Ask follow-up questions to challenge risk, grant eligibility, and long-term value.'
+      : canRunCompare
+        ? 'Analysis is ready for your current search. Run it when you are ready.'
+        : 'Narrow your search to at least 2 properties to run analysis.';
 
   const resetCompareState = useCallback(() => {
     setCompareResult(null);
     setCompareError(null);
-    lastAutoCompareKeyRef.current = '';
+    setAnalysisStale(false);
+    lastComparedContextKeyRef.current = '';
   }, []);
 
   return {
     compareLoading,
     compareResult,
     compareError,
+    analysisStale,
+    canRunCompare,
     autoCompareTargetCount,
     candidateAutoCompareIds,
     guidanceMessage,

@@ -13,11 +13,12 @@ interface Props {
   result: CompareSetResponse | null;
   loading: boolean;
   error?: CompareErrorState | null;
+  analysisIsStale?: boolean;
   onRetry?: () => void;
   canRetry?: boolean;
 }
 
-export default function LLMAnalysisPanel({ result, loading, error, onRetry, canRetry = true }: Props) {
+export default function LLMAnalysisPanel({ result, loading, error, analysisIsStale = false, onRetry, canRetry = true }: Props) {
     const renderCitation = (citation: Citation, idx: number) => {
       if (citation.type === 'property') {
         return (
@@ -80,8 +81,8 @@ export default function LLMAnalysisPanel({ result, loading, error, onRetry, canR
           </div>
         ) : null}
         <p className="text-sm text-[var(--muted)] leading-relaxed">
-          Add at least two homes to shortlist. Atlas will return a winner, key trade-offs,
-          and evidence you can verify.
+          Add at least two homes to shortlist, then run analysis. Atlas will return a winner,
+          key trade-offs, and evidence you can verify.
         </p>
       </aside>
     );
@@ -93,6 +94,14 @@ export default function LLMAnalysisPanel({ result, loading, error, onRetry, canR
       <p className="text-xs text-[var(--muted)] mb-4">
         Ranking mode: <span className="uppercase tracking-wide">{result.ranking_mode}</span>
       </p>
+
+      {analysisIsStale ? (
+        <div className="mb-4 rounded-lg border border-amber-700/35 bg-amber-900/10 p-2">
+          <p className="text-xs text-amber-200">
+            Search context changed. Re-run analysis to refresh this recommendation.
+          </p>
+        </div>
+      ) : null}
 
       {onRetry ? (
         <button

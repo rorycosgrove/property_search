@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { useSearchParams } from 'next/navigation';
 import {
   type RetrievalContext,
@@ -31,6 +31,7 @@ export default function HomePage() {
     setRankingMode,
   } = useUIStore();
   const [autoCompareSessionId, setAutoCompareSessionId] = useState<string>('');
+  const previousSearchContextKeyRef = useRef<string | null>(null);
 
   const AUTO_COMPARE_SESSION_KEY = 'property_search_auto_compare_session_id';
 
@@ -69,6 +70,8 @@ export default function HomePage() {
     compareLoading,
     compareResult,
     compareError,
+    analysisStale,
+    canRunCompare,
     autoCompareTargetCount,
     candidateAutoCompareIds,
     guidanceMessage,
@@ -123,6 +126,36 @@ export default function HomePage() {
     setAiError(null);
   };
 
+  const searchContextKey = useMemo(() => JSON.stringify({
+    county: filters.county || null,
+    min_price: filters.min_price ?? null,
+    max_price: filters.max_price ?? null,
+    min_beds: filters.min_beds ?? null,
+    max_beds: filters.max_beds ?? null,
+    property_types: filters.property_types || null,
+    sale_type: filters.sale_type || null,
+    keywords: filters.keywords || null,
+    ber_ratings: filters.ber_ratings || null,
+    lat: filters.lat ?? null,
+    lng: filters.lng ?? null,
+    radius_km: filters.radius_km ?? null,
+  }), [filters]);
+
+  useEffect(() => {
+    const previous = previousSearchContextKeyRef.current;
+    if (previous === null) {
+      previousSearchContextKeyRef.current = searchContextKey;
+      return;
+    }
+
+    if (previous !== searchContextKey) {
+      clearComparedProperties();
+      resetCompareState();
+    }
+
+    previousSearchContextKeyRef.current = searchContextKey;
+  }, [clearComparedProperties, resetCompareState, searchContextKey]);
+
   return (
     <div className="flex flex-col h-[calc(100dvh-64px)] lg:h-[calc(100dvh-62px)]">
       <FilterBar />
@@ -130,7 +163,11 @@ export default function HomePage() {
       <WorkspaceStatusStrip
         autoCompareTargetCount={autoCompareTargetCount}
         guidanceMessage={guidanceMessage}
+        analysisStale={analysisStale}
+        canRunCompare={canRunCompare}
+        compareLoading={compareLoading}
         onUseContext={applyContextToAIQuery}
+        onRunCompare={() => runCompare(candidateAutoCompareIds)}
       />
 
       <WorkspaceAskPanel
@@ -152,6 +189,8 @@ export default function HomePage() {
         comparedProperties={comparedProperties}
         rankingMode={rankingMode}
         compareLoading={compareLoading}
+        analysisStale={analysisStale}
+        canRunCompare={canRunCompare}
         autoCompareTargetCount={autoCompareTargetCount}
         compareResult={compareResult}
         compareError={compareError}
@@ -163,6 +202,7 @@ export default function HomePage() {
           clearComparedProperties();
           resetCompareState();
         }}
+        onRunCompare={() => runCompare(candidateAutoCompareIds)}
         onRetryCompare={() => runCompare(candidateAutoCompareIds)}
         onCloseDetail={closeDetail}
       />

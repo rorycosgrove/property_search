@@ -20,6 +20,8 @@ interface Props {
   comparedProperties: Property[];
   rankingMode: 'llm_only' | 'hybrid' | 'user_weighted';
   compareLoading: boolean;
+  analysisStale: boolean;
+  canRunCompare: boolean;
   autoCompareTargetCount: number;
   compareResult: CompareSetResponse | null;
   compareError: CompareErrorState | null;
@@ -28,6 +30,7 @@ interface Props {
   onRankingModeChange: (mode: 'llm_only' | 'hybrid' | 'user_weighted') => void;
   onRemoveCompared: (propertyId: string) => void;
   onClearCompared: () => void;
+  onRunCompare: () => void;
   onRetryCompare: () => void;
   onCloseDetail: () => void;
 }
@@ -39,6 +42,8 @@ export default function WorkspaceMainLayout({
   comparedProperties,
   rankingMode,
   compareLoading,
+  analysisStale,
+  canRunCompare,
   autoCompareTargetCount,
   compareResult,
   compareError,
@@ -47,6 +52,7 @@ export default function WorkspaceMainLayout({
   onRankingModeChange,
   onRemoveCompared,
   onClearCompared,
+  onRunCompare,
   onRetryCompare,
   onCloseDetail,
 }: Props) {
@@ -70,7 +76,10 @@ export default function WorkspaceMainLayout({
           onRankingModeChange={onRankingModeChange}
           onRemove={onRemoveCompared}
           onClear={onClearCompared}
+          onRunAnalysis={onRunCompare}
           loading={compareLoading}
+          canRunAnalysis={canRunCompare}
+          analysisStale={analysisStale}
           autoCompareTargetCount={autoCompareTargetCount}
         />
       </div>
@@ -79,8 +88,9 @@ export default function WorkspaceMainLayout({
         result={compareResult}
         loading={compareLoading}
         error={compareError}
+        analysisIsStale={analysisStale}
         onRetry={onRetryCompare}
-        canRetry={canRetry}
+        canRetry={canRunCompare && canRetry}
       />
 
       {detailPanelProperty && (

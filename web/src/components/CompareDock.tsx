@@ -9,7 +9,10 @@ interface Props {
   onRankingModeChange: (mode: RankingMode) => void;
   onRemove: (propertyId: string) => void;
   onClear: () => void;
+  onRunAnalysis: () => void;
   loading: boolean;
+  canRunAnalysis: boolean;
+  analysisStale: boolean;
   autoCompareTargetCount: number;
 }
 
@@ -31,7 +34,10 @@ export default function CompareDock({
   onRankingModeChange,
   onRemove,
   onClear,
+  onRunAnalysis,
   loading,
+  canRunAnalysis,
+  analysisStale,
   autoCompareTargetCount,
 }: Props) {
   return (
@@ -45,6 +51,13 @@ export default function CompareDock({
         </div>
 
         <div className="flex flex-wrap gap-2 items-center">
+          <button
+            onClick={onRunAnalysis}
+            disabled={!canRunAnalysis || loading}
+            className="px-3 py-1.5 text-xs rounded border border-[var(--accent)] bg-cyan-900/10 text-[var(--accent-strong)] hover:bg-cyan-900/15 disabled:opacity-50 disabled:cursor-not-allowed"
+          >
+            {loading ? 'Running...' : analysisStale ? 'Re-run analysis' : 'Run analysis'}
+          </button>
           <select
             value={rankingMode}
             onChange={(e) => onRankingModeChange(e.target.value as RankingMode)}
@@ -69,10 +82,12 @@ export default function CompareDock({
       <p className="text-xs text-[var(--muted)] mb-1">{MODE_HINTS[rankingMode]}</p>
       <p className="text-xs text-[var(--muted)] mb-3">
         {loading
-          ? 'Atlas is auto-comparing your current search context...'
-          : autoCompareTargetCount >= 2
-            ? `Auto-compare is live for top ${autoCompareTargetCount} homes in this search.`
-            : 'Auto-compare will start when at least 2 properties are available.'}
+          ? 'Atlas is running analysis for your current search context...'
+          : analysisStale
+            ? 'Search context changed. Re-run analysis to refresh the recommendation.'
+            : autoCompareTargetCount >= 2
+              ? `Ready to analyze top ${autoCompareTargetCount} homes in this search.`
+              : 'Analysis becomes available when at least 2 properties are available.'}
       </p>
 
       <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-5 gap-2">

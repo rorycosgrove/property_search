@@ -89,7 +89,7 @@ def scrape_all_sources() -> dict[str, Any]:
     from packages.storage.repositories import SourceRepository
 
     discovery_enabled = _env_bool("DISCOVERY_DURING_SCRAPE_ENABLED", True)
-    discovery_auto_enable = _env_bool("DISCOVERY_DURING_SCRAPE_AUTO_ENABLE", False)
+    discovery_auto_enable = _env_bool("DISCOVERY_DURING_SCRAPE_AUTO_ENABLE", True)
     discovery_limit = _env_int("DISCOVERY_DURING_SCRAPE_LIMIT", 10)
 
     discovery_summary: dict[str, Any] = {
@@ -116,8 +116,17 @@ def scrape_all_sources() -> dict[str, Any]:
 
     with get_session() as db:
         repo = SourceRepository(db)
-        sources = repo.get_all(enabled_only=True)
-        source_ids = [str(s.id) for s in sources]
+        all_sources = repo.get_all(enabled_only=False)
+        enabled_sources = [s for s in all_sources if bool(getattr(s, "enabled", False))]
+        pending_approval_count = sum(
+            1 for s in all_sources if isinstance(getattr(s, "tags", None), list) and "pending_approval" in (s.tags or [])
+        )
+        auto_disabled_count = sum(
+            1
+            for s in all_sources
+            if not bool(getattr(s, "enabled", False)) and int(getattr(s, "error_count", 0) or 0) >= 5
+        )
+        source_ids = [str(s.id) for s in enabled_sources]
 
     logger.info(f"Dispatching scrape for {len(source_ids)} sources")
 
@@ -144,10 +153,16 @@ def scrape_all_sources() -> dict[str, Any]:
         "processed_inline": processed_inline,
         "dispatch_mode": "sqs" if use_sqs_dispatch else "inline",
         "discovery_during_scrape": discovery_summary,
+        "source_summary": {
+            "total": len(all_sources),
+            "enabled": len(enabled_sources),
+            "pending_approval": pending_approval_count,
+            "disabled_by_errors": auto_disabled_count,
+        },
     }
 
 
-def discover_sources(auto_enable: bool = False, limit: int = 25) -> dict[str, Any]:
+def discover_sources(auto_enable: bool = True, limit: int = 25) -> dict[str, Any]:
     """Discover default and configured feed candidates and add missing sources.
 
     Sources are created disabled by default and require approval unless
@@ -160,6 +175,8 @@ def discover_sources(auto_enable: bool = False, limit: int = 25) -> dict[str, An
 
     adapter_names = set(get_adapter_names())
     created = 0
+    created_enabled = 0
+    created_pending_approval = 0
     existing = 0
     skipped_invalid = 0
 
@@ -194,9 +211,15 @@ def discover_sources(auto_enable: bool = False, limit: int = 25) -> dict[str, An
                 tags=tags,
             )
             created += 1
+            if auto_enable:
+                created_enabled += 1
+            else:
+                created_pending_approval += 1
 
     result = {
         "created": created,
+        "created_enabled": created_enabled,
+        "created_pending_approval": created_pending_approval,
         "existing": existing,
         "skipped_invalid": skipped_invalid,
         "auto_enable": auto_enable,

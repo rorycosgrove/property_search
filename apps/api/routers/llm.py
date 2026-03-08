@@ -111,6 +111,17 @@ def _extract_compare_result_from_steps(steps: list[Any] | None) -> dict[str, Any
     return None
 
 
+def _search_context_signature(value: Any) -> str:
+    """Create a stable signature for auto-compare search context."""
+    if not isinstance(value, dict):
+        return "{}"
+    try:
+        return json.dumps(value, sort_keys=True, separators=(",", ":"))
+    except TypeError:
+        # Non-serializable values should not break comparison cache safety.
+        return "{}"
+
+
 @router.get("/config")
 def get_llm_config():
     """Get current LLM configuration."""
@@ -384,9 +395,12 @@ async def auto_compare(
             ][:5]
             normalized_requested_ids = [pid for pid in property_ids if isinstance(pid, str) and pid][:5]
             latest_result = _extract_compare_result_from_steps(latest_run.steps)
+            latest_search_signature = _search_context_signature(latest_options.get("search_context"))
+            requested_search_signature = _search_context_signature(search_context)
             if (
                 latest_options.get("ranking_mode") == ranking_mode
                 and normalized_latest_ids == normalized_requested_ids
+                and latest_search_signature == requested_search_signature
                 and latest_result is not None
             ):
                 return {

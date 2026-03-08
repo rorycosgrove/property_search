@@ -3,13 +3,21 @@
 interface Props {
   autoCompareTargetCount: number;
   guidanceMessage: string;
+  analysisStale: boolean;
+  canRunCompare: boolean;
+  compareLoading: boolean;
   onUseContext: () => void;
+  onRunCompare: () => void;
 }
 
 export default function WorkspaceStatusStrip({
   autoCompareTargetCount,
   guidanceMessage,
+  analysisStale,
+  canRunCompare,
+  compareLoading,
   onUseContext,
+  onRunCompare,
 }: Props) {
   return (
     <div className="px-4 py-3 border-b border-[var(--card-border)] bg-[var(--card-bg)]/85">
@@ -30,6 +38,14 @@ export default function WorkspaceStatusStrip({
           className="ml-auto px-3 py-1.5 rounded-full border border-[var(--accent)] bg-cyan-900/10 text-[var(--accent-strong)] hover:bg-cyan-900/15 text-xs"
         >
           Add context to query
+        </button>
+        <button
+          type="button"
+          onClick={onRunCompare}
+          disabled={!canRunCompare || compareLoading}
+          className="px-3 py-1.5 rounded-full border border-[var(--card-border)] bg-[var(--card-bg)] text-[var(--foreground)] hover:bg-[var(--background)] text-xs disabled:opacity-60 disabled:cursor-not-allowed"
+        >
+          {compareLoading ? 'Running analysis...' : analysisStale ? 'Re-run analysis' : 'Run analysis'}
         </button>
       </div>
     </div>
