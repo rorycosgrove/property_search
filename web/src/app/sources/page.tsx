@@ -102,11 +102,14 @@ export default function SourcesPage() {
   };
 
   return (
-    <div className="p-6 max-w-5xl mx-auto rise-in">
-      <div className="mb-6">
+    <div className="p-4 lg:p-6 max-w-6xl mx-auto rise-in">
+      <div className="mb-6 rounded-2xl border border-[var(--card-border)] bg-[var(--card-bg)]/90 p-5 lg:p-6">
         <p className="text-[11px] uppercase tracking-[0.16em] text-[var(--muted)]">Data Operations</p>
-        <h1 className="text-2xl font-bold">Source readiness and ingestion control</h1>
-        <div className="mt-3">
+        <h1 className="text-2xl lg:text-3xl font-semibold mt-1">Source readiness and ingestion control</h1>
+        <p className="text-sm text-[var(--muted)] mt-2 max-w-3xl">
+          Manage ingestion reliability, trigger full scrape runs, and monitor discovery outcomes without leaving the map-first workflow.
+        </p>
+        <div className="mt-4 flex flex-wrap gap-2">
           <button
             onClick={handleFullOrganicSearch}
             disabled={runningFullSearch}
@@ -117,7 +120,7 @@ export default function SourcesPage() {
           <button
             onClick={handleDiscoverSources}
             disabled={discoveringSources}
-            className="text-sm ml-2 px-4 py-2 rounded-md border border-[var(--card-border)] bg-[var(--card-bg)] hover:bg-[var(--background)] disabled:opacity-60 disabled:cursor-not-allowed transition-colors"
+            className="text-sm px-4 py-2 rounded-md border border-[var(--card-border)] bg-[var(--card-bg)] hover:bg-[var(--background)] disabled:opacity-60 disabled:cursor-not-allowed transition-colors"
           >
             {discoveringSources ? 'Discovering Feeds...' : 'Auto-Discover & Enable Feeds'}
           </button>
@@ -130,7 +133,7 @@ export default function SourcesPage() {
         </div>
       ) : null}
 
-      <div className="mb-8 rounded-lg border border-[var(--card-border)] bg-[var(--card-bg)] p-4">
+      <div className="mb-8 rounded-xl border border-[var(--card-border)] bg-[var(--card-bg)] p-4 lg:p-5">
         <div className="flex items-center justify-between mb-3">
           <h2 className="text-lg font-semibold">Full Run History</h2>
           <button
@@ -144,57 +147,44 @@ export default function SourcesPage() {
         {runHistory.length === 0 ? (
           <p className="text-sm text-[var(--muted)]">No full organic-search runs recorded yet.</p>
         ) : (
-          <div className="overflow-x-auto">
-            <table className="w-full text-sm">
-              <thead>
-                <tr className="text-left text-[var(--muted)] border-b border-[var(--card-border)]">
-                  <th className="py-2 pr-3">Started</th>
-                  <th className="py-2 pr-3">Status</th>
-                  <th className="py-2">Steps</th>
-                </tr>
-              </thead>
-              <tbody>
-                {runHistory.map((run) => (
-                  <tr key={run.id} className="border-b border-[var(--card-border)]/50 align-top">
-                    <td className="py-2 pr-3 whitespace-nowrap">{formatDate(run.created_at) || run.created_at}</td>
-                    <td className="py-2 pr-3">
-                      <span className="px-2 py-0.5 rounded text-xs bg-[var(--background)] border border-[var(--card-border)]">
-                        {run.status}
-                      </span>
-                    </td>
-                    <td className="py-2 font-mono text-xs break-all">
-                      {run.steps.map((step) => `${step.step}:${step.status}`).join(' | ')}
-                      {run.steps[0]?.result && (
-                        <div className="mt-1 text-[11px] text-[var(--muted)]">
-                          {(() => {
-                            const scrape = run.steps[0].result as Record<string, unknown>;
-                            const discovery = scrape.discovery_during_scrape as Record<string, unknown> | undefined;
-                            const sourcesSummary = scrape.source_summary as Record<string, unknown> | undefined;
-                            const parts: string[] = [];
-                            if (discovery) {
-                              parts.push(
-                                `discovery created=${String(discovery.created ?? 0)} enabled=${String(discovery.created_enabled ?? 0)} pending=${String(discovery.created_pending_approval ?? 0)}`,
-                              );
-                            }
-                            if (sourcesSummary) {
-                              parts.push(
-                                `sources enabled=${String(sourcesSummary.enabled ?? 0)}/${String(sourcesSummary.total ?? 0)} pending=${String(sourcesSummary.pending_approval ?? 0)} disabled_by_errors=${String(sourcesSummary.disabled_by_errors ?? 0)}`,
-                              );
-                            }
-                            return parts.join(' | ');
-                          })()}
-                        </div>
-                      )}
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
+          <div className="space-y-3">
+            {runHistory.map((run) => {
+              const scrape = run.steps[0]?.result as Record<string, unknown> | undefined;
+              const discovery = scrape?.discovery_during_scrape as Record<string, unknown> | undefined;
+              const sourcesSummary = scrape?.source_summary as Record<string, unknown> | undefined;
+              return (
+                <article key={run.id} className="rounded-lg border border-[var(--card-border)] bg-[var(--background)]/70 p-3">
+                  <div className="flex flex-wrap items-center gap-2 mb-2">
+                    <p className="text-sm font-medium">{formatDate(run.created_at) || run.created_at}</p>
+                    <span className="px-2 py-0.5 rounded text-xs bg-[var(--card-bg)] border border-[var(--card-border)]">
+                      {run.status}
+                    </span>
+                  </div>
+                  <p className="font-mono text-xs break-all text-[var(--muted)]">
+                    {run.steps.map((step) => `${step.step}:${step.status}`).join(' | ')}
+                  </p>
+                  {discovery || sourcesSummary ? (
+                    <div className="mt-2 text-xs text-[var(--muted)] space-y-1">
+                      {discovery ? (
+                        <p>
+                          discovery: created {String(discovery.created ?? 0)}, enabled {String(discovery.created_enabled ?? 0)}, pending {String(discovery.created_pending_approval ?? 0)}
+                        </p>
+                      ) : null}
+                      {sourcesSummary ? (
+                        <p>
+                          sources: enabled {String(sourcesSummary.enabled ?? 0)}/{String(sourcesSummary.total ?? 0)}, pending {String(sourcesSummary.pending_approval ?? 0)}, disabled by errors {String(sourcesSummary.disabled_by_errors ?? 0)}
+                        </p>
+                      ) : null}
+                    </div>
+                  ) : null}
+                </article>
+              );
+            })}
           </div>
         )}
       </div>
 
-      <div className="mb-8 rounded-lg border border-[var(--card-border)] bg-[var(--card-bg)] p-4">
+      <div className="mb-8 rounded-xl border border-[var(--card-border)] bg-[var(--card-bg)] p-4 lg:p-5">
         <div className="flex items-center justify-between mb-3">
           <h2 className="text-lg font-semibold">Pending Feed Approvals</h2>
           <button
@@ -237,7 +227,7 @@ export default function SourcesPage() {
           {sources.map((source) => (
             <div
               key={source.id}
-              className="bg-[var(--card-bg)] border border-[var(--card-border)] rounded-lg p-4 flex items-center justify-between"
+              className="bg-[var(--card-bg)] border border-[var(--card-border)] rounded-xl p-4 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3"
             >
               <div>
                 <div className="flex items-center gap-2 mb-1">
@@ -269,7 +259,7 @@ export default function SourcesPage() {
               </div>
               <button
                 onClick={() => handleTrigger(source.id)}
-                className="text-sm px-3 py-1.5 bg-[var(--accent)] text-white hover:bg-[var(--accent-strong)] rounded transition-colors"
+                className="text-sm px-3 py-1.5 bg-[var(--accent)] text-white hover:bg-[var(--accent-strong)] rounded transition-colors w-full sm:w-auto"
               >
                 Scrape Now
               </button>

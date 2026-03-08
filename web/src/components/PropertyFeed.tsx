@@ -21,7 +21,7 @@ export default function PropertyFeed({ properties, total, loading }: Props) {
   return (
     <div className="flex flex-col h-full">
       {/* Header */}
-      <div className="px-4 py-3 border-b border-[var(--card-border)] text-sm text-[var(--muted)] bg-[var(--card-bg)]/88">
+      <div className="sticky top-0 z-20 px-4 py-3 border-b border-[var(--card-border)] text-sm text-[var(--muted)] bg-[var(--card-bg)]/95 backdrop-blur-sm">
         {loading ? 'Updating your shortlist...' : `${total.toLocaleString()} homes match your search`}
       </div>
 
@@ -34,7 +34,7 @@ export default function PropertyFeed({ properties, total, loading }: Props) {
             return (
           <div
             key={prop.id}
-            className="p-3 border-b border-[var(--card-border)] hover:bg-[var(--card-bg)]/85 cursor-pointer transition-colors focus:outline-none focus:ring-2 focus:ring-cyan-700/50"
+            className="p-4 border-b border-[var(--card-border)] hover:bg-[var(--card-bg)]/90 cursor-pointer transition-colors focus:outline-none focus:ring-2 focus:ring-cyan-700/50"
             onClick={() => {
               selectProperty(prop.id);
               openDetail(prop);
@@ -49,8 +49,8 @@ export default function PropertyFeed({ properties, total, loading }: Props) {
             role="button"
             tabIndex={0}
           >
-            <div className="flex gap-3">
-              <div className="w-24 h-20 rounded-md overflow-hidden bg-neutral-900 shrink-0">
+            <div className="flex gap-4">
+              <div className="w-28 h-24 rounded-lg overflow-hidden bg-neutral-900 shrink-0">
                 {prop.images?.[0]?.url ? (
                   // eslint-disable-next-line @next/next/no-img-element
                   <img
@@ -66,8 +66,8 @@ export default function PropertyFeed({ properties, total, loading }: Props) {
               </div>
 
               <div className="min-w-0 flex-1">
-                <div className="flex items-center justify-between mb-1">
-                  <span className="font-semibold text-[var(--accent)] text-sm">{formatEur(prop.price)}</span>
+                <div className="flex items-center justify-between mb-2">
+                  <span className="font-bold text-[var(--accent)] text-base">{formatEur(prop.price)}</span>
                   {prop.ber_rating && (
                     <span
                       className="text-[10px] font-bold px-1.5 py-0.5 rounded"
@@ -78,13 +78,13 @@ export default function PropertyFeed({ properties, total, loading }: Props) {
                   )}
                 </div>
 
-                <h3 className="text-sm font-semibold leading-tight mb-0.5">{truncate(prop.title, 72)}</h3>
-                <p className="text-xs text-[var(--muted)] mb-1">
+                <h3 className="text-sm font-semibold leading-snug mb-1">{truncate(prop.title, 72)}</h3>
+                <p className="text-xs text-[var(--muted)] mb-2">
                   {prop.county && `${prop.county} · `}
                   {truncate(prop.address, 50)}
                 </p>
 
-                <div className="flex gap-2 text-[11px] text-[var(--muted)] mb-1">
+                <div className="flex gap-2 text-xs text-[var(--muted)] mb-2">
                   {prop.bedrooms != null && <span>{prop.bedrooms} bed</span>}
                   {prop.bathrooms != null && <span>{prop.bathrooms} bath</span>}
                   {prop.floor_area_sqm != null && <span>{prop.floor_area_sqm} sqm</span>}
