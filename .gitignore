@@ -62,4 +62,7 @@ Desktop.ini
 alembic/versions/__pycache__/
 
 # Temp npm fix
+
+# Local runtime artifacts
+.dev-runtime/
 .npm-fix/
