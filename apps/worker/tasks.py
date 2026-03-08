@@ -11,8 +11,11 @@ from __future__ import annotations
 
 import asyncio
 import os
+from contextlib import nullcontext
 from datetime import UTC, date, datetime, timedelta
 from typing import Any
+
+from sqlalchemy.exc import IntegrityError
 
 from packages.shared.constants import (
     ALERT_CLEANUP_DAYS,
@@ -39,6 +42,14 @@ def _is_queue_configured(queue_name: str) -> bool:
     """Return True when queue URL is configured in process env vars."""
     env_url = os.environ.get(f"{queue_name.upper()}_QUEUE_URL", "")
     return bool(env_url)
+
+
+def _nested_tx_or_noop(db: Any):
+    """Use SAVEPOINT when available, otherwise no-op context (test doubles)."""
+    begin_nested = getattr(db, "begin_nested", None)
+    if callable(begin_nested):
+        return begin_nested()
+    return nullcontext()
 
 
 # ── Source scraping tasks ─────────────────────────────────────────────────────
@@ -103,9 +114,6 @@ def scrape_source(source_id: str) -> dict[str, Any]:
 
     with get_session() as db:
         source_repo = SourceRepository(db)
-        property_repo = PropertyRepository(db)
-        price_repo = PriceHistoryRepository(db)
-        normalizer = PropertyNormalizer()
 
         source = source_repo.get_by_id(source_id)
         if not source:
@@ -114,6 +122,48 @@ def scrape_source(source_id: str) -> dict[str, Any]:
 
         if not source.enabled:
             return {"skipped": True, "reason": "Source disabled"}
+
+        if source_repo.should_skip_poll(source):
+            logger.info(
+                "source_poll_interval_skip",
+                source_id=source_id,
+                poll_interval_seconds=source.poll_interval_seconds,
+            )
+            logger.info(
+                "scrape_redundancy_metrics",
+                source_id=source_id,
+                source_name=source.name,
+                skip_reason="poll_interval_not_elapsed",
+                skipped_count=1,
+                dedup_conflicts=0,
+            )
+            return {
+                "source_id": source_id,
+                "source_name": source.name,
+                "skipped": True,
+                "reason": "poll_interval_not_elapsed",
+            }
+
+        if not source_repo.try_acquire_scrape_lock(source_id):
+            logger.info("source_in_flight_skip", source_id=source_id)
+            logger.info(
+                "scrape_redundancy_metrics",
+                source_id=source_id,
+                source_name=source.name,
+                skip_reason="source_in_flight",
+                skipped_count=1,
+                dedup_conflicts=0,
+            )
+            return {
+                "source_id": source_id,
+                "source_name": source.name,
+                "skipped": True,
+                "reason": "source_in_flight",
+            }
+
+        property_repo = PropertyRepository(db)
+        price_repo = PriceHistoryRepository(db)
+        normalizer = PropertyNormalizer()
 
         try:
             # 1. Fetch raw listings
@@ -126,6 +176,7 @@ def scrape_source(source_id: str) -> dict[str, Any]:
             new_count = 0
             updated_count = 0
             skipped_count = 0
+            dedup_conflict_count = 0
 
             for raw in raw_listings:
                 parsed = adapter.parse_listing(raw)
@@ -136,7 +187,7 @@ def scrape_source(source_id: str) -> dict[str, Any]:
                 # Check if this is a PPR record (sold property)
                 if parsed.raw_data.get("ppr_record"):
                     try:
-                        with db.begin_nested():
+                        with _nested_tx_or_noop(db):
                             inserted = _handle_ppr_record(db, parsed)
                         if inserted:
                             new_count += 1
@@ -161,7 +212,7 @@ def scrape_source(source_id: str) -> dict[str, Any]:
                         if abs(new_price - old_price) > 0.01:
                             change = new_price - old_price
                             change_pct = (change / old_price * 100) if old_price else 0
-                            price_repo.add_entry(
+                            price_repo.add_entry_if_new_price(
                                 property_id=str(existing.id),
                                 price=new_price,
                                 price_change=change,
@@ -192,8 +243,19 @@ def scrape_source(source_id: str) -> dict[str, Any]:
                     record["source_id"] = source_id
                     record["status"] = "new"
                     record["first_listed_at"] = datetime.now(UTC)
-                    property_repo.create(**record)
-                    new_count += 1
+                    try:
+                        with _nested_tx_or_noop(db):
+                            property_repo.create(**record)
+                        new_count += 1
+                    except IntegrityError:
+                        # Another concurrent scrape inserted this listing first.
+                        skipped_count += 1
+                        dedup_conflict_count += 1
+                        logger.info(
+                            "property_dedup_conflict_skipped",
+                            source_id=source_id,
+                            content_hash=record.get("content_hash"),
+                        )
 
             # Mark source as successfully polled
             source_repo.mark_poll_success(source_id, new_count + updated_count)
@@ -208,6 +270,16 @@ def scrape_source(source_id: str) -> dict[str, Any]:
             }
 
             logger.info(f"Scrape complete: {result}")
+            logger.info(
+                "scrape_redundancy_metrics",
+                source_id=source_id,
+                source_name=source.name,
+                skip_reason="none",
+                skipped_count=skipped_count,
+                dedup_conflicts=dedup_conflict_count,
+                new_count=new_count,
+                updated_count=updated_count,
+            )
 
             # 6. Dispatch alert evaluation for new/changed properties
             if new_count > 0 or updated_count > 0:

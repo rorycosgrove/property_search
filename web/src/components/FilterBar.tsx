@@ -23,11 +23,11 @@ export default function FilterBar() {
     setMissionPrompt(prompt);
   };
 
-  const openCopilotWithMission = () => {
+  const openMainQueryWithMission = () => {
     if (typeof window !== 'undefined') {
-      window.localStorage.setItem('atlas_pending_prompt', missionPrompt);
+      window.localStorage.setItem('atlas_main_query', missionPrompt);
     }
-    router.push(`/copilot?prefill=${encodeURIComponent(missionPrompt)}`);
+    router.push(`/?ask=${encodeURIComponent(missionPrompt)}`);
   };
 
   const activeFilterCount = useMemo(() => {
@@ -118,10 +118,10 @@ export default function FilterBar() {
         </button>
         <button
           type="button"
-          onClick={openCopilotWithMission}
+          onClick={openMainQueryWithMission}
           className="px-3 py-1.5 rounded-full border border-[var(--accent)] bg-cyan-900/10 text-[var(--accent-strong)] hover:bg-cyan-900/15"
         >
-          Discuss mission with Atlas
+          Use in main AI query
         </button>
       </div>
 

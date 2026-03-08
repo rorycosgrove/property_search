@@ -1,21 +1,35 @@
 'use client';
 
 import Link from 'next/link';
-import { usePathname } from 'next/navigation';
+import { usePathname, useRouter } from 'next/navigation';
 import { useState } from 'react';
 
 const NAV_ITEMS = [
   { href: '/', label: 'Workspace' },
   { href: '/analytics', label: 'Market' },
   { href: '/grants', label: 'Incentives' },
-  { href: '/copilot', label: 'Copilot' },
   { href: '/sources', label: 'Sources' },
   { href: '/settings', label: 'Settings' },
 ];
 
 export default function TopNav() {
+  const router = useRouter();
   const pathname = usePathname();
   const [mobileOpen, setMobileOpen] = useState(false);
+  const [command, setCommand] = useState('');
+
+  const sendCommandToWorkspace = () => {
+    const prompt = command.trim();
+    if (!prompt) {
+      return;
+    }
+
+    if (typeof window !== 'undefined') {
+      window.localStorage.setItem('atlas_main_query', prompt);
+    }
+    setCommand('');
+    router.push(`/?ask=${encodeURIComponent(prompt)}`);
+  };
 
   const isActiveRoute = (href: string): boolean => {
     if (href === '/') {
@@ -35,14 +49,27 @@ export default function TopNav() {
           </span>
         </div>
 
-        <div className="hidden xl:flex items-center flex-1 max-w-xl">
+        <form
+          className="hidden lg:flex items-center flex-1 max-w-xl gap-2"
+          onSubmit={(e) => {
+            e.preventDefault();
+            sendCommandToWorkspace();
+          }}
+        >
           <input
-            readOnly
-            value="Ask Atlas AI: Find grant-optimized 3-bed homes under EUR500k in Cork"
-            className="w-full bg-[var(--background)] border border-[var(--card-border)] rounded-full px-4 py-2 text-xs text-[var(--muted)]"
-            aria-label="AI command preview"
+            value={command}
+            onChange={(e) => setCommand(e.target.value)}
+            placeholder="Ask Atlas AI anything about your property strategy"
+            className="w-full bg-[var(--background)] border border-[var(--card-border)] rounded-full px-4 py-2 text-xs text-[var(--foreground)]"
+            aria-label="Ask Atlas AI"
           />
-        </div>
+          <button
+            type="submit"
+            className="px-3 py-2 text-xs rounded-full border border-[var(--accent)] bg-cyan-900/10 text-[var(--accent-strong)] hover:bg-cyan-900/15"
+          >
+            Ask AI
+          </button>
+        </form>
 
         <button
           type="button"
@@ -89,6 +116,13 @@ export default function TopNav() {
           aria-label="Mobile primary"
           role="navigation"
         >
+          <Link
+            href="/?focus=ask"
+            onClick={() => setMobileOpen(false)}
+            className="col-span-2 px-3 py-2 rounded-md text-sm border border-[var(--accent)] bg-cyan-900/10 text-[var(--accent-strong)]"
+          >
+            Open Atlas AI Query
+          </Link>
           {NAV_ITEMS.map((item) => {
             const active = isActiveRoute(item.href);
             return (

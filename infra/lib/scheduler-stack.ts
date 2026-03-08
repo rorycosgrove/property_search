@@ -20,10 +20,27 @@ export class SchedulerStack extends cdk.Stack {
   constructor(scope: Construct, id: string, props: SchedulerStackProps) {
     super(scope, id, props);
 
+    const scrapeMinute =
+      this.node.tryGetContext("scrapeAllCronMinute") ??
+      process.env.SCRAPE_ALL_CRON_MINUTE ??
+      "0";
+    const scrapeHour =
+      this.node.tryGetContext("scrapeAllCronHour") ??
+      process.env.SCRAPE_ALL_CRON_HOUR ??
+      "*/6";
+    const alertMinute =
+      this.node.tryGetContext("evaluateAlertsCronMinute") ??
+      process.env.EVALUATE_ALERTS_CRON_MINUTE ??
+      "15";
+    const alertHour =
+      this.node.tryGetContext("evaluateAlertsCronHour") ??
+      process.env.EVALUATE_ALERTS_CRON_HOUR ??
+      scrapeHour;
+
     // Scrape all sources every 6 hours
     new events.Rule(this, "ScrapeAllRule", {
       ruleName: "property-search-scrape-all",
-      schedule: events.Schedule.cron({ minute: "0", hour: "*/6" }),
+      schedule: events.Schedule.cron({ minute: scrapeMinute, hour: scrapeHour }),
       targets: [
         new targets.SqsQueue(props.scrapeQueue, {
           message: events.RuleTargetInput.fromObject({
@@ -38,7 +55,7 @@ export class SchedulerStack extends cdk.Stack {
     // Evaluate alerts 15 minutes after each scrape cycle
     new events.Rule(this, "EvaluateAlertsRule", {
       ruleName: "property-search-evaluate-alerts",
-      schedule: events.Schedule.cron({ minute: "15", hour: "*/6" }),
+      schedule: events.Schedule.cron({ minute: alertMinute, hour: alertHour }),
       targets: [
         new targets.SqsQueue(props.alertQueue, {
           message: events.RuleTargetInput.fromObject({

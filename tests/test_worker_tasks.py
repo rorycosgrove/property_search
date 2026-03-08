@@ -123,6 +123,12 @@ def test_scrape_source_skips_alert_enqueue_when_alert_queue_missing(monkeypatch)
         def mark_poll_error(self, source_id, _error):
             raise AssertionError(f"mark_poll_error should not be called for {source_id}")
 
+        def should_skip_poll(self, _source):
+            return False
+
+        def try_acquire_scrape_lock(self, _source_id):
+            return True
+
     class FakePropertyRepository:
         def __init__(self, _db):
             pass
@@ -179,3 +185,99 @@ def test_scrape_source_skips_alert_enqueue_when_alert_queue_missing(monkeypatch)
     assert result["updated"] == 0
     assert result["total_fetched"] == 1
     assert send_calls == []
+
+
+def test_scrape_source_skips_when_poll_interval_not_elapsed(monkeypatch):
+    """Scrape should short-circuit when source poll interval has not elapsed."""
+    source_obj = SimpleNamespace(
+        id="myhome-source-id",
+        enabled=True,
+        adapter_name="myhome",
+        name="MyHome.ie",
+        config={},
+        poll_interval_seconds=900,
+    )
+
+    class FakeSourceRepository:
+        def __init__(self, _db):
+            pass
+
+        def get_by_id(self, source_id):
+            assert source_id == "myhome-source-id"
+            return source_obj
+
+        def should_skip_poll(self, _source):
+            return True
+
+        def try_acquire_scrape_lock(self, _source_id):
+            raise AssertionError("Lock should not be attempted when poll interval skips")
+
+    class FakePropertyRepository:
+        def __init__(self, _db):
+            raise AssertionError("Property repository should not be touched when skipping")
+
+    class FakePriceHistoryRepository:
+        def __init__(self, _db):
+            raise AssertionError("Price history repository should not be touched when skipping")
+
+    monkeypatch.setattr("packages.storage.database.get_session", lambda: _SessionCtx())
+    monkeypatch.setattr("packages.storage.repositories.SourceRepository", FakeSourceRepository)
+    monkeypatch.setattr("packages.storage.repositories.PropertyRepository", FakePropertyRepository)
+    monkeypatch.setattr(
+        "packages.storage.repositories.PriceHistoryRepository",
+        FakePriceHistoryRepository,
+    )
+
+    result = scrape_source("myhome-source-id")
+
+    assert result["source_id"] == "myhome-source-id"
+    assert result["skipped"] is True
+    assert result["reason"] == "poll_interval_not_elapsed"
+
+
+def test_scrape_source_skips_when_source_lock_not_acquired(monkeypatch):
+    """Scrape should short-circuit when another scrape is already in flight."""
+    source_obj = SimpleNamespace(
+        id="myhome-source-id",
+        enabled=True,
+        adapter_name="myhome",
+        name="MyHome.ie",
+        config={},
+        poll_interval_seconds=900,
+    )
+
+    class FakeSourceRepository:
+        def __init__(self, _db):
+            pass
+
+        def get_by_id(self, source_id):
+            assert source_id == "myhome-source-id"
+            return source_obj
+
+        def should_skip_poll(self, _source):
+            return False
+
+        def try_acquire_scrape_lock(self, _source_id):
+            return False
+
+    class FakePropertyRepository:
+        def __init__(self, _db):
+            raise AssertionError("Property repository should not be touched when lock is unavailable")
+
+    class FakePriceHistoryRepository:
+        def __init__(self, _db):
+            raise AssertionError("Price history repository should not be touched when lock is unavailable")
+
+    monkeypatch.setattr("packages.storage.database.get_session", lambda: _SessionCtx())
+    monkeypatch.setattr("packages.storage.repositories.SourceRepository", FakeSourceRepository)
+    monkeypatch.setattr("packages.storage.repositories.PropertyRepository", FakePropertyRepository)
+    monkeypatch.setattr(
+        "packages.storage.repositories.PriceHistoryRepository",
+        FakePriceHistoryRepository,
+    )
+
+    result = scrape_source("myhome-source-id")
+
+    assert result["source_id"] == "myhome-source-id"
+    assert result["skipped"] is True
+    assert result["reason"] == "source_in_flight"

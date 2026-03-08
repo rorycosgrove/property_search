@@ -197,12 +197,24 @@ class PropertyPriceHistory(Base):
     recorded_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=_utcnow, server_default="now()"
     )
+    recorded_hour_utc: Mapped[datetime] = mapped_column(
+        DateTime(timezone=False),
+        server_default="date_trunc('hour', now() AT TIME ZONE 'UTC')",
+        nullable=False,
+    )
 
     # Relationships
     property: Mapped[Property] = relationship("Property", back_populates="price_history")
 
     __table_args__ = (
         Index("ix_price_history_property_date", "property_id", "recorded_at"),
+        Index(
+            "uq_price_history_property_price_hour",
+            "property_id",
+            "price",
+            "recorded_hour_utc",
+            unique=True,
+        ),
     )
 
 

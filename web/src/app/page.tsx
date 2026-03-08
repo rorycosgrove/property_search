@@ -1,12 +1,16 @@
 'use client';
 
 import { useEffect, useState } from 'react';
+import { useRouter, useSearchParams } from 'next/navigation';
 import {
   comparePropertySet,
+  createConversation,
   type CompareSetResponse,
+  getConversation,
   getProperties,
   type Property,
   type PropertyListResponse,
+  sendConversationMessage,
 } from '@/lib/api';
 import { useFilterStore, useMapStore, useUIStore } from '@/lib/stores';
 import FilterBar from '@/components/FilterBar';
@@ -23,6 +27,8 @@ interface CompareErrorState {
 }
 
 export default function HomePage() {
+  const router = useRouter();
+  const searchParams = useSearchParams();
   const { filters } = useFilterStore();
   const {
     comparedPropertyIds,
@@ -44,6 +50,14 @@ export default function HomePage() {
   const [compareLoading, setCompareLoading] = useState(false);
   const [compareResult, setCompareResult] = useState<CompareSetResponse | null>(null);
   const [compareError, setCompareError] = useState<CompareErrorState | null>(null);
+  const [aiQuery, setAiQuery] = useState('');
+  const [aiReply, setAiReply] = useState<string | null>(null);
+  const [aiLoading, setAiLoading] = useState(false);
+  const [aiError, setAiError] = useState<string | null>(null);
+  const [conversationId, setConversationId] = useState<string | null>(null);
+
+  const CONVERSATION_KEY = 'property_search_conversation_id';
+  const MAIN_QUERY_KEY = 'atlas_main_query';
 
   const parseCompareError = (err: unknown): CompareErrorState => {
     const fallback: CompareErrorState = {
@@ -86,6 +100,58 @@ export default function HomePage() {
       .finally(() => setLoading(false));
   }, [filters]);
 
+  useEffect(() => {
+    let active = true;
+
+    const bootConversation = async () => {
+      try {
+        if (typeof window === 'undefined') {
+          return;
+        }
+
+        const saved = window.localStorage.getItem(CONVERSATION_KEY);
+        if (saved) {
+          await getConversation(saved);
+          if (active) {
+            setConversationId(saved);
+          }
+          return;
+        }
+
+        const userIdentifier = window.navigator.userAgent || 'web-user';
+        const created = await createConversation(userIdentifier, 'Main Workspace AI Session');
+        window.localStorage.setItem(CONVERSATION_KEY, created.id);
+        if (active) {
+          setConversationId(created.id);
+        }
+      } catch {
+        // Conversation can be created lazily on first ask if boot fails.
+      }
+    };
+
+    bootConversation().catch(console.error);
+
+    return () => {
+      active = false;
+    };
+  }, []);
+
+  useEffect(() => {
+    if (typeof window === 'undefined') {
+      return;
+    }
+
+    const queryPrompt = searchParams.get('ask') || '';
+    const localPrompt = window.localStorage.getItem(MAIN_QUERY_KEY) || window.localStorage.getItem('atlas_pending_prompt') || '';
+    const prompt = queryPrompt || localPrompt;
+
+    if (prompt) {
+      setAiQuery(prompt);
+      window.localStorage.removeItem(MAIN_QUERY_KEY);
+      window.localStorage.removeItem('atlas_pending_prompt');
+    }
+  }, [searchParams]);
+
   const properties = data?.items || [];
   const propertyMap = new Map(properties.map((p) => [p.id, p]));
   const comparedProperties = comparedPropertyIds
@@ -115,15 +181,46 @@ export default function HomePage() {
       ? 'You are ready to run Decision Studio. Atlas can also pre-brief your comparison strategy.'
       : 'Select at least 2 homes to unlock AI decision analysis and evidence-backed trade-offs.';
 
-  const openCopilotWithContext = () => {
+  const applyContextToAIQuery = () => {
     const winner = compareResult?.properties?.[0];
     const prompt = winner
       ? `Review this shortlist result and challenge the winner (${winner.title}) against risk, grants, BER, and long-term value.`
       : `Help me compare ${Math.max(comparedPropertyIds.length, 2)} properties using ${rankingMode} ranking and define the best decision criteria.`;
 
-    if (typeof window !== 'undefined') {
-      window.localStorage.setItem('atlas_pending_prompt', prompt);
-      window.location.assign(`/copilot?prefill=${encodeURIComponent(prompt)}`);
+    setAiQuery(prompt);
+    setAiError(null);
+  };
+
+  const handleAskAtlas = async () => {
+    const prompt = aiQuery.trim();
+    if (!prompt || aiLoading) {
+      return;
+    }
+
+    setAiLoading(true);
+    setAiError(null);
+
+    try {
+      let convId = conversationId;
+
+      if (!convId && typeof window !== 'undefined') {
+        const userIdentifier = window.navigator.userAgent || 'web-user';
+        const created = await createConversation(userIdentifier, 'Main Workspace AI Session');
+        convId = created.id;
+        window.localStorage.setItem(CONVERSATION_KEY, created.id);
+        setConversationId(created.id);
+      }
+
+      if (!convId) {
+        throw new Error('Could not initialize AI session.');
+      }
+
+      const result = await sendConversationMessage(convId, prompt);
+      setAiReply(result.assistant_message.content);
+    } catch (err) {
+      setAiError(err instanceof Error ? err.message : 'Failed to query Atlas AI.');
+    } finally {
+      setAiLoading(false);
     }
   };
 
@@ -174,11 +271,41 @@ export default function HomePage() {
         <span className="text-[var(--muted)]">{guidanceMessage}</span>
         <button
           type="button"
-          onClick={openCopilotWithContext}
+          onClick={applyContextToAIQuery}
           className="ml-auto px-3 py-1.5 rounded-full border border-[var(--accent)] bg-cyan-900/10 text-[var(--accent-strong)] hover:bg-cyan-900/15 text-xs"
         >
-          Send context to Atlas
+          Use context in AI query
         </button>
+      </div>
+
+      <div className="px-3 py-3 border-b border-[var(--card-border)] ai-glass">
+        <div className="flex flex-col lg:flex-row gap-2">
+          <input
+            value={aiQuery}
+            onChange={(e) => setAiQuery(e.target.value)}
+            placeholder="Ask Atlas AI in the workspace: compare trade-offs, validate strategy, or challenge the winner..."
+            className="flex-1 bg-[var(--background)] border border-[var(--card-border)] rounded-lg px-3 py-2 text-sm"
+          />
+          <button
+            type="button"
+            onClick={handleAskAtlas}
+            disabled={!aiQuery.trim() || aiLoading}
+            className="px-4 py-2 rounded-lg text-sm font-medium border border-[var(--accent)] bg-cyan-900/10 text-[var(--accent-strong)] hover:bg-cyan-900/15 disabled:opacity-50 disabled:cursor-not-allowed"
+          >
+            {aiLoading ? 'Asking Atlas...' : 'Ask Atlas'}
+          </button>
+        </div>
+
+        {aiError ? (
+          <p className="mt-2 text-xs text-[var(--danger)]">{aiError}</p>
+        ) : null}
+
+        {aiReply ? (
+          <div className="mt-3 rounded-lg border border-[var(--card-border)] bg-[var(--card-bg)] p-3">
+            <p className="text-xs uppercase tracking-wide text-[var(--muted)] mb-1">Atlas response</p>
+            <p className="text-sm whitespace-pre-wrap leading-relaxed">{aiReply}</p>
+          </div>
+        ) : null}
       </div>
 
       <div className="flex flex-1 min-h-0 overflow-hidden flex-col lg:flex-row">
