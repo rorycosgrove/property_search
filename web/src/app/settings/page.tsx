@@ -1,7 +1,7 @@
 'use client';
 
 import { useEffect, useState } from 'react';
-import { getLLMConfig, getLLMModels, type LLMModelOption, updateLLMConfig } from '@/lib/api';
+import { getLLMConfig, getLLMHealth, getLLMModels, type LLMHealth, type LLMModelOption, updateLLMConfig } from '@/lib/api';
 
 const FALLBACK_MODELS: LLMModelOption[] = [
   { id: 'amazon.titan-text-express-v1', label: 'Amazon Titan Text Express' },
@@ -17,6 +17,7 @@ const FALLBACK_MODELS: LLMModelOption[] = [
 export default function SettingsPage() {
   const [provider, setProvider] = useState('bedrock');
   const [model, setModel] = useState('');
+  const [health, setHealth] = useState<LLMHealth | null>(null);
   const [models, setModels] = useState<LLMModelOption[]>([]);
   const [modelsSource, setModelsSource] = useState<'api' | 'fallback'>('api');
   const [saveWarning, setSaveWarning] = useState<string | null>(null);
@@ -28,48 +29,43 @@ export default function SettingsPage() {
   useEffect(() => {
     let isMounted = true;
 
-    getLLMConfig()
-      .then((config) => {
+    Promise.allSettled([getLLMConfig(), getLLMModels(), getLLMHealth()])
+      .then(([configResult, modelsResult, healthResult]) => {
         if (!isMounted) {
           return;
         }
-        setProvider(config.provider);
-        setModel(config.model);
+
+        if (configResult.status === 'fulfilled') {
+          setProvider(configResult.value.provider);
+          setModel(configResult.value.model);
+        }
+
+        if (modelsResult.status === 'fulfilled') {
+          const apiModels = modelsResult.value.models;
+          if (!apiModels.length) {
+            setModels(FALLBACK_MODELS);
+            setModelsSource('fallback');
+            setModel((current) => current || FALLBACK_MODELS[0]?.id || '');
+          } else {
+            setModels(apiModels);
+            setModelsSource('api');
+            setModel((current) => current || modelsResult.value.default_model || apiModels[0]?.id || '');
+          }
+        } else {
+          setModels(FALLBACK_MODELS);
+          setModelsSource('fallback');
+          setModel((current) => current || FALLBACK_MODELS[0]?.id || '');
+        }
+
+        if (healthResult.status === 'fulfilled') {
+          setHealth(healthResult.value);
+        }
       })
       .catch(console.error)
       .finally(() => {
         if (isMounted) {
           setIsLoading(false);
         }
-      });
-
-    getLLMModels()
-      .then((modelResponse) => {
-        if (!isMounted) {
-          return;
-        }
-
-        const apiModels = modelResponse.models;
-        if (!apiModels.length) {
-          setModels(FALLBACK_MODELS);
-          setModelsSource('fallback');
-          setModel((current) => current || FALLBACK_MODELS[0]?.id || '');
-          return;
-        }
-
-        setModels(apiModels);
-        setModelsSource('api');
-        setModel((current) => current || modelResponse.default_model || apiModels[0]?.id || '');
-      })
-      .catch((error) => {
-        console.error(error);
-        if (!isMounted) {
-          return;
-        }
-
-        setModels(FALLBACK_MODELS);
-        setModelsSource('fallback');
-        setModel((current) => current || FALLBACK_MODELS[0]?.id || '');
       });
 
     return () => {
@@ -101,12 +97,21 @@ export default function SettingsPage() {
   };
 
   return (
-    <div className="p-6 max-w-2xl mx-auto">
-      <h1 className="text-2xl font-bold mb-6">Settings</h1>
+    <div className="p-6 max-w-4xl mx-auto space-y-6 rise-in">
+      <div className="rounded-xl border border-[var(--card-border)] ai-glass p-5">
+        <p className="text-[11px] uppercase tracking-[0.16em] text-[var(--muted)]">AI Control Center</p>
+        <h1 className="text-2xl font-bold mt-1">Tune Atlas AI for your decision workflow</h1>
+        <p className="text-sm text-[var(--muted)] mt-2">Choose your model, check readiness, and keep analysis quality high.</p>
+      </div>
 
-      {/* LLM Configuration */}
-      <div className="bg-[var(--card-bg)] border border-[var(--card-border)] rounded-lg p-6 mb-6">
-        <h2 className="text-lg font-semibold mb-4">LLM Provider</h2>
+      <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+        <StatusCard label="Provider" value={provider || 'n/a'} tone="neutral" />
+        <StatusCard label="Readiness" value={health?.healthy ? 'Ready' : 'Attention needed'} tone={health?.healthy ? 'ok' : 'warn'} />
+        <StatusCard label="Inference profile" value={health?.inference_profile_configured ? 'Configured' : 'Not configured'} tone={health?.inference_profile_configured ? 'ok' : 'warn'} />
+      </div>
+
+      <div className="bg-[var(--card-bg)] border border-[var(--card-border)] rounded-lg p-6">
+        <h2 className="text-lg font-semibold mb-4">Model Selection</h2>
 
         <div className="space-y-4">
           <div>
@@ -121,26 +126,31 @@ export default function SettingsPage() {
           </div>
 
           <div>
-            <label className="block text-sm text-[var(--muted)] mb-1">Model</label>
-            <select
-              value={model}
-              onChange={(e) => setModel(e.target.value)}
-              disabled={isLoading}
-              className="w-full bg-[var(--background)] border border-[var(--card-border)] rounded px-3 py-2"
-            >
-              <option value="" disabled>{isLoading ? 'Loading models...' : 'Select an LLM model'}</option>
-              {models.map((modelOption) => (
-                <option key={modelOption.id} value={modelOption.id}>
-                  {modelOption.label} ({modelOption.id})
-                </option>
-              ))}
-              {model && !models.some((modelOption) => modelOption.id === model) ? (
-                <option value={model}>{`Current custom model (${model})`}</option>
-              ) : null}
-            </select>
-            <p className="text-xs text-[var(--muted)] mt-1">
+            <label className="block text-sm text-[var(--muted)] mb-2">Model</label>
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-2">
+              {models.map((modelOption) => {
+                const selected = modelOption.id === model;
+                return (
+                  <button
+                    key={modelOption.id}
+                    type="button"
+                    onClick={() => setModel(modelOption.id)}
+                    className={[
+                      'text-left rounded-lg border px-3 py-3 transition-colors',
+                      selected
+                        ? 'border-[var(--accent)] bg-cyan-900/10'
+                        : 'border-[var(--card-border)] bg-[var(--background)] hover:border-[var(--accent)]',
+                    ].join(' ')}
+                  >
+                    <p className="text-sm font-semibold">{modelOption.label}</p>
+                    <p className="text-xs text-[var(--muted)] mt-1 break-all">{modelOption.id}</p>
+                  </button>
+                );
+              })}
+            </div>
+            <p className="text-xs text-[var(--muted)] mt-2">
               {modelsSource === 'api'
-                ? 'Models shown are fetched from the API.'
+                ? 'Live model list loaded from API.'
                 : 'Using built-in fallback models because the models endpoint is unavailable.'}
             </p>
           </div>
@@ -148,35 +158,63 @@ export default function SettingsPage() {
           <button
             onClick={handleSave}
             disabled={!model || isSaving || isLoading}
-            className="px-4 py-2 bg-brand-600 hover:bg-brand-700 disabled:bg-brand-800/50 disabled:cursor-not-allowed rounded text-sm font-medium transition-colors"
+            className="px-4 py-2 bg-[var(--accent)] text-white hover:bg-[var(--accent-strong)] disabled:opacity-60 disabled:cursor-not-allowed rounded text-sm font-medium transition-colors"
           >
             {isSaving ? 'Saving...' : saved ? '✓ Saved' : 'Save'}
           </button>
 
           {saveError ? (
-            <div className="rounded border border-red-500/40 bg-red-500/10 px-3 py-2 text-sm text-red-300">
+            <div className="rounded border border-[var(--danger)]/40 bg-[var(--danger)]/10 px-3 py-2 text-sm text-[var(--danger)]">
               {saveError}
             </div>
           ) : null}
 
           {saveWarning ? (
-            <div className="rounded border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-sm text-amber-300">
+            <div className="rounded border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-sm text-amber-700">
               {saveWarning}
+            </div>
+          ) : null}
+
+          {health?.reason ? (
+            <div className="rounded border border-[var(--card-border)] bg-[var(--background)] px-3 py-2 text-sm text-[var(--muted)]">
+              Health reason: {health.reason}
             </div>
           ) : null}
         </div>
       </div>
 
-      {/* About */}
       <div className="bg-[var(--card-bg)] border border-[var(--card-border)] rounded-lg p-6">
         <h2 className="text-lg font-semibold mb-2">About</h2>
         <p className="text-sm text-[var(--muted)]">
-          Irish Property Research Dashboard v0.1.0<br />
+          Atlas AI Property Decisions v0.1.0<br />
           Powered by AWS: Lambda, API Gateway, RDS PostgreSQL, Amazon Bedrock,
           SQS, and Amplify. Aggregates property listings from Daft.ie,
           MyHome.ie, PropertyPal, and the Property Price Register.
         </p>
       </div>
+    </div>
+  );
+}
+
+function StatusCard({
+  label,
+  value,
+  tone,
+}: {
+  label: string;
+  value: string;
+  tone: 'neutral' | 'ok' | 'warn';
+}) {
+  const toneClasses = {
+    neutral: 'border-[var(--card-border)] text-[var(--foreground)]',
+    ok: 'border-emerald-300 text-emerald-700',
+    warn: 'border-amber-300 text-amber-700',
+  }[tone];
+
+  return (
+    <div className={`rounded-lg border bg-[var(--card-bg)] p-3 ${toneClasses}`}>
+      <p className="text-xs uppercase tracking-wide opacity-80">{label}</p>
+      <p className="text-sm font-semibold mt-1">{value}</p>
     </div>
   );
 }

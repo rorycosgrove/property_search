@@ -1,6 +1,7 @@
 'use client';
 
 import { FormEvent, useEffect, useMemo, useState } from 'react';
+import { useSearchParams } from 'next/navigation';
 import {
   createConversation,
   getConversation,
@@ -9,8 +10,10 @@ import {
 } from '@/lib/api';
 
 const STORAGE_KEY = 'property_search_conversation_id';
+const PENDING_PROMPT_KEY = 'atlas_pending_prompt';
 
 export default function CopilotPage() {
+  const searchParams = useSearchParams();
   const [conversation, setConversation] = useState<Conversation | null>(null);
   const [input, setInput] = useState('');
   const [loading, setLoading] = useState(true);
@@ -46,6 +49,20 @@ export default function CopilotPage() {
     boot().catch(console.error);
   }, []);
 
+  useEffect(() => {
+    const queryPrompt = searchParams.get('prefill') || '';
+    const localPrompt = typeof window !== 'undefined' ? window.localStorage.getItem(PENDING_PROMPT_KEY) || '' : '';
+    const nextPrompt = queryPrompt || localPrompt;
+
+    if (nextPrompt && !input) {
+      setInput(nextPrompt);
+    }
+
+    if (localPrompt && typeof window !== 'undefined') {
+      window.localStorage.removeItem(PENDING_PROMPT_KEY);
+    }
+  }, [searchParams, input]);
+
   const handleSubmit = async (e: FormEvent) => {
     e.preventDefault();
     if (!conversation || !input.trim() || sending) {
@@ -68,13 +85,28 @@ export default function CopilotPage() {
   };
 
   return (
-    <div className="p-6 max-w-5xl mx-auto h-[calc(100vh-52px)] flex flex-col gap-4">
+    <div className="p-6 max-w-6xl mx-auto h-[calc(100vh-52px)] flex flex-col gap-4 rise-in">
       <div className="flex items-center justify-between">
-        <h1 className="text-2xl font-bold">Copilot Chat</h1>
+        <div>
+          <p className="text-[11px] uppercase tracking-[0.16em] text-[var(--muted)]">Decision Copilot</p>
+          <h1 className="text-2xl font-bold">Talk to Atlas AI</h1>
+        </div>
         <p className="text-sm text-[var(--muted)]">{messageCount} messages</p>
       </div>
 
-      <div className="flex-1 bg-[var(--card-bg)] border border-[var(--card-border)] rounded-lg p-4 overflow-y-auto">
+      {input ? (
+        <div className="rounded-md border border-[var(--card-border)] bg-[var(--card-bg)] px-3 py-2 text-xs text-[var(--muted)]">
+          Mission context loaded. Edit the prompt before sending if needed.
+        </div>
+      ) : null}
+
+      <div className="flex flex-wrap gap-2 text-xs">
+        <button type="button" onClick={() => setInput('Find 3 counties with best value under EUR500k and explain why.')} className="px-3 py-1.5 rounded-full border border-[var(--card-border)] bg-[var(--card-bg)] hover:border-[var(--accent)]">County strategy</button>
+        <button type="button" onClick={() => setInput('Compare BER trade-offs: A2 apartment vs C1 house for long-term cost.')} className="px-3 py-1.5 rounded-full border border-[var(--card-border)] bg-[var(--card-bg)] hover:border-[var(--accent)]">BER trade-offs</button>
+        <button type="button" onClick={() => setInput('Suggest grant-eligible property criteria for a first-time buyer.')} className="px-3 py-1.5 rounded-full border border-[var(--card-border)] bg-[var(--card-bg)] hover:border-[var(--accent)]">Grant playbook</button>
+      </div>
+
+      <div className="flex-1 ai-glass border border-[var(--card-border)] rounded-lg p-4 overflow-y-auto">
         {loading && <p className="text-[var(--muted)]">Loading conversation...</p>}
 
         {!loading && !conversation && (
@@ -95,8 +127,8 @@ export default function CopilotPage() {
                 className={[
                   'rounded-md p-3 border',
                   message.role === 'user'
-                    ? 'bg-neutral-900 border-neutral-700 ml-8'
-                    : 'bg-neutral-950 border-neutral-800 mr-8',
+                    ? 'bg-[var(--background)] border-[var(--card-border)] ml-8'
+                    : 'bg-cyan-900/10 border-cyan-800/20 mr-8',
                 ].join(' ')}
               >
                 <p className="text-xs uppercase tracking-wide text-[var(--muted)] mb-1">
@@ -120,13 +152,13 @@ export default function CopilotPage() {
         <button
           type="submit"
           disabled={loading || sending || !conversation || !input.trim()}
-          className="px-4 py-2 bg-brand-600 hover:bg-brand-700 disabled:opacity-60 rounded text-sm font-medium transition-colors"
+          className="px-4 py-2 bg-[var(--accent)] text-white hover:bg-[var(--accent-strong)] disabled:opacity-60 rounded text-sm font-medium transition-colors"
         >
-          {sending ? 'Sending...' : 'Send'}
+          {sending ? 'Sending...' : 'Send to Atlas'}
         </button>
       </form>
 
-      {error && <p className="text-sm text-red-400">{error}</p>}
+      {error && <p className="text-sm text-[var(--danger)]">{error}</p>}
     </div>
   );
 }

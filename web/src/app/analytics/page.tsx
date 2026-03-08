@@ -32,9 +32,12 @@ export default function AnalyticsPage() {
   }, [selectedCounty]);
 
   return (
-    <div className="p-6 max-w-7xl mx-auto">
+    <div className="p-6 max-w-7xl mx-auto rise-in">
       <div className="flex items-center justify-between mb-6">
-        <h1 className="text-2xl font-bold">Market Analytics</h1>
+        <div>
+          <p className="text-[11px] uppercase tracking-[0.16em] text-[var(--muted)]">Market Intelligence</p>
+          <h1 className="text-2xl font-bold">AI-guided market pulse</h1>
+        </div>
         <select
           value={selectedCounty}
           onChange={(e) => setSelectedCounty(e.target.value)}
@@ -45,6 +48,10 @@ export default function AnalyticsPage() {
             <option key={c} value={c}>{c}</option>
           ))}
         </select>
+      </div>
+
+      <div className="rounded-lg border border-[var(--card-border)] ai-glass p-4 mb-6">
+        <p className="text-sm">Atlas Insight: use this panel to identify pricing pressure, inventory mix, and BER opportunity before running compare analysis in the workspace.</p>
       </div>
 
       {/* Summary cards */}
@@ -113,7 +120,7 @@ export default function AnalyticsPage() {
                 <span className="text-sm w-24 capitalize">{d.property_type}</span>
                 <div className="flex-1 bg-[var(--card-border)] rounded-full h-4">
                   <div
-                    className="bg-brand-500 h-4 rounded-full text-[10px] leading-4 text-center text-white"
+                    className="bg-[var(--accent)] h-4 rounded-full text-[10px] leading-4 text-center text-white"
                     style={{ width: `${d.percentage}%` }}
                   >
                     {d.percentage > 10 ? `${d.percentage}%` : ''}

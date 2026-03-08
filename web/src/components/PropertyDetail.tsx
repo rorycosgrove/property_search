@@ -87,7 +87,7 @@ export default function PropertyDetail({ property: prop, onClose }: Props) {
       {/* Header */}
       <div className="flex items-start justify-between mb-4">
         <div className="flex-1">
-          <div className="text-2xl font-bold text-brand-400 mb-1">
+          <div className="text-2xl font-bold text-[var(--accent)] mb-1">
             {formatEur(prop.price)}
           </div>
           <h2 className="text-base font-semibold leading-tight">{prop.title}</h2>
@@ -119,7 +119,7 @@ export default function PropertyDetail({ property: prop, onClose }: Props) {
           className={[
             'px-3 py-1.5 text-xs rounded border transition-colors',
             comparedPropertyIds.includes(prop.id)
-              ? 'border-brand-500 text-brand-300 bg-brand-900/20'
+              ? 'border-[var(--accent)] text-[var(--accent)] bg-cyan-900/10'
               : 'border-[var(--card-border)] hover:bg-[var(--card-border)]',
           ].join(' ')}
         >
@@ -201,9 +201,9 @@ export default function PropertyDetail({ property: prop, onClose }: Props) {
             <button
               onClick={handleEnrich}
               disabled={loading}
-              className="text-xs px-2 py-1 bg-brand-600 rounded hover:bg-brand-700 disabled:opacity-50 transition-colors"
+              className="text-xs px-2 py-1 bg-[var(--accent)] text-white rounded hover:bg-[var(--accent-strong)] disabled:opacity-50 transition-colors"
             >
-              {loading ? 'Analyzing...' : 'Analyze'}
+              {loading ? 'Analyzing...' : 'Run AI analysis'}
             </button>
           )}
         </div>
@@ -217,7 +217,7 @@ export default function PropertyDetail({ property: prop, onClose }: Props) {
                 <span className="text-sm font-medium">Value Score:</span>
                 <div className="flex-1 bg-[var(--card-border)] rounded-full h-2">
                   <div
-                    className="bg-brand-500 h-2 rounded-full"
+                    className="bg-[var(--accent)] h-2 rounded-full"
                     style={{ width: `${enrichment.value_score * 10}%` }}
                   />
                 </div>
@@ -283,7 +283,7 @@ export default function PropertyDetail({ property: prop, onClose }: Props) {
         href={prop.url}
         target="_blank"
         rel="noopener noreferrer"
-        className="block text-center py-2 bg-brand-600 hover:bg-brand-700 rounded text-sm font-medium transition-colors"
+        className="block text-center py-2 bg-[var(--accent)] text-white hover:bg-[var(--accent-strong)] rounded text-sm font-medium transition-colors"
       >
         View on Source Site →
       </a>

@@ -21,8 +21,8 @@ export default function PropertyFeed({ properties, total, loading }: Props) {
   return (
     <div className="flex flex-col h-full">
       {/* Header */}
-      <div className="px-4 py-2 border-b border-[var(--card-border)] text-sm text-[var(--muted)]">
-        {loading ? 'Loading...' : `${total.toLocaleString()} properties found`}
+      <div className="px-4 py-3 border-b border-[var(--card-border)] text-sm text-[var(--muted)] bg-[var(--card-bg)]/80">
+        {loading ? 'Building your shortlist...' : `${total.toLocaleString()} homes found for your mission`}
       </div>
 
       {/* List */}
@@ -54,7 +54,7 @@ export default function PropertyFeed({ properties, total, loading }: Props) {
 
               <div className="min-w-0 flex-1">
                 <div className="flex items-center justify-between mb-1">
-                  <span className="font-semibold text-brand-300 text-sm">{formatEur(prop.price)}</span>
+                  <span className="font-semibold text-[var(--accent)] text-sm">{formatEur(prop.price)}</span>
                   {prop.ber_rating && (
                     <span
                       className="text-[10px] font-bold px-1.5 py-0.5 rounded"
@@ -85,7 +85,7 @@ export default function PropertyFeed({ properties, total, loading }: Props) {
                   className={[
                     'text-[11px] px-2 py-1 rounded border transition-colors',
                     comparedPropertyIds.includes(prop.id)
-                      ? 'border-brand-500 text-brand-300 bg-brand-900/20'
+                      ? 'border-[var(--accent)] text-[var(--accent)] bg-cyan-900/10'
                       : 'border-[var(--card-border)] hover:bg-[var(--card-border)]',
                   ].join(' ')}
                 >

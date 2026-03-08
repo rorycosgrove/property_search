@@ -14,8 +14,8 @@ const manrope = Manrope({
 });
 
 export const metadata: Metadata = {
-  title: 'Irish Property Research Dashboard',
-  description: 'Research properties to buy in Ireland — price tracking, analytics, and AI insights',
+  title: 'Atlas AI Property Decisions',
+  description: 'AI-guided property decision workspace for search, comparison, grants, and market confidence.',
 };
 
 export default function RootLayout({
@@ -33,7 +33,7 @@ export default function RootLayout({
           crossOrigin=""
         />
       </head>
-      <body className="bg-[var(--background)] text-[var(--foreground)] min-h-screen">
+      <body className="bg-[var(--background)] text-[var(--foreground)] min-h-screen antialiased">
         <div className="flex flex-col min-h-screen">
           <header>
             <TopNav />

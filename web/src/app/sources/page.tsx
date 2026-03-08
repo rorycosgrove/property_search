@@ -7,6 +7,7 @@ import { formatDate } from '@/lib/utils';
 export default function SourcesPage() {
   const [sources, setSources] = useState<Source[]>([]);
   const [adapters, setAdapters] = useState<AdapterInfo[]>([]);
+  const [toast, setToast] = useState<string | null>(null);
 
   useEffect(() => {
     getSources().then(setSources).catch(console.error);
@@ -15,16 +16,24 @@ export default function SourcesPage() {
 
   const handleTrigger = async (id: string) => {
     const response = await triggerScrape(id);
-    if (response.status === 'processed_inline') {
-      alert('Source processed inline (local mode).');
-      return;
-    }
-    alert('Scrape dispatched to queue.');
+    setToast(response.status === 'processed_inline'
+      ? 'Source processed inline (local mode).'
+      : 'Scrape dispatched to queue.');
+    window.setTimeout(() => setToast(null), 2500);
   };
 
   return (
-    <div className="p-6 max-w-5xl mx-auto">
-      <h1 className="text-2xl font-bold mb-6">Data Sources</h1>
+    <div className="p-6 max-w-5xl mx-auto rise-in">
+      <div className="mb-6">
+        <p className="text-[11px] uppercase tracking-[0.16em] text-[var(--muted)]">Data Operations</p>
+        <h1 className="text-2xl font-bold">Source readiness and ingestion control</h1>
+      </div>
+
+      {toast ? (
+        <div className="mb-4 rounded-lg border border-[var(--accent)]/30 bg-cyan-900/10 px-3 py-2 text-sm text-[var(--foreground)]">
+          {toast}
+        </div>
+      ) : null}
 
       {/* Active sources */}
       <div className="mb-8">
@@ -59,7 +68,7 @@ export default function SourcesPage() {
               </div>
               <button
                 onClick={() => handleTrigger(source.id)}
-                className="text-sm px-3 py-1.5 bg-brand-600 hover:bg-brand-700 rounded transition-colors"
+                className="text-sm px-3 py-1.5 bg-[var(--accent)] text-white hover:bg-[var(--accent-strong)] rounded transition-colors"
               >
                 Scrape Now
               </button>

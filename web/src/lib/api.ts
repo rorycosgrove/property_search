@@ -459,6 +459,10 @@ export interface LLMHealth {
   inference_profile_configured?: boolean;
 }
 
+export async function getLLMHealth(): Promise<LLMHealth> {
+  return fetchJSON<LLMHealth>('/api/v1/llm/health');
+}
+
 export async function getEnrichment(propertyId: string): Promise<LLMEnrichment> {
   return fetchJSON<LLMEnrichment>(`/api/v1/llm/enrichment/${propertyId}`);
 }

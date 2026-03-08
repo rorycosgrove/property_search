@@ -25,16 +25,23 @@ export default function TopNav() {
   };
 
   return (
-    <div className="border-b border-[var(--card-border)] bg-[var(--card-bg)]/85 backdrop-blur-md">
-      <div className="px-4 lg:px-6 py-3 flex items-center justify-between gap-3">
-        <div className="flex items-center gap-3">
-          <div className="h-2 w-2 rounded-full bg-emerald-600" aria-hidden="true" />
-          <h1 className="text-lg lg:text-xl tracking-tight" style={{ fontFamily: 'var(--font-display)' }}>
-            Property Value Atlas
-          </h1>
+    <div className="border-b border-[var(--card-border)] ai-glass">
+      <div className="px-4 lg:px-6 py-3 flex flex-wrap items-center justify-between gap-3">
+        <div className="flex items-center gap-3 min-w-0">
+          <div className="h-2.5 w-2.5 rounded-full bg-[var(--success)]" aria-hidden="true" />
+          <h1 className="text-lg lg:text-xl tracking-tight">Atlas AI</h1>
           <span className="hidden lg:inline-flex text-[11px] uppercase tracking-[0.16em] text-[var(--muted)] border border-[var(--card-border)] rounded-full px-2 py-1">
-            Map-First Utility
+            Command Canvas
           </span>
+        </div>
+
+        <div className="hidden xl:flex items-center flex-1 max-w-xl">
+          <input
+            readOnly
+            value="Ask Atlas AI: Find grant-optimized 3-bed homes under EUR500k in Cork"
+            className="w-full bg-[var(--background)] border border-[var(--card-border)] rounded-full px-4 py-2 text-xs text-[var(--muted)]"
+            aria-label="AI command preview"
+          />
         </div>
 
         <button
@@ -47,6 +54,13 @@ export default function TopNav() {
           Menu
         </button>
 
+        <div className="hidden lg:flex items-center gap-2">
+          <span className="inline-flex items-center gap-1 px-2 py-1 rounded-full text-[11px] border border-[var(--card-border)] text-[var(--muted)]">
+            <span className="h-1.5 w-1.5 rounded-full bg-[var(--success)]" aria-hidden="true" />
+            AI ready
+          </span>
+        </div>
+
         <nav className="hidden lg:flex items-center gap-1" aria-label="Primary">
           {NAV_ITEMS.map((item) => {
             const active = isActiveRoute(item.href);
@@ -57,7 +71,7 @@ export default function TopNav() {
                 className={[
                   'px-3 py-1.5 rounded-md text-sm transition-colors focus:outline-none focus:ring-2 focus:ring-cyan-700',
                   active
-                    ? 'bg-cyan-800 text-white shadow-sm'
+                    ? 'bg-[var(--accent)] text-white shadow-sm'
                     : 'text-[var(--muted)] hover:text-[var(--foreground)] hover:bg-[var(--background)]',
                 ].join(' ')}
                 aria-current={active ? 'page' : undefined}

@@ -34,9 +34,12 @@ export default function GrantsPage() {
   }, [grants]);
 
   return (
-    <div className="p-6 max-w-6xl mx-auto">
+    <div className="p-6 max-w-6xl mx-auto rise-in">
       <div className="flex flex-wrap gap-3 items-center justify-between mb-6">
-        <h1 className="text-2xl font-bold">Grants and Incentives</h1>
+        <div>
+          <p className="text-[11px] uppercase tracking-[0.16em] text-[var(--muted)]">Incentive Intelligence</p>
+          <h1 className="text-2xl font-bold">Grants and buyer advantage</h1>
+        </div>
 
         <div className="flex gap-2 items-center">
           <select
@@ -60,6 +63,10 @@ export default function GrantsPage() {
             Active only
           </label>
         </div>
+      </div>
+
+      <div className="rounded-lg border border-[var(--card-border)] ai-glass p-4 mb-6 text-sm">
+        Atlas tip: combine this grant view with Decision Studio to reveal true net acquisition cost after incentive eligibility.
       </div>
 
       <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mb-6">
@@ -121,7 +128,7 @@ export default function GrantsPage() {
                     href={grant.source_url}
                     target="_blank"
                     rel="noreferrer"
-                    className="text-blue-300 hover:text-blue-200"
+                    className="text-[var(--accent)] hover:opacity-80"
                   >
                     Official source
                   </a>
