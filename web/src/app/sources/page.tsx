@@ -72,9 +72,9 @@ export default function SourcesPage() {
   const handleDiscoverSources = async () => {
     setDiscoveringSources(true);
     try {
-      const result = await discoverSourcesAuto(false, 25);
+      const result = await discoverSourcesAuto(true, 25);
       setToast(
-        `Discovery complete: ${result.created.length} created, ${result.existing.length} already known, ${result.skipped_invalid.length} skipped.`,
+        `Discovery complete: ${result.created.length} created and enabled, ${result.existing.length} already known, ${result.skipped_invalid.length} skipped.`,
       );
       getSources().then(setSources).catch(console.error);
       loadPendingDiscovered();
@@ -119,7 +119,7 @@ export default function SourcesPage() {
             disabled={discoveringSources}
             className="text-sm ml-2 px-4 py-2 rounded-md border border-[var(--card-border)] bg-[var(--card-bg)] hover:bg-[var(--background)] disabled:opacity-60 disabled:cursor-not-allowed transition-colors"
           >
-            {discoveringSources ? 'Discovering Feeds...' : 'Auto-Discover Feeds'}
+            {discoveringSources ? 'Discovering Feeds...' : 'Auto-Discover & Enable Feeds'}
           </button>
         </div>
       </div>
@@ -164,6 +164,27 @@ export default function SourcesPage() {
                     </td>
                     <td className="py-2 font-mono text-xs break-all">
                       {run.steps.map((step) => `${step.step}:${step.status}`).join(' | ')}
+                      {run.steps[0]?.result && (
+                        <div className="mt-1 text-[11px] text-[var(--muted)]">
+                          {(() => {
+                            const scrape = run.steps[0].result as Record<string, unknown>;
+                            const discovery = scrape.discovery_during_scrape as Record<string, unknown> | undefined;
+                            const sourcesSummary = scrape.source_summary as Record<string, unknown> | undefined;
+                            const parts: string[] = [];
+                            if (discovery) {
+                              parts.push(
+                                `discovery created=${String(discovery.created ?? 0)} enabled=${String(discovery.created_enabled ?? 0)} pending=${String(discovery.created_pending_approval ?? 0)}`,
+                              );
+                            }
+                            if (sourcesSummary) {
+                              parts.push(
+                                `sources enabled=${String(sourcesSummary.enabled ?? 0)}/${String(sourcesSummary.total ?? 0)} pending=${String(sourcesSummary.pending_approval ?? 0)} disabled_by_errors=${String(sourcesSummary.disabled_by_errors ?? 0)}`,
+                              );
+                            }
+                            return parts.join(' | ');
+                          })()}
+                        </div>
+                      )}
                     </td>
                   </tr>
                 ))}
@@ -239,6 +260,12 @@ export default function SourcesPage() {
                     </span>
                   )}
                 </p>
+                {source.last_error ? (
+                  <p className="text-xs text-[var(--danger)] mt-1">Last error: {source.last_error}</p>
+                ) : null}
+                {source.tags?.includes('pending_approval') ? (
+                  <p className="text-xs text-amber-300 mt-1">Pending approval: not included in scrape dispatch.</p>
+                ) : null}
               </div>
               <button
                 onClick={() => handleTrigger(source.id)}

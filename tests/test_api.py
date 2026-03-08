@@ -266,9 +266,9 @@ class TestSourcesEndpoint:
                             adapter_type="scraper",
                             adapter_name="daft",
                             config={},
-                            enabled=False,
+                            enabled=True,
                             poll_interval_seconds=21600,
-                            tags=["auto_discovered", "pending_approval"],
+                            tags=["auto_discovered"],
                             last_polled_at=None,
                             last_success_at=None,
                             last_error=None,
@@ -285,7 +285,7 @@ class TestSourcesEndpoint:
             data = resp.json()
             assert len(data["created"]) == 1
             assert data["created"][0]["id"] == "source-new"
-            assert data["auto_enable"] is False
+            assert data["auto_enable"] is True
         finally:
             app.dependency_overrides.clear()
 
@@ -743,6 +743,83 @@ class TestLLMCompareSetEndpoint:
                     assert data["result"]["winner_property_id"] == "p1"
                     prop_repo.get_by_id.assert_not_called()
                     run_repo.create.assert_not_called()
+        finally:
+            app.dependency_overrides.clear()
+
+    def test_auto_compare_does_not_use_cached_run_when_search_context_differs(self, client):
+        from packages.storage.database import get_db_session
+
+        mock_session = MagicMock()
+        app.dependency_overrides[get_db_session] = lambda: mock_session
+
+        try:
+            with patch("apps.api.routers.llm.PropertyRepository") as MockPropRepo:
+                with patch("apps.api.routers.llm.LLMEnrichmentRepository") as MockEnrichRepo:
+                    with patch("apps.api.routers.llm.PropertyGrantMatchRepository") as MockGrantRepo:
+                        with patch("apps.api.routers.llm.OrganicSearchRunRepository") as MockRunRepo:
+                            with patch("packages.ai.service.get_provider") as mock_get_provider:
+                                prop_repo = MockPropRepo.return_value
+                                enrich_repo = MockEnrichRepo.return_value
+                                grant_repo = MockGrantRepo.return_value
+                                run_repo = MockRunRepo.return_value
+
+                                run_repo.get_latest_for_session.return_value = MagicMock(
+                                    id="run-cached",
+                                    status="completed",
+                                    options={
+                                        "session_id": "session-1",
+                                        "ranking_mode": "hybrid",
+                                        "property_ids": ["p1", "p2"],
+                                        "search_context": {"filters": {"max_price": 600000}},
+                                    },
+                                    steps=[
+                                        {
+                                            "step": "compare_property_set",
+                                            "status": "completed",
+                                            "result": {
+                                                "ranking_mode": "hybrid",
+                                                "properties": [{"property_id": "p1"}, {"property_id": "p2"}],
+                                                "winner_property_id": "p1",
+                                                "analysis": {
+                                                    "headline": "Cached",
+                                                    "recommendation": "p1",
+                                                    "key_tradeoffs": [],
+                                                    "confidence": "medium",
+                                                    "citations": [],
+                                                },
+                                            },
+                                        }
+                                    ],
+                                )
+                                run_repo.create.return_value = MagicMock(id="run-fresh")
+
+                                prop_repo.get_by_id.side_effect = [
+                                    MagicMock(id="p1", title="Home 1", address="Addr 1", county="Dublin", url="https://example.com/1", price=450000, floor_area_sqm=100, bedrooms=3, bathrooms=2, ber_rating="B2", images=[]),
+                                    MagicMock(id="p2", title="Home 2", address="Addr 2", county="Cork", url="https://example.com/2", price=430000, floor_area_sqm=95, bedrooms=3, bathrooms=2, ber_rating="C1", images=[]),
+                                ]
+                                enrich_repo.get_by_property_id.side_effect = [MagicMock(value_score=7.0), MagicMock(value_score=6.8)]
+                                grant_repo.list_for_property.return_value = []
+
+                                mock_provider = MagicMock()
+                                mock_provider.generate = AsyncMock(return_value=MagicMock(
+                                    content='{"headline":"Fresh compare","recommendation":"p1","key_tradeoffs":[],"confidence":"medium"}'
+                                ))
+                                mock_get_provider.return_value = mock_provider
+
+                                resp = client.post(
+                                    "/api/v1/llm/auto-compare",
+                                    json={
+                                        "session_id": "session-1",
+                                        "property_ids": ["p1", "p2"],
+                                        "ranking_mode": "hybrid",
+                                        "search_context": {"filters": {"max_price": 500000}},
+                                    },
+                                )
+
+                                assert resp.status_code == 200
+                                data = resp.json()
+                                assert data["cached"] is False
+                                run_repo.create.assert_called_once()
         finally:
             app.dependency_overrides.clear()
 

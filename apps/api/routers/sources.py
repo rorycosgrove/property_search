@@ -187,7 +187,7 @@ def trigger_full_organic_search(
 
 @router.post("/discover-auto")
 def discover_sources_auto(
-    auto_enable: bool = Query(False, description="Enable discovered sources immediately"),
+    auto_enable: bool = Query(True, description="Enable discovered sources immediately"),
     limit: int = Query(25, ge=1, le=200),
     db: Session = Depends(get_db_session),
 ):

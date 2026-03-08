@@ -387,8 +387,27 @@ export interface SourceDiscoveryRunResult {
   auto_enable: boolean;
 }
 
+export interface ScrapeSourceSummary {
+  total: number;
+  enabled: number;
+  pending_approval: number;
+  disabled_by_errors: number;
+}
+
+export interface DiscoveryDuringScrapeSummary {
+  created: number;
+  created_enabled?: number;
+  created_pending_approval?: number;
+  existing: number;
+  skipped_invalid: number;
+  auto_enable: boolean;
+  enabled: boolean;
+  limit: number;
+  error?: string;
+}
+
 export async function discoverSourcesAuto(
-  autoEnable = false,
+  autoEnable = true,
   limit = 25,
 ): Promise<SourceDiscoveryRunResult> {
   return fetchJSON<SourceDiscoveryRunResult>(

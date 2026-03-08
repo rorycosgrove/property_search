@@ -3,11 +3,11 @@
 @tailwind utilities;
 
 :root {
-  --background: #f2f3ef;
-  --foreground: #1b1f2a;
-  --card-bg: #fbfbf8;
-  --card-border: #d3d9d3;
-  --muted: #5b6574;
+  --background: #f4f2ec;
+  --foreground: #1b2430;
+  --card-bg: #fcfbf8;
+  --card-border: #cfd7d4;
+  --muted: #596675;
   --accent: #1f7a8c;
   --accent-strong: #185f6e;
   --success: #2e7d5b;
@@ -16,9 +16,9 @@
 
 body {
   background:
-    radial-gradient(circle at 5% -10%, #e4e9df 0%, transparent 45%),
-    radial-gradient(circle at 92% 14%, #dce9e9 0%, transparent 38%),
-    linear-gradient(160deg, rgba(255, 255, 255, 0.58), rgba(235, 240, 237, 0.3)),
+    radial-gradient(circle at 5% -10%, #ece7da 0%, transparent 46%),
+    radial-gradient(circle at 92% 14%, #dceaea 0%, transparent 38%),
+    linear-gradient(160deg, rgba(255, 255, 255, 0.66), rgba(234, 240, 236, 0.33)),
     var(--background);
   color: var(--foreground);
   font-family: var(--font-body), sans-serif;
@@ -177,12 +177,12 @@ h4 {
   width: 8px;
 }
 ::-webkit-scrollbar-track {
-  background: #e8e0d4;
+  background: #ebe5d8;
 }
 ::-webkit-scrollbar-thumb {
-  background: #b7aa94;
+  background: #b1a58f;
   border-radius: 4px;
 }
 ::-webkit-scrollbar-thumb:hover {
-  background: #8f836f;
+  background: #8a7e6a;
 }

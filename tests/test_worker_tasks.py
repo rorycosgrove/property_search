@@ -19,14 +19,17 @@ def test_scrape_all_sources_falls_back_inline_when_scrape_queue_missing(monkeypa
     """When SCRAPE_QUEUE_URL is absent, sources should be processed inline."""
     monkeypatch.delenv("SCRAPE_QUEUE_URL", raising=False)
 
-    fake_sources = [SimpleNamespace(id="source-1"), SimpleNamespace(id="source-2")]
+    fake_sources = [
+        SimpleNamespace(id="source-1", enabled=True, tags=[], error_count=0),
+        SimpleNamespace(id="source-2", enabled=True, tags=[], error_count=0),
+    ]
 
     class FakeSourceRepository:
         def __init__(self, _db):
             pass
 
         def get_all(self, enabled_only=True):
-            assert enabled_only is True
+            assert enabled_only is False
             return fake_sources
 
     send_calls: list[tuple[tuple, dict]] = []
@@ -66,6 +69,12 @@ def test_scrape_all_sources_falls_back_inline_when_scrape_queue_missing(monkeypa
             "enabled": True,
             "limit": 10,
         },
+        "source_summary": {
+            "total": 2,
+            "enabled": 2,
+            "pending_approval": 0,
+            "disabled_by_errors": 0,
+        },
     }
     assert inline_calls == ["source-1", "source-2"]
     assert send_calls == []
@@ -75,14 +84,17 @@ def test_scrape_all_sources_uses_sqs_dispatch_when_queue_configured(monkeypatch)
     """When SCRAPE_QUEUE_URL is present, tasks should be dispatched via SQS."""
     monkeypatch.setenv("SCRAPE_QUEUE_URL", "https://example.com/sqs/scrape")
 
-    fake_sources = [SimpleNamespace(id="source-1"), SimpleNamespace(id="source-2")]
+    fake_sources = [
+        SimpleNamespace(id="source-1", enabled=True, tags=[], error_count=0),
+        SimpleNamespace(id="source-2", enabled=True, tags=[], error_count=0),
+    ]
 
     class FakeSourceRepository:
         def __init__(self, _db):
             pass
 
         def get_all(self, enabled_only=True):
-            assert enabled_only is True
+            assert enabled_only is False
             return fake_sources
 
     send_calls: list[tuple[tuple, dict]] = []
@@ -121,6 +133,12 @@ def test_scrape_all_sources_uses_sqs_dispatch_when_queue_configured(monkeypatch)
             "auto_enable": False,
             "enabled": True,
             "limit": 10,
+        },
+        "source_summary": {
+            "total": 2,
+            "enabled": 2,
+            "pending_approval": 0,
+            "disabled_by_errors": 0,
         },
     }
     assert inline_calls == []
@@ -318,18 +336,18 @@ def test_scrape_source_skips_when_source_lock_not_acquired(monkeypatch):
 
 
 def test_scrape_all_sources_discovers_but_only_scrapes_enabled_snapshot(monkeypatch):
-    """Discovery during scrape should not force pending sources into current scrape cycle."""
+    """Discovery during scrape should report created sources while scraping enabled set."""
     monkeypatch.setenv("SCRAPE_QUEUE_URL", "https://example.com/sqs/scrape")
 
     # Source snapshot from DB remains enabled-only list for this cycle.
-    fake_sources = [SimpleNamespace(id="enabled-source-1")]
+    fake_sources = [SimpleNamespace(id="enabled-source-1", enabled=True, tags=[], error_count=0)]
 
     class FakeSourceRepository:
         def __init__(self, _db):
             pass
 
         def get_all(self, enabled_only=True):
-            assert enabled_only is True
+            assert enabled_only is False
             return fake_sources
 
     send_calls: list[tuple[tuple, dict]] = []
@@ -355,6 +373,7 @@ def test_scrape_all_sources_discovers_but_only_scrapes_enabled_snapshot(monkeypa
     assert result["dispatched"] == 1
     assert result["dispatch_mode"] == "sqs"
     assert result["discovery_during_scrape"]["created"] == 1
+    assert result["source_summary"]["enabled"] == 1
     assert send_calls == [(("scrape", "scrape_source", {"source_id": "enabled-source-1"}), {})]
 
 
@@ -363,14 +382,14 @@ def test_scrape_all_sources_can_disable_discovery_via_env(monkeypatch):
     monkeypatch.setenv("SCRAPE_QUEUE_URL", "https://example.com/sqs/scrape")
     monkeypatch.setenv("DISCOVERY_DURING_SCRAPE_ENABLED", "false")
 
-    fake_sources = [SimpleNamespace(id="source-1")]
+    fake_sources = [SimpleNamespace(id="source-1", enabled=True, tags=[], error_count=0)]
 
     class FakeSourceRepository:
         def __init__(self, _db):
             pass
 
         def get_all(self, enabled_only=True):
-            assert enabled_only is True
+            assert enabled_only is False
             return fake_sources
 
     send_calls: list[tuple[tuple, dict]] = []
@@ -399,6 +418,7 @@ def test_scrape_all_sources_can_disable_discovery_via_env(monkeypatch):
     assert result["dispatch_mode"] == "sqs"
     assert result["discovery_during_scrape"]["enabled"] is False
     assert result["discovery_during_scrape"]["created"] == 0
+    assert result["source_summary"]["enabled"] == 1
     assert send_calls == [(("scrape", "scrape_source", {"source_id": "source-1"}), {})]
 
 
@@ -406,14 +426,17 @@ def test_scrape_all_sources_continues_when_discovery_fails(monkeypatch):
     """Discovery failure should be non-fatal and scraping should continue."""
     monkeypatch.setenv("SCRAPE_QUEUE_URL", "https://example.com/sqs/scrape")
 
-    fake_sources = [SimpleNamespace(id="source-1"), SimpleNamespace(id="source-2")]
+    fake_sources = [
+        SimpleNamespace(id="source-1", enabled=True, tags=[], error_count=0),
+        SimpleNamespace(id="source-2", enabled=True, tags=[], error_count=0),
+    ]
 
     class FakeSourceRepository:
         def __init__(self, _db):
             pass
 
         def get_all(self, enabled_only=True):
-            assert enabled_only is True
+            assert enabled_only is False
             return fake_sources
 
     send_calls: list[tuple[tuple, dict]] = []
@@ -434,7 +457,9 @@ def test_scrape_all_sources_continues_when_discovery_fails(monkeypatch):
     assert result["dispatched"] == 2
     assert result["dispatch_mode"] == "sqs"
     assert result["discovery_during_scrape"]["enabled"] is True
+    assert result["discovery_during_scrape"]["auto_enable"] is True
     assert result["discovery_during_scrape"]["error"] == "discovery exploded"
+    assert result["source_summary"]["enabled"] == 2
     assert send_calls == [
         (("scrape", "scrape_source", {"source_id": "source-1"}), {}),
         (("scrape", "scrape_source", {"source_id": "source-2"}), {}),
