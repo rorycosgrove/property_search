@@ -20,6 +20,7 @@ from packages.shared.constants import (
     NEARBY_SOLD_LIMIT,
     NEARBY_SOLD_RADIUS_KM,
 )
+from packages.shared.config import settings
 from packages.shared.logging import get_logger
 
 logger = get_logger(__name__)
@@ -27,7 +28,11 @@ logger = get_logger(__name__)
 
 def _run_async(coro):
     """Helper to run async code in sync task functions."""
-    return asyncio.run(coro)
+    try:
+        # This worker module is synchronous, so asyncio.run is the safest lifecycle.
+        return asyncio.run(coro)
+    except RuntimeError as exc:
+        raise RuntimeError("Cannot run async task from an active event loop") from exc
 
 
 def _is_queue_configured(queue_name: str) -> bool:
@@ -314,6 +319,10 @@ def enrich_property_llm(property_id: str) -> dict[str, Any]:
         SoldPropertyRepository,
     )
 
+    if not settings.llm_enabled:
+        logger.warning("llm_enrichment_skipped", reason="llm_disabled", property_id=property_id)
+        return {"property_id": property_id, "enriched": False, "reason": "llm_disabled"}
+
     with get_session() as db:
         prop_repo = PropertyRepository(db)
         sold_repo = SoldPropertyRepository(db)
@@ -370,6 +379,14 @@ def enrich_batch_llm(limit: int = LLM_BATCH_SIZE) -> dict[str, Any]:
     from packages.shared.queue import send_task
     from packages.storage.database import get_session
     from packages.storage.models import LLMEnrichment, Property
+
+    if not settings.llm_enabled:
+        logger.warning("llm_batch_skipped", reason="llm_disabled", limit=limit)
+        return {"dispatched": 0, "reason": "llm_disabled"}
+
+    if not _is_queue_configured("llm"):
+        logger.warning("llm_batch_skipped", reason="llm_queue_unconfigured", limit=limit)
+        return {"dispatched": 0, "reason": "llm_queue_unconfigured"}
 
     with get_session() as db:
         # Find properties without enrichment

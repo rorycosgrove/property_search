@@ -33,8 +33,11 @@ def get_provider(provider_name: str | None = None, model: str | None = None) -> 
 
     Checks DynamoDB for runtime config override, then falls back to settings.
     """
-    provider_name or _get_active_provider_name()
+    provider_name = provider_name or _get_active_provider_name()
     active_model = model or _get_active_model()
+
+    if provider_name != "bedrock":
+        logger.warning("llm_provider_not_supported", provider=provider_name, fallback="bedrock")
 
     return BedrockProvider(model_id=active_model)
 
@@ -55,15 +58,17 @@ def _get_active_model() -> str | None:
         return None
 
 
-def set_active_provider(provider: str, model: str | None = None) -> None:
+def set_active_provider(provider: str, model: str | None = None) -> bool:
     """Set the active LLM provider in DynamoDB (runtime config)."""
     try:
         _set_dynamo_config("llm_provider", provider)
         if model:
             _set_dynamo_config("llm_model", model)
         logger.info("llm_provider_changed", provider=provider, model=model)
+        return True
     except Exception as e:
         logger.error("llm_config_dynamo_error", error=str(e))
+        return False
 
 
 # ── DynamoDB config helpers ───────────────────────────────────────────────────

@@ -1,12 +1,12 @@
 'use client';
 
 import { useEffect, useState } from 'react';
-import { getSources, getAdapters, triggerScrape, type Source } from '@/lib/api';
+import { getSources, getAdapters, triggerScrape, type AdapterInfo, type Source } from '@/lib/api';
 import { formatDate } from '@/lib/utils';
 
 export default function SourcesPage() {
   const [sources, setSources] = useState<Source[]>([]);
-  const [adapters, setAdapters] = useState<any[]>([]);
+  const [adapters, setAdapters] = useState<AdapterInfo[]>([]);
 
   useEffect(() => {
     getSources().then(setSources).catch(console.error);
@@ -72,7 +72,7 @@ export default function SourcesPage() {
       <div>
         <h2 className="text-lg font-semibold mb-3">Available Adapters</h2>
         <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-          {adapters.map((adapter: any) => (
+          {adapters.map((adapter) => (
             <div
               key={adapter.name}
               className="bg-[var(--card-bg)] border border-[var(--card-border)] rounded-lg p-4"

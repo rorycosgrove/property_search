@@ -61,6 +61,7 @@ export interface Property {
   source_id?: string;
   first_listed_at?: string;
   created_at?: string;
+  llm_value_score?: number;
 }
 
 export interface PropertyListResponse {
@@ -104,11 +105,21 @@ export async function getProperty(id: string): Promise<Property> {
   return fetchJSON<Property>(`/api/v1/properties/${id}`);
 }
 
-export async function getPriceHistory(id: string) {
-  return fetchJSON<any[]>(`/api/v1/properties/${id}/price-history`);
+export interface PriceHistoryEntry {
+  id: string;
+  property_id: string;
+  price: number;
+  price_change?: number;
+  price_change_pct?: number;
+  source?: string;
+  recorded_at?: string;
 }
 
-export async function getSimilarProperties(id: string, limit = 5) {
+export async function getPriceHistory(id: string): Promise<PriceHistoryEntry[]> {
+  return fetchJSON<PriceHistoryEntry[]>(`/api/v1/properties/${id}/price-history`);
+}
+
+export async function getSimilarProperties(id: string, limit = 5): Promise<Property[]> {
   return fetchJSON<Property[]>(`/api/v1/properties/${id}/similar?limit=${limit}`);
 }
 
@@ -125,7 +136,7 @@ export interface SoldProperty {
   longitude?: number;
 }
 
-export async function getSoldProperties(filters: Record<string, any> = {}) {
+export async function getSoldProperties(filters: Record<string, string | number | boolean | undefined> = {}): Promise<{ items: SoldProperty[]; total: number }> {
   const params = new URLSearchParams();
   Object.entries(filters).forEach(([k, v]) => {
     if (v !== undefined && v !== null) params.set(k, String(v));
@@ -148,32 +159,64 @@ export interface AnalyticsSummary {
   price_changes_24h: number;
 }
 
+export interface CountyStat {
+  county: string;
+  listing_count: number;
+  avg_price?: number;
+  median_price?: number;
+}
+
+export interface PriceTrend {
+  period: string;
+  avg_price?: number;
+  median_price?: number;
+  sale_count: number;
+}
+
+export interface PropertyTypeDistribution {
+  property_type: string;
+  count: number;
+  percentage: number;
+}
+
+export interface BERDistribution {
+  ber_rating: string;
+  count: number;
+  percentage: number;
+}
+
+export interface HeatmapPoint {
+  lat: number;
+  lng: number;
+  weight?: number;
+}
+
 export async function getAnalyticsSummary(): Promise<AnalyticsSummary> {
-  return fetchJSON('/api/v1/analytics/summary');
+  return fetchJSON<AnalyticsSummary>('/api/v1/analytics/summary');
 }
 
-export async function getCountyStats() {
-  return fetchJSON<any[]>('/api/v1/analytics/county-stats');
+export async function getCountyStats(): Promise<CountyStat[]> {
+  return fetchJSON<CountyStat[]>('/api/v1/analytics/county-stats');
 }
 
-export async function getPriceTrends(county?: string, months = 12) {
+export async function getPriceTrends(county?: string, months = 12): Promise<PriceTrend[]> {
   const params = new URLSearchParams({ months: String(months) });
   if (county) params.set('county', county);
-  return fetchJSON<any[]>(`/api/v1/analytics/price-trends?${params}`);
+  return fetchJSON<PriceTrend[]>(`/api/v1/analytics/price-trends?${params}`);
 }
 
-export async function getTypeDistribution(county?: string) {
+export async function getTypeDistribution(county?: string): Promise<PropertyTypeDistribution[]> {
   const params = county ? `?county=${county}` : '';
-  return fetchJSON<any[]>(`/api/v1/analytics/type-distribution${params}`);
+  return fetchJSON<PropertyTypeDistribution[]>(`/api/v1/analytics/type-distribution${params}`);
 }
 
-export async function getBERDistribution(county?: string) {
+export async function getBERDistribution(county?: string): Promise<BERDistribution[]> {
   const params = county ? `?county=${county}` : '';
-  return fetchJSON<any[]>(`/api/v1/analytics/ber-distribution${params}`);
+  return fetchJSON<BERDistribution[]>(`/api/v1/analytics/ber-distribution${params}`);
 }
 
-export async function getHeatmapData() {
-  return fetchJSON<any[]>('/api/v1/analytics/heatmap');
+export async function getHeatmapData(): Promise<HeatmapPoint[]> {
+  return fetchJSON<HeatmapPoint[]>('/api/v1/analytics/heatmap');
 }
 
 // ── Alerts ──────────────────────────────────────────────────────────────────
@@ -189,7 +232,7 @@ export interface Alert {
   created_at?: string;
 }
 
-export async function getAlerts(filters: Record<string, any> = {}) {
+export async function getAlerts(filters: Record<string, string | number | boolean | undefined> = {}): Promise<{ items: Alert[]; total: number }> {
   const params = new URLSearchParams();
   Object.entries(filters).forEach(([k, v]) => {
     if (v !== undefined && v !== null) params.set(k, String(v));
@@ -198,15 +241,15 @@ export async function getAlerts(filters: Record<string, any> = {}) {
 }
 
 export async function getUnreadAlertCount(): Promise<{ count: number }> {
-  return fetchJSON('/api/v1/alerts/unread-count');
+  return fetchJSON<{ count: number }>('/api/v1/alerts/unread-count');
 }
 
-export async function acknowledgeAlert(id: string) {
-  return fetchJSON(`/api/v1/alerts/${id}/acknowledge`, { method: 'PATCH' });
+export async function acknowledgeAlert(id: string): Promise<{ id: string; acknowledged: boolean }> {
+  return fetchJSON<{ id: string; acknowledged: boolean }>(`/api/v1/alerts/${id}/acknowledge`, { method: 'PATCH' });
 }
 
-export async function acknowledgeAllAlerts() {
-  return fetchJSON('/api/v1/alerts/acknowledge-all', { method: 'POST' });
+export async function acknowledgeAllAlerts(): Promise<{ acknowledged: number }> {
+  return fetchJSON<{ acknowledged: number }>('/api/v1/alerts/acknowledge-all', { method: 'POST' });
 }
 
 // ── Sources ─────────────────────────────────────────────────────────────────
@@ -230,41 +273,226 @@ export interface Source {
   updated_at?: string;
 }
 
+export interface AdapterInfo {
+  name: string;
+  adapter_type: string;
+  description?: string;
+}
+
 export async function getSources(): Promise<Source[]> {
-  return fetchJSON('/api/v1/sources');
+  return fetchJSON<Source[]>('/api/v1/sources');
 }
 
-export async function getAdapters() {
-  return fetchJSON<any[]>('/api/v1/sources/adapters');
+export async function getAdapters(): Promise<AdapterInfo[]> {
+  return fetchJSON<AdapterInfo[]>('/api/v1/sources/adapters');
 }
 
-export async function triggerScrape(sourceId: string) {
-  return fetchJSON(`/api/v1/sources/${sourceId}/trigger`, { method: 'POST' });
+export async function triggerScrape(sourceId: string): Promise<{ task_id?: string; status: string }> {
+  return fetchJSON<{ task_id?: string; status: string }>(`/api/v1/sources/${sourceId}/trigger`, { method: 'POST' });
 }
 
 // ── LLM ─────────────────────────────────────────────────────────────────────
 
-export async function getLLMConfig() {
-  return fetchJSON<{ provider: string; model: string }>('/api/v1/llm/config');
+export interface LLMConfig {
+  enabled: boolean;
+  provider: string;
+  model: string;
+  queue_configured?: boolean;
+  ready_for_enrichment?: boolean;
+  reason?: string;
 }
 
-export async function updateLLMConfig(provider: string, model?: string) {
+export async function getLLMConfig(): Promise<LLMConfig> {
+  return fetchJSON<LLMConfig>('/api/v1/llm/config');
+}
+
+export async function updateLLMConfig(provider: string, model?: string): Promise<{ provider: string; model?: string; updated: boolean }> {
   const body: Record<string, string> = { provider };
   if (model) {
     body.bedrock_model = model;
   }
-  return fetchJSON('/api/v1/llm/config', {
+  return fetchJSON<{ provider: string; model?: string; updated: boolean }>('/api/v1/llm/config', {
     method: 'PUT',
     body: JSON.stringify(body),
   });
 }
 
-export async function getEnrichment(propertyId: string) {
-  return fetchJSON<any>(`/api/v1/llm/enrichment/${propertyId}`);
+export interface LLMEnrichment {
+  id: string;
+  property_id: string;
+  summary?: string;
+  value_score?: number;
+  value_reasoning?: string;
+  pros?: string[];
+  cons?: string[];
+  extracted_features?: Record<string, unknown>;
+  neighbourhood_notes?: string;
+  investment_potential?: string;
+  llm_provider?: string;
+  llm_model?: string;
+  processed_at?: string;
 }
 
-export async function triggerEnrichment(propertyId: string) {
-  return fetchJSON(`/api/v1/llm/enrich/${propertyId}`, { method: 'POST' });
+export interface LLMHealth {
+  enabled: boolean;
+  provider: string;
+  model: string;
+  healthy: boolean;
+  queue_configured?: boolean;
+  ready_for_enrichment?: boolean;
+  reason?: string;
+}
+
+export async function getEnrichment(propertyId: string): Promise<LLMEnrichment> {
+  return fetchJSON<LLMEnrichment>(`/api/v1/llm/enrichment/${propertyId}`);
+}
+
+export async function triggerEnrichment(propertyId: string): Promise<{ task_id: string; status: string }> {
+  return fetchJSON<{ task_id: string; status: string }>(`/api/v1/llm/enrich/${propertyId}`, { method: 'POST' });
+}
+
+export interface ConversationMessage {
+  id: string;
+  conversation_id: string;
+  role: 'user' | 'assistant' | string;
+  content: string;
+  citations: Array<Record<string, unknown>>;
+  prompt_tokens?: number;
+  completion_tokens?: number;
+  total_tokens?: number;
+  processing_time_ms?: number;
+  created_at?: string;
+}
+
+export interface Conversation {
+  id: string;
+  title?: string;
+  user_identifier: string;
+  context: Record<string, unknown>;
+  created_at?: string;
+  updated_at?: string;
+  messages: ConversationMessage[];
+}
+
+export interface ChatTurnResponse {
+  conversation_id: string;
+  user_message: ConversationMessage;
+  assistant_message: ConversationMessage;
+}
+
+export type RankingMode = 'llm_only' | 'hybrid' | 'user_weighted';
+
+export interface ComparePropertyMetric {
+  property_id: string;
+  title: string;
+  address: string;
+  county?: string;
+  url: string;
+  image_url?: string;
+  price?: number;
+  price_per_sqm?: number;
+  bedrooms?: number;
+  bathrooms?: number;
+  floor_area_sqm?: number;
+  ber_rating?: string;
+  llm_value_score?: number;
+  hybrid_score?: number;
+  weighted_score?: number;
+  grants_estimated_total?: number;
+  grants_count?: number;
+}
+
+export interface CompareSetResponse {
+  ranking_mode: RankingMode;
+  properties: ComparePropertyMetric[];
+  winner_property_id?: string;
+  analysis: {
+    headline: string;
+    recommendation: string;
+    key_tradeoffs: string[];
+    confidence: 'low' | 'medium' | 'high';
+    citations: Array<Record<string, unknown>>;
+  };
+}
+
+export async function createConversation(userIdentifier: string, title?: string) {
+  return fetchJSON<Conversation>('/api/v1/llm/chat/conversations', {
+    method: 'POST',
+    body: JSON.stringify({ user_identifier: userIdentifier, title }),
+  });
+}
+
+export async function getConversation(conversationId: string) {
+  return fetchJSON<Conversation>(`/api/v1/llm/chat/conversations/${conversationId}`);
+}
+
+export async function sendConversationMessage(
+  conversationId: string,
+  content: string,
+  propertyId?: string,
+) {
+  return fetchJSON<ChatTurnResponse>(`/api/v1/llm/chat/conversations/${conversationId}/messages`, {
+    method: 'POST',
+    body: JSON.stringify({ content, property_id: propertyId }),
+  });
+}
+
+export async function comparePropertySet(
+  propertyIds: string[],
+  rankingMode: RankingMode = 'hybrid',
+  weights?: { value?: number; location?: number; condition?: number; potential?: number },
+) {
+  return fetchJSON<CompareSetResponse>('/api/v1/llm/compare-set', {
+    method: 'POST',
+    body: JSON.stringify({ property_ids: propertyIds, ranking_mode: rankingMode, weights }),
+  });
+}
+
+// ── Grants ──────────────────────────────────────────────────────────────────
+
+export interface GrantProgram {
+  id: string;
+  code: string;
+  name: string;
+  country: string;
+  region?: string;
+  authority?: string;
+  description?: string;
+  eligibility_rules?: Record<string, unknown>;
+  benefit_type?: string;
+  max_amount?: number;
+  currency: string;
+  active: boolean;
+  valid_from?: string;
+  valid_to?: string;
+  source_url?: string;
+  created_at?: string;
+  updated_at?: string;
+}
+
+export interface PropertyGrantMatch {
+  id: string;
+  property_id: string;
+  grant_program_id: string;
+  status: string;
+  reason?: string;
+  estimated_benefit?: number;
+  metadata: Record<string, unknown>;
+  created_at?: string;
+  grant_program?: GrantProgram;
+}
+
+export async function getGrants(country?: string, activeOnly = true) {
+  const params = new URLSearchParams();
+  if (country) {
+    params.set('country', country);
+  }
+  params.set('active_only', String(activeOnly));
+  return fetchJSON<GrantProgram[]>(`/api/v1/grants?${params.toString()}`);
+}
+
+export async function getPropertyGrantMatches(propertyId: string) {
+  return fetchJSON<PropertyGrantMatch[]>(`/api/v1/grants/property/${propertyId}`);
 }
 
 // ── Health ──────────────────────────────────────────────────────────────────

@@ -110,22 +110,45 @@ class TestBedrockProvider:
 
     @pytest.mark.asyncio
     async def test_health_check_ok(self):
-        import boto3
-        with patch.object(boto3, "client") as mock_client_func:
-            mock_client = MagicMock()
-            mock_client.list_foundation_models.return_value = {
-                "modelSummaries": [{"modelId": "amazon.titan-text-express-v1"}]
-            }
-            mock_client_func.return_value = mock_client
+        mock_boto3 = MagicMock()
+        mock_client = MagicMock()
+        mock_client.list_foundation_models.return_value = {
+            "modelSummaries": [{"modelId": "amazon.titan-text-express-v1"}]
+        }
+        mock_boto3.client.return_value = mock_client
 
+        with patch.dict("sys.modules", {"boto3": mock_boto3}):
             result = await self.provider.health_check()
             assert result is True
 
     @pytest.mark.asyncio
     async def test_health_check_failure(self):
-        import boto3
-        with patch.object(boto3, "client") as mock_client_func:
-            mock_client_func.side_effect = Exception("Connection error")
+        mock_boto3 = MagicMock()
+        mock_boto3.client.side_effect = Exception("Connection error")
 
+        with patch.dict("sys.modules", {"boto3": mock_boto3}):
             result = await self.provider.health_check()
             assert result is False
+
+    @pytest.mark.asyncio
+    async def test_generate_invalid_json_raises_value_error(self):
+        mock_client = MagicMock()
+        mock_body = MagicMock()
+        mock_body.read.return_value = b"not-json"
+        mock_client.invoke_model.return_value = {"body": mock_body}
+        self.provider._client = mock_client
+
+        with pytest.raises(ValueError, match="bedrock_invalid_json_response"):
+            await self.provider.generate("Test prompt")
+
+    @pytest.mark.asyncio
+    async def test_generate_throttle_error_is_classified(self):
+        class ThrottlingException(Exception):
+            pass
+
+        mock_client = MagicMock()
+        mock_client.invoke_model.side_effect = ThrottlingException("rate limited")
+        self.provider._client = mock_client
+
+        with pytest.raises(RuntimeError, match="bedrock_throttle_error"):
+            await self.provider.generate("Test prompt")

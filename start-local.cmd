@@ -51,7 +51,7 @@ echo.
 echo To start the application:
 echo.
 echo   1. API Server (in this window):
-echo      python -m uvicorn apps.api.main:app --reload --port 8000
+echo      .\start-api-llm.cmd
 echo.
 echo   2. Frontend (in a new window):
 echo      cd web

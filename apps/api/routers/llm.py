@@ -2,14 +2,52 @@
 
 from __future__ import annotations
 
+import json
+import os
+from typing import Any
+
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 
-from packages.shared.schemas import LLMConfigUpdate
+from packages.shared.schemas import (
+    CompareSetRequest,
+    ConversationCreate,
+    ConversationMessageCreate,
+    LLMConfigUpdate,
+)
 from packages.storage.database import get_db_session
-from packages.storage.repositories import LLMEnrichmentRepository, PropertyRepository
+from packages.storage.repositories import (
+    ConversationRepository,
+    LLMEnrichmentRepository,
+    PropertyGrantMatchRepository,
+    PropertyRepository,
+)
+from packages.shared.config import settings
 
 router = APIRouter()
+
+
+def _llm_queue_configured() -> bool:
+    return bool(settings.llm_queue_url or os.environ.get("LLM_QUEUE_URL", ""))
+
+
+def _llm_runtime_status() -> dict[str, Any]:
+    enabled = bool(settings.llm_enabled)
+    queue_configured = _llm_queue_configured()
+    reason = "ok"
+    if not enabled:
+        reason = "llm_disabled"
+    elif not queue_configured:
+        reason = "llm_queue_unconfigured"
+
+    return {
+        "enabled": enabled,
+        "provider": settings.llm_provider,
+        "model": settings.bedrock_model_id,
+        "queue_configured": queue_configured,
+        "ready_for_enrichment": enabled and queue_configured,
+        "reason": reason,
+    }
 
 
 @router.get("/config")
@@ -17,12 +55,17 @@ def get_llm_config():
     """Get current LLM configuration."""
     from packages.ai.service import _get_active_provider_name, get_provider
 
+    runtime = _llm_runtime_status()
     provider_name = _get_active_provider_name()
     provider = get_provider(provider_name)
 
     return {
+        "enabled": runtime["enabled"],
         "provider": provider.get_provider_name(),
         "model": provider.get_model_name(),
+        "queue_configured": runtime["queue_configured"],
+        "ready_for_enrichment": runtime["ready_for_enrichment"],
+        "reason": runtime["reason"],
     }
 
 
@@ -33,20 +76,33 @@ def update_llm_config(data: LLMConfigUpdate):
 
     provider_str = data.provider or "bedrock"
     model_str = data.bedrock_model
-    set_active_provider(provider_str, model_str)
+    updated = set_active_provider(provider_str, model_str)
+    if not updated:
+        raise HTTPException(
+            status_code=503,
+            detail="Failed to persist LLM config to DynamoDB. Check AWS credentials and table access.",
+        )
     return {"provider": provider_str, "model": model_str, "updated": True}
 
 
 @router.get("/health")
 async def llm_health():
     """Check LLM provider availability."""
+    runtime = _llm_runtime_status()
+    if not runtime["enabled"]:
+        return {**runtime, "healthy": False}
+
     from packages.ai.service import get_provider
 
     provider = get_provider()
     healthy = await provider.health_check()
     return {
+        "enabled": runtime["enabled"],
         "provider": provider.get_provider_name(),
         "model": provider.get_model_name(),
+        "queue_configured": runtime["queue_configured"],
+        "ready_for_enrichment": runtime["ready_for_enrichment"],
+        "reason": runtime["reason"],
         "healthy": healthy,
     }
 
@@ -79,21 +135,39 @@ def get_enrichment(property_id: str, db: Session = Depends(get_db_session)):
 @router.post("/enrich/{property_id}")
 def trigger_enrichment(property_id: str, db: Session = Depends(get_db_session)):
     """Trigger LLM enrichment for a property."""
+    runtime = _llm_runtime_status()
+    if not runtime["enabled"]:
+        raise HTTPException(status_code=503, detail="LLM enrichment is disabled")
+    if not runtime["queue_configured"]:
+        raise HTTPException(status_code=503, detail="LLM queue is not configured")
+
     repo = PropertyRepository(db)
     prop = repo.get_by_id(property_id)
     if not prop:
         raise HTTPException(404, "Property not found")
 
     from packages.shared.queue import send_task
-    message_id = send_task("llm", "enrich_property_llm", {"property_id": property_id})
+    try:
+        message_id = send_task("llm", "enrich_property_llm", {"property_id": property_id})
+    except ValueError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
     return {"task_id": message_id, "status": "dispatched"}
 
 
 @router.post("/enrich-batch")
 def trigger_batch_enrichment(limit: int = 50):
     """Trigger LLM enrichment for a batch of un-enriched properties."""
+    runtime = _llm_runtime_status()
+    if not runtime["enabled"]:
+        raise HTTPException(status_code=503, detail="LLM enrichment is disabled")
+    if not runtime["queue_configured"]:
+        raise HTTPException(status_code=503, detail="LLM queue is not configured")
+
     from packages.shared.queue import send_task
-    message_id = send_task("llm", "enrich_batch_llm", {"limit": limit})
+    try:
+        message_id = send_task("llm", "enrich_batch_llm", {"limit": limit})
+    except ValueError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
     return {"task_id": message_id, "status": "dispatched", "limit": limit}
 
 
@@ -138,4 +212,353 @@ def get_llm_stats(db: Session = Depends(get_db_session)):
     return {
         "total_processed": repo.count_processed(),
         "avg_processing_time_ms": repo.avg_processing_time(),
+    }
+
+
+@router.post("/compare-set")
+async def compare_property_set(data: CompareSetRequest, db: Session = Depends(get_db_session)):
+    """Compare up to 5 properties and return mode-specific value ranking + LLM analysis."""
+    property_repo = PropertyRepository(db)
+    enrichment_repo = LLMEnrichmentRepository(db)
+    grant_match_repo = PropertyGrantMatchRepository(db)
+
+    properties = []
+    for pid in data.property_ids:
+        prop = property_repo.get_by_id(pid)
+        if not prop:
+            raise HTTPException(404, f"Property not found: {pid}")
+        properties.append(prop)
+
+    weights = data.weights.model_dump() if data.weights else {
+        "value": 0.4,
+        "location": 0.2,
+        "condition": 0.2,
+        "potential": 0.2,
+    }
+
+    metrics = []
+    for prop in properties:
+        enrichment = enrichment_repo.get_by_property_id(str(prop.id))
+        grant_matches = grant_match_repo.list_for_property(str(prop.id))
+
+        price_val = float(prop.price) if prop.price is not None else None
+        area_val = float(prop.floor_area_sqm) if prop.floor_area_sqm is not None else None
+        llm_score = float(enrichment.value_score) if enrichment and enrichment.value_score is not None else 0.0
+        grants_estimated_total = sum(
+            float(m.estimated_benefit) for m in grant_matches if m.estimated_benefit is not None
+        )
+
+        price_per_sqm = None
+        if price_val and area_val and area_val > 0:
+            price_per_sqm = price_val / area_val
+
+        ber_boost = _ber_boost(prop.ber_rating)
+        grants_boost = min(2.0, grants_estimated_total / 10000.0)
+        hybrid_score = min(10.0, max(0.0, (llm_score * 0.75) + ber_boost + grants_boost))
+        weighted_score = min(
+            10.0,
+            max(
+                0.0,
+                (llm_score * weights["value"])
+                + (ber_boost * 10 * weights["condition"])
+                + (grants_boost * 10 * weights["potential"])
+                + (_location_score(prop.county) * weights["location"]),
+            ),
+        )
+
+        image_url = None
+        if prop.images and isinstance(prop.images, list) and len(prop.images) > 0:
+            maybe_url = prop.images[0].get("url") if isinstance(prop.images[0], dict) else None
+            if isinstance(maybe_url, str):
+                image_url = maybe_url
+
+        metrics.append(
+            {
+                "property_id": str(prop.id),
+                "title": prop.title,
+                "address": prop.address,
+                "county": prop.county,
+                "url": prop.url,
+                "image_url": image_url,
+                "price": price_val,
+                "price_per_sqm": price_per_sqm,
+                "bedrooms": prop.bedrooms,
+                "bathrooms": prop.bathrooms,
+                "floor_area_sqm": area_val,
+                "ber_rating": prop.ber_rating,
+                "llm_value_score": llm_score,
+                "hybrid_score": hybrid_score,
+                "weighted_score": weighted_score,
+                "grants_estimated_total": grants_estimated_total,
+                "grants_count": len(grant_matches),
+            }
+        )
+
+    mode_to_key = {
+        "llm_only": "llm_value_score",
+        "hybrid": "hybrid_score",
+        "user_weighted": "weighted_score",
+    }
+    score_key = mode_to_key.get(data.ranking_mode, "hybrid_score")
+    metrics.sort(key=lambda m: float(m.get(score_key) or 0.0), reverse=True)
+    winner = metrics[0]["property_id"] if metrics else None
+
+    try:
+        analysis = await _generate_compare_set_analysis(data.ranking_mode, metrics)
+    except Exception:
+        analysis = {
+            "headline": "Best value recommendation",
+            "recommendation": (
+                "LLM analysis is temporarily unavailable. Ranking is based on structured metrics "
+                "(price, BER, grants, and cached value scores)."
+            ),
+            "key_tradeoffs": [
+                "Live narrative analysis could not be generated.",
+                "Review price per sqm and BER differences in the comparison table.",
+            ],
+            "confidence": "medium",
+            "citations": [
+                {
+                    "type": "property",
+                    "property_id": metric.get("property_id"),
+                    "url": metric.get("url"),
+                    "label": metric.get("title"),
+                }
+                for metric in metrics
+            ],
+        }
+
+    return {
+        "ranking_mode": data.ranking_mode,
+        "properties": metrics,
+        "winner_property_id": winner,
+        "analysis": analysis,
+    }
+
+
+@router.post("/chat/conversations", status_code=201)
+def create_conversation(data: ConversationCreate, db: Session = Depends(get_db_session)):
+    """Create a new LLM chat conversation."""
+    repo = ConversationRepository(db)
+    convo = repo.create_conversation(
+        user_identifier=data.user_identifier,
+        title=data.title,
+        context=data.context,
+    )
+    return _conversation_to_dict(convo)
+
+
+@router.get("/chat/conversations/{conversation_id}")
+def get_conversation(conversation_id: str, db: Session = Depends(get_db_session)):
+    """Get a conversation and all messages."""
+    repo = ConversationRepository(db)
+    convo = repo.get_conversation(conversation_id)
+    if not convo:
+        raise HTTPException(404, "Conversation not found")
+    return _conversation_to_dict(convo)
+
+
+@router.post("/chat/conversations/{conversation_id}/messages")
+async def send_message(
+    conversation_id: str,
+    data: ConversationMessageCreate,
+    db: Session = Depends(get_db_session),
+):
+    """Send a user message and receive assistant response."""
+    convo_repo = ConversationRepository(db)
+    property_repo = PropertyRepository(db)
+
+    convo = convo_repo.get_conversation(conversation_id)
+    if not convo:
+        raise HTTPException(404, "Conversation not found")
+
+    # Save user message first.
+    user_msg = convo_repo.add_message(
+        conversation_id=conversation_id,
+        role="user",
+        content=data.content,
+    )
+
+    # Build a grounded context payload for prompt assembly.
+    property_context = None
+    if data.property_id:
+        prop = property_repo.get_by_id(data.property_id)
+        if prop:
+            property_context = {
+                "id": str(prop.id),
+                "title": prop.title,
+                "address": prop.address,
+                "county": prop.county,
+                "price": float(prop.price) if prop.price is not None else None,
+                "property_type": prop.property_type,
+                "bedrooms": prop.bedrooms,
+                "bathrooms": prop.bathrooms,
+                "ber_rating": prop.ber_rating,
+                "url": prop.url,
+            }
+
+    from packages.ai.service import get_provider
+
+    provider = get_provider()
+    prompt = _build_chat_prompt(data.content, property_context)
+    response = await provider.generate(
+        prompt=prompt,
+        system_prompt=(
+            "You are Property Copilot for Ireland and UK/NI housing markets. "
+            "Answer with clear recommendations, and when facts are property-specific "
+            "or scheme-specific, include concise citation hints."
+        ),
+        temperature=0.3,
+        max_tokens=1200,
+    )
+
+    citations = []
+    if property_context:
+        citations.append(
+            {
+                "type": "property",
+                "property_id": property_context["id"],
+                "url": property_context.get("url"),
+                "label": property_context.get("title"),
+            }
+        )
+
+    assistant_msg = convo_repo.add_message(
+        conversation_id=conversation_id,
+        role="assistant",
+        content=response.content,
+        citations=citations,
+        prompt_tokens=response.prompt_tokens,
+        completion_tokens=response.completion_tokens,
+        total_tokens=response.total_tokens,
+        processing_time_ms=response.processing_time_ms,
+    )
+
+    return {
+        "conversation_id": conversation_id,
+        "user_message": _message_to_dict(user_msg),
+        "assistant_message": _message_to_dict(assistant_msg),
+    }
+
+
+def _build_chat_prompt(user_content: str, property_context: dict | None) -> str:
+    if not property_context:
+        return user_content
+
+    return (
+        "Context property:\n"
+        f"- ID: {property_context.get('id')}\n"
+        f"- Title: {property_context.get('title')}\n"
+        f"- Address: {property_context.get('address')}\n"
+        f"- County: {property_context.get('county')}\n"
+        f"- Price: {property_context.get('price')}\n"
+        f"- Type: {property_context.get('property_type')}\n"
+        f"- Beds/Baths: {property_context.get('bedrooms')}/{property_context.get('bathrooms')}\n"
+        f"- BER: {property_context.get('ber_rating')}\n"
+        "\n"
+        "User question:\n"
+        f"{user_content}"
+    )
+
+
+def _message_to_dict(msg) -> dict:
+    return {
+        "id": str(msg.id),
+        "conversation_id": str(msg.conversation_id),
+        "role": msg.role,
+        "content": msg.content,
+        "citations": msg.citations or [],
+        "prompt_tokens": msg.prompt_tokens,
+        "completion_tokens": msg.completion_tokens,
+        "total_tokens": msg.total_tokens,
+        "processing_time_ms": msg.processing_time_ms,
+        "created_at": msg.created_at.isoformat() if msg.created_at else None,
+    }
+
+
+def _conversation_to_dict(convo) -> dict:
+    messages = list(convo.messages or [])
+    messages.sort(key=lambda m: m.created_at)
+    return {
+        "id": str(convo.id),
+        "title": convo.title,
+        "user_identifier": convo.user_identifier,
+        "context": convo.context or {},
+        "created_at": convo.created_at.isoformat() if convo.created_at else None,
+        "updated_at": convo.updated_at.isoformat() if convo.updated_at else None,
+        "messages": [_message_to_dict(m) for m in messages],
+    }
+
+
+def _ber_boost(ber_rating: str | None) -> float:
+    if not ber_rating:
+        return 0.0
+    rating = ber_rating.upper()
+    if rating.startswith("A"):
+        return 1.5
+    if rating.startswith("B"):
+        return 1.0
+    if rating.startswith("C"):
+        return 0.6
+    if rating.startswith("D"):
+        return 0.2
+    return -0.2
+
+
+def _location_score(county: str | None) -> float:
+    if not county:
+        return 5.0
+    # Lightweight baseline until county-level market scoring is added.
+    return 6.5 if county.lower() in {"dublin", "cork", "galway"} else 5.5
+
+
+async def _generate_compare_set_analysis(ranking_mode: str, metrics: list[dict[str, Any]]) -> dict:
+    from packages.ai.service import get_provider
+
+    provider = get_provider()
+    payload = json.dumps(metrics, ensure_ascii=True)
+    prompt = (
+        "You are evaluating value-for-money in Irish property listings. "
+        "Given the property metrics JSON and ranking mode, return JSON only with keys: "
+        "headline, recommendation, key_tradeoffs (array of strings), confidence (low|medium|high).\n\n"
+        f"Ranking mode: {ranking_mode}\n"
+        f"Metrics JSON: {payload}"
+    )
+
+    response = await provider.generate(
+        prompt=prompt,
+        system_prompt=(
+            "Be concise, practical, and transparent. If data is incomplete, state uncertainty explicitly."
+        ),
+        temperature=0.2,
+        json_mode=True,
+        max_tokens=800,
+    )
+
+    try:
+        parsed = json.loads(response.content)
+    except json.JSONDecodeError:
+        parsed = {
+            "headline": "Best value recommendation",
+            "recommendation": response.content,
+            "key_tradeoffs": ["Some structured metrics were unavailable."],
+            "confidence": "medium",
+        }
+
+    citations = [
+        {
+            "type": "property",
+            "property_id": metric.get("property_id"),
+            "url": metric.get("url"),
+            "label": metric.get("title"),
+        }
+        for metric in metrics
+    ]
+
+    return {
+        "headline": parsed.get("headline") or "Best value recommendation",
+        "recommendation": parsed.get("recommendation") or "No recommendation generated.",
+        "key_tradeoffs": parsed.get("key_tradeoffs") or [],
+        "confidence": parsed.get("confidence") or "medium",
+        "citations": citations,
     }

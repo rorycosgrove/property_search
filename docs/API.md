@@ -264,10 +264,9 @@ Get current LLM configuration.
 **Response** `200`
 ```json
 {
+  "enabled": true,
   "provider": "bedrock",
-  "bedrock_model_id": "amazon.titan-text-express-v1",
-  "bedrock_max_tokens": 2000,
-  "aws_region": "eu-west-1"
+  "model": "anthropic.claude-3-haiku-20240307-v1:0"
 }
 ```
 
@@ -277,23 +276,85 @@ Update LLM configuration. Stored in DynamoDB for persistence.
 **Body**
 ```json
 {
-  "bedrock_model": "amazon.nova-micro-v1:0",
-  "bedrock_max_tokens": 1500
+  "provider": "bedrock",
+  "bedrock_model": "amazon.nova-micro-v1:0"
+}
+```
+
+### GET /api/v1/llm/health
+Check LLM provider availability and enablement status.
+
+**Response** `200` (enabled)
+```json
+{
+  "enabled": true,
+  "provider": "bedrock",
+  "model": "anthropic.claude-3-haiku-20240307-v1:0",
+  "healthy": true
+}
+```
+
+**Response** `200` (disabled)
+```json
+{
+  "enabled": false,
+  "provider": "bedrock",
+  "model": "anthropic.claude-3-haiku-20240307-v1:0",
+  "healthy": false,
+  "reason": "llm_disabled"
 }
 ```
 
 ### POST /api/v1/llm/enrich/{property_id}
 Trigger AI enrichment for a property. Sends a task to the SQS LLM queue.
 
-**Response** `202`
+**Response** `200`
 ```json
-{"task_id": "sqs-message-id", "status": "queued"}
+{"task_id": "sqs-message-id", "status": "dispatched"}
 ```
+
+**Error responses**
+- `404` if property does not exist
+- `503` if LLM is disabled
+- `503` if LLM queue URL is not configured
 
 ### POST /api/v1/llm/enrich-batch
 Trigger AI enrichment for all un-enriched properties.
 
-**Response** `202`
+**Response** `200`
 ```json
-{"task_id": "sqs-message-id", "status": "queued", "count": 42}
+{"task_id": "sqs-message-id", "status": "dispatched", "limit": 50}
 ```
+
+### GET /api/v1/llm/enrichment/{property_id}
+Fetch stored LLM enrichment for a property.
+
+**Response** `200`
+```json
+{
+  "id": "uuid",
+  "property_id": "uuid",
+  "summary": "...",
+  "value_score": 7.6,
+  "pros": ["..."],
+  "cons": ["..."],
+  "llm_provider": "bedrock",
+  "llm_model": "anthropic.claude-3-haiku-20240307-v1:0"
+}
+```
+
+### POST /api/v1/llm/compare-set
+Compare 2-5 properties and return ranked metrics plus LLM narrative.
+
+**Body**
+```json
+{
+  "property_ids": ["id-1", "id-2"],
+  "ranking_mode": "hybrid"
+}
+```
+
+### Chat Endpoints
+- `POST /api/v1/llm/chat/conversations`
+- `GET /api/v1/llm/chat/conversations/{conversation_id}`
+- `POST /api/v1/llm/chat/conversations/{conversation_id}/messages`

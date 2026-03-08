@@ -171,6 +171,9 @@ class Property(Base):
         "LLMEnrichment", back_populates="property", uselist=False
     )
     alerts: Mapped[list[Alert]] = relationship("Alert", back_populates="property")
+    grant_matches: Mapped[list[PropertyGrantMatch]] = relationship(
+        "PropertyGrantMatch", back_populates="property"
+    )
 
     __table_args__ = (
         Index("ix_properties_county_price", "county", "price"),
@@ -342,6 +345,115 @@ class LLMEnrichment(Base):
     property: Mapped[Property] = relationship("Property", back_populates="enrichment")
 
 
+# ──────────────────────────────────────────────────────────────────────────────
+# GrantProgram — grant/incentive definition catalog
+# ──────────────────────────────────────────────────────────────────────────────
+
+class GrantProgram(Base):
+    __tablename__ = "grant_programs"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid)
+    code: Mapped[str] = mapped_column(String(80), unique=True, nullable=False, index=True)
+    name: Mapped[str] = mapped_column(String(255), nullable=False)
+    country: Mapped[str] = mapped_column(String(20), nullable=False, index=True)
+    region: Mapped[str | None] = mapped_column(String(120), nullable=True, index=True)
+    authority: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    description: Mapped[str | None] = mapped_column(Text, nullable=True)
+    eligibility_rules: Mapped[dict] = mapped_column(JSONB, default=dict, server_default="{}")
+    benefit_type: Mapped[str | None] = mapped_column(String(80), nullable=True)
+    max_amount: Mapped[float | None] = mapped_column(Numeric(12, 2), nullable=True)
+    currency: Mapped[str] = mapped_column(String(10), default="EUR", server_default="EUR")
+    active: Mapped[bool] = mapped_column(Boolean, default=True, server_default="true")
+    valid_from: Mapped[date | None] = mapped_column(Date, nullable=True)
+    valid_to: Mapped[date | None] = mapped_column(Date, nullable=True)
+    source_url: Mapped[str | None] = mapped_column(String(1024), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=_utcnow, server_default="now()"
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=_utcnow, server_default="now()", onupdate=_utcnow
+    )
+
+    matches: Mapped[list[PropertyGrantMatch]] = relationship(
+        "PropertyGrantMatch", back_populates="grant_program"
+    )
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# PropertyGrantMatch — property eligibility assessment for a grant program
+# ──────────────────────────────────────────────────────────────────────────────
+
+class PropertyGrantMatch(Base):
+    __tablename__ = "property_grant_matches"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid)
+    property_id: Mapped[str] = mapped_column(String(36), nullable=False, index=True)
+    grant_program_id: Mapped[str] = mapped_column(String(36), nullable=False, index=True)
+    status: Mapped[str] = mapped_column(String(20), default="unknown", server_default="unknown")
+    reason: Mapped[str | None] = mapped_column(Text, nullable=True)
+    estimated_benefit: Mapped[float | None] = mapped_column(Numeric(12, 2), nullable=True)
+    metadata_json: Mapped[dict] = mapped_column(
+        "metadata", JSONB, default=dict, server_default="{}"
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=_utcnow, server_default="now()"
+    )
+
+    property: Mapped[Property] = relationship("Property", back_populates="grant_matches")
+    grant_program: Mapped[GrantProgram] = relationship("GrantProgram", back_populates="matches")
+
+    __table_args__ = (
+        Index(
+            "ix_property_grant_matches_property_program",
+            "property_id",
+            "grant_program_id",
+            unique=True,
+        ),
+    )
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Conversation + ConversationMessage — direct user chat with LLM
+# ──────────────────────────────────────────────────────────────────────────────
+
+class Conversation(Base):
+    __tablename__ = "conversations"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid)
+    title: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    user_identifier: Mapped[str] = mapped_column(String(120), nullable=False, index=True)
+    context: Mapped[dict] = mapped_column(JSONB, default=dict, server_default="{}")
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=_utcnow, server_default="now()"
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=_utcnow, server_default="now()", onupdate=_utcnow
+    )
+
+    messages: Mapped[list[ConversationMessage]] = relationship(
+        "ConversationMessage", back_populates="conversation", cascade="all, delete-orphan"
+    )
+
+
+class ConversationMessage(Base):
+    __tablename__ = "conversation_messages"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid)
+    conversation_id: Mapped[str] = mapped_column(String(36), nullable=False, index=True)
+    role: Mapped[str] = mapped_column(String(20), nullable=False, index=True)
+    content: Mapped[str] = mapped_column(Text, nullable=False)
+    citations: Mapped[list] = mapped_column(JSONB, default=list, server_default="[]")
+    prompt_tokens: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    completion_tokens: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    total_tokens: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    processing_time_ms: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=_utcnow, server_default="now()"
+    )
+
+    conversation: Mapped[Conversation] = relationship("Conversation", back_populates="messages")
+
+
 # ── Foreign Key constraints (defined after all tables exist) ──────────────────
 # Using SQLAlchemy column-level FK on the mapped_column directly would also work,
 # but this way keeps the model definitions cleaner and avoids circular import issues.
@@ -364,4 +476,19 @@ Alert.__table__.append_constraint(
 )
 LLMEnrichment.__table__.append_constraint(
     ForeignKeyConstraint(["property_id"], ["properties.id"], name="fk_enrichment_property", ondelete="CASCADE")
+)
+PropertyGrantMatch.__table__.append_constraint(
+    ForeignKeyConstraint(
+        ["property_id"], ["properties.id"], name="fk_grantmatch_property", ondelete="CASCADE"
+    )
+)
+PropertyGrantMatch.__table__.append_constraint(
+    ForeignKeyConstraint(
+        ["grant_program_id"], ["grant_programs.id"], name="fk_grantmatch_program", ondelete="CASCADE"
+    )
+)
+ConversationMessage.__table__.append_constraint(
+    ForeignKeyConstraint(
+        ["conversation_id"], ["conversations.id"], name="fk_message_conversation", ondelete="CASCADE"
+    )
 )

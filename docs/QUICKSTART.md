@@ -110,22 +110,69 @@ python scripts/seed.py
 
 ### Step 2: Start Services
 
+Recommended (Windows, resilient):
+
 ```bash
-# API server
+start-all.cmd
+status-local.cmd
+```
+
+```bash
+# API server (Windows)
+start-api-llm.cmd
+
+# API server (Mac/Linux)
 uvicorn apps.api.main:app --reload --port 8000
 
 # Frontend (in another terminal)
-cd web && npm install && npm run dev
+cd web && npm install && start-dev.cmd
 ```
+
+The Windows launchers are resilient:
+- They clean stale local processes before startup.
+- API auto-selects a free port from `8000, 8001, 8002` and writes `.dev-runtime/api-port.txt`.
+- Web launcher reads that file and points `NEXT_PUBLIC_API_URL` to the active API automatically.
+
+If stale local processes are holding ports from previous runs:
+
+```cmd
+stop-local.cmd
+```
+
+Then relaunch API and frontend.
 
 ### Step 3: Open the Dashboard
 
 Navigate to **http://localhost:3000**
 
-- **Map view** — Properties shown as price markers on an OpenStreetMap
-- **Filter bar** — County, price range, bedrooms, type, keywords
-- **Property feed** — Scrollable list on the left
-- **Detail panel** — Click any property for full details + AI analysis
+- **Map view** — Price markers with smooth click-to-focus behavior
+- **Marker hover cards** — Image, price, address, beds/baths/area, BER, value score
+- **Top navigation** — Responsive utility nav with active route highlighting and mobile menu
+- **Workspace controls** — Toggle list and analysis panels to prioritize map area on smaller screens
+
+### Launch Verification (Local)
+
+After starting services, verify:
+
+1. API health: `http://localhost:8000/health`
+2. LLM health: `http://localhost:8000/api/v1/llm/health`
+3. Frontend app: `http://localhost:3000`
+
+If LLM is disabled (`llm_enabled=false`), `/api/v1/llm/health` returns `{"reason":"llm_disabled"}` and enrichment dispatch endpoints return `503`.
+
+### Enable LLM Locally
+
+1. Create/update `.env` in the repo root:
+  - `LLM_ENABLED=true`
+  - `AWS_REGION=eu-west-1` (or your Bedrock-enabled region)
+  - `BEDROCK_MODEL_ID=anthropic.claude-3-haiku-20240307-v1:0` (recommended default)
+2. Restart the API server so settings are reloaded.
+3. Verify: `GET /api/v1/llm/health` returns `{"enabled":true,...}`.
+
+Notes:
+- Queue-backed enrichment dispatch (`POST /api/v1/llm/enrich/{property_id}`) also requires `LLM_QUEUE_URL` and AWS credentials.
+- Without `LLM_QUEUE_URL`, enrichment dispatch returns `503` with an explicit queue configuration message.
+- Ensure `LLM_QUEUE_URL` is present in the API process environment when launching `uvicorn` (for example, exported in your shell session before start).
 
 ## What Happens Automatically
 

@@ -2,21 +2,25 @@
 
 import { useEffect, useState } from 'react';
 import {
+  type BERDistribution,
   getAnalyticsSummary,
+  getBERDistribution,
   getCountyStats,
   getPriceTrends,
   getTypeDistribution,
-  getBERDistribution,
   type AnalyticsSummary,
+  type CountyStat,
+  type PriceTrend,
+  type PropertyTypeDistribution,
 } from '@/lib/api';
 import { formatEur, COUNTIES } from '@/lib/utils';
 
 export default function AnalyticsPage() {
   const [summary, setSummary] = useState<AnalyticsSummary | null>(null);
-  const [countyStats, setCountyStats] = useState<any[]>([]);
-  const [priceTrends, setPriceTrends] = useState<any[]>([]);
-  const [typeDistribution, setTypeDistribution] = useState<any[]>([]);
-  const [berDistribution, setBERDistribution] = useState<any[]>([]);
+  const [countyStats, setCountyStats] = useState<CountyStat[]>([]);
+  const [priceTrends, setPriceTrends] = useState<PriceTrend[]>([]);
+  const [typeDistribution, setTypeDistribution] = useState<PropertyTypeDistribution[]>([]);
+  const [berDistribution, setBERDistribution] = useState<BERDistribution[]>([]);
   const [selectedCounty, setSelectedCounty] = useState<string>('');
 
   useEffect(() => {
@@ -70,7 +74,7 @@ export default function AnalyticsPage() {
                 </tr>
               </thead>
               <tbody>
-                {countyStats.map((s: any) => (
+                {countyStats.map((s) => (
                   <tr key={s.county} className="border-b border-[var(--card-border)] hover:bg-[var(--background)]">
                     <td className="py-2">{s.county}</td>
                     <td className="text-right">{s.listing_count}</td>
@@ -88,7 +92,7 @@ export default function AnalyticsPage() {
           <h2 className="text-lg font-semibold mb-3">Price Trends (Sold)</h2>
           {priceTrends.length > 0 ? (
             <div className="space-y-2">
-              {priceTrends.map((t: any) => (
+              {priceTrends.map((t) => (
                 <div key={t.period} className="flex justify-between text-sm">
                   <span className="text-[var(--muted)]">{t.period}</span>
                   <span>{formatEur(t.avg_price)} ({t.sale_count} sales)</span>
@@ -104,7 +108,7 @@ export default function AnalyticsPage() {
         <div className="bg-[var(--card-bg)] border border-[var(--card-border)] rounded-lg p-4">
           <h2 className="text-lg font-semibold mb-3">Property Types</h2>
           <div className="space-y-2">
-            {typeDistribution.map((d: any) => (
+            {typeDistribution.map((d) => (
               <div key={d.property_type} className="flex items-center gap-2">
                 <span className="text-sm w-24 capitalize">{d.property_type}</span>
                 <div className="flex-1 bg-[var(--card-border)] rounded-full h-4">
@@ -125,7 +129,7 @@ export default function AnalyticsPage() {
         <div className="bg-[var(--card-bg)] border border-[var(--card-border)] rounded-lg p-4">
           <h2 className="text-lg font-semibold mb-3">BER Ratings</h2>
           <div className="space-y-1">
-            {berDistribution.map((d: any) => (
+            {berDistribution.map((d) => (
               <div key={d.ber_rating} className="flex items-center gap-2">
                 <span className="text-sm w-8 font-bold">{d.ber_rating}</span>
                 <div className="flex-1 bg-[var(--card-border)] rounded-full h-3">

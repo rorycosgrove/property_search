@@ -1,6 +1,7 @@
 'use client';
 
 import { useEffect, useRef } from 'react';
+import type { DivIcon, Map as LeafletMap, Marker as LeafletMarker } from 'leaflet';
 import type { Property } from '@/lib/api';
 import { useMapStore, useUIStore } from '@/lib/stores';
 import { formatEur } from '@/lib/utils';
@@ -9,11 +10,47 @@ interface Props {
   properties: Property[];
 }
 
+function _escapeHtml(value: string): string {
+  return value
+    .replaceAll('&', '&amp;')
+    .replaceAll('<', '&lt;')
+    .replaceAll('>', '&gt;')
+    .replaceAll('"', '&quot;')
+    .replaceAll("'", '&#39;');
+}
+
+function _hoverCardHtml(prop: Property): string {
+  const imageUrl = prop.images?.[0]?.url;
+  const title = _escapeHtml(prop.title || 'Property');
+  const address = _escapeHtml(prop.address || 'Address unavailable');
+  const ber = _escapeHtml(prop.ber_rating || 'n/a');
+  const score = prop.llm_value_score != null ? prop.llm_value_score.toFixed(1) : 'n/a';
+  const beds = prop.bedrooms != null ? `${prop.bedrooms} bed` : '-';
+  const baths = prop.bathrooms != null ? `${prop.bathrooms} bath` : '-';
+  const area = prop.floor_area_sqm != null ? `${prop.floor_area_sqm} m2` : '-';
+
+  return `
+    <div class="marker-hover-card-content">
+      <div class="marker-hover-card-media">${
+        imageUrl
+          ? `<img src="${_escapeHtml(imageUrl)}" alt="${title}" />`
+          : '<div class="marker-hover-card-fallback">No image</div>'
+      }</div>
+      <div class="marker-hover-card-body">
+        <div class="marker-hover-card-price">${_escapeHtml(formatEur(prop.price))}</div>
+        <div class="marker-hover-card-address">${address}</div>
+        <div class="marker-hover-card-meta">${beds} | ${baths} | ${area}</div>
+        <div class="marker-hover-card-meta">BER ${ber} | Value ${score}/10</div>
+      </div>
+    </div>
+  `;
+}
+
 export default function PropertyMap({ properties }: Props) {
   const mapRef = useRef<HTMLDivElement>(null);
-  const mapInstanceRef = useRef<any>(null);
-  const markersRef = useRef<any[]>([]);
-  const { center, zoom, selectedPropertyId, setCenter, setZoom } = useMapStore();
+  const mapInstanceRef = useRef<LeafletMap | null>(null);
+  const markersRef = useRef<Array<{ id: string; marker: LeafletMarker }>>([]);
+  const { center, zoom, selectedPropertyId, setCenter, setZoom, selectProperty } = useMapStore();
   const { openDetail } = useUIStore();
 
   useEffect(() => {
@@ -51,15 +88,38 @@ export default function PropertyMap({ properties }: Props) {
     };
   }, []);
 
+  // Focus map when a property is selected from map/list interactions.
+  useEffect(() => {
+    if (!mapInstanceRef.current || !selectedPropertyId) return;
+
+    const selected = properties.find((p) => p.id === selectedPropertyId);
+    if (!selected || selected.latitude == null || selected.longitude == null) return;
+
+    const map = mapInstanceRef.current;
+    const targetZoom = Math.max(map.getZoom(), 13);
+    map.flyTo([selected.latitude, selected.longitude], targetZoom, {
+      animate: true,
+      duration: 0.7,
+    });
+
+    const selectedMarker = markersRef.current.find((entry) => entry.id === selectedPropertyId);
+    if (selectedMarker) {
+      selectedMarker.marker.openPopup();
+    }
+  }, [properties, selectedPropertyId]);
+
   // Update markers when properties change
   useEffect(() => {
     if (!mapInstanceRef.current) return;
 
     import('leaflet').then((L) => {
       const map = mapInstanceRef.current;
+      if (!map) {
+        return;
+      }
 
       // Clear existing markers
-      markersRef.current.forEach((m) => m.remove());
+      markersRef.current.forEach(({ marker }) => marker.remove());
       markersRef.current = [];
 
       // Add new markers
@@ -68,28 +128,49 @@ export default function PropertyMap({ properties }: Props) {
 
         const isSelected = prop.id === selectedPropertyId;
 
-        const icon = L.divIcon({
-          className: 'custom-marker',
-          html: `<div style="
-            background: ${isSelected ? '#3399ff' : '#1a7af5'};
-            color: white;
-            padding: 2px 6px;
-            border-radius: 4px;
-            font-size: 11px;
-            font-weight: 600;
-            white-space: nowrap;
-            border: 2px solid ${isSelected ? '#fff' : 'transparent'};
-            box-shadow: 0 2px 4px rgba(0,0,0,0.3);
-          ">${formatEur(prop.price)}</div>`,
-          iconSize: [0, 0],
-          iconAnchor: [40, 20],
+        const icon: DivIcon = L.divIcon({
+          className: 'custom-marker-wrapper',
+          html: `<div class="property-marker-badge ${isSelected ? 'is-selected' : ''}">${formatEur(prop.price)}</div>`,
+          iconSize: [96, 28],
+          iconAnchor: [48, 14],
         });
 
         const marker = L.marker([prop.latitude, prop.longitude], { icon })
-          .addTo(map)
-          .on('click', () => openDetail(prop));
+          .bindTooltip(_hoverCardHtml(prop), {
+            className: 'marker-hover-card',
+            direction: 'top',
+            offset: [0, -16],
+            opacity: 1,
+            sticky: true,
+          })
+          .bindPopup(_hoverCardHtml(prop), {
+            className: 'marker-hover-card marker-hover-card-popup',
+            closeButton: false,
+            autoPan: true,
+            offset: [0, -10],
+          })
+          .addTo(map);
 
-        markersRef.current.push(marker);
+        marker.on('mouseover', () => {
+          marker.openTooltip();
+        });
+
+        marker.on('mouseout', () => {
+          marker.closeTooltip();
+        });
+
+        marker.on('click', () => {
+          const targetZoom = Math.max(map.getZoom(), 13);
+          map.flyTo([prop.latitude!, prop.longitude!], targetZoom, {
+            animate: true,
+            duration: 0.7,
+          });
+          marker.openPopup();
+          selectProperty(prop.id);
+          openDetail(prop);
+        });
+
+        markersRef.current.push({ id: prop.id, marker });
       });
     });
   }, [properties, selectedPropertyId]);

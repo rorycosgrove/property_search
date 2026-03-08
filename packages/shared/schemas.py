@@ -404,3 +404,120 @@ class AdapterInfo(BaseModel):
     adapter_type: AdapterType
     config_schema: dict[str, Any] = Field(default_factory=dict)
     supports_incremental: bool = False
+
+
+# ── Grants Schemas ────────────────────────────────────────────────────────────
+
+class GrantProgramBase(BaseModel):
+    code: str = Field(..., max_length=80)
+    name: str = Field(..., max_length=255)
+    country: str = Field(..., max_length=20, description="IE, UK, or NI")
+    region: str | None = Field(default=None, max_length=120)
+    authority: str | None = Field(default=None, max_length=255)
+    description: str | None = None
+    eligibility_rules: dict[str, Any] = Field(default_factory=dict)
+    benefit_type: str | None = Field(default=None, max_length=80)
+    max_amount: float | None = None
+    currency: str = Field(default="EUR", max_length=10)
+    active: bool = True
+    valid_from: date | None = None
+    valid_to: date | None = None
+    source_url: str | None = Field(default=None, max_length=1024)
+
+
+class GrantProgramCreate(GrantProgramBase):
+    pass
+
+
+class GrantProgramUpdate(BaseModel):
+    name: str | None = None
+    region: str | None = None
+    authority: str | None = None
+    description: str | None = None
+    eligibility_rules: dict[str, Any] | None = None
+    benefit_type: str | None = None
+    max_amount: float | None = None
+    currency: str | None = None
+    active: bool | None = None
+    valid_from: date | None = None
+    valid_to: date | None = None
+    source_url: str | None = None
+
+
+class GrantProgramResponse(GrantProgramBase):
+    id: str
+    created_at: datetime
+    updated_at: datetime
+
+    model_config = {"from_attributes": True}
+
+
+class PropertyGrantMatchResponse(BaseModel):
+    id: str
+    property_id: str
+    grant_program_id: str
+    status: str
+    reason: str | None = None
+    estimated_benefit: float | None = None
+    metadata: dict[str, Any] = Field(default_factory=dict)
+    created_at: datetime
+    grant_program: GrantProgramResponse | None = None
+
+
+# ── Chat / Copilot Schemas ───────────────────────────────────────────────────
+
+class ConversationCreate(BaseModel):
+    user_identifier: str = Field(..., max_length=120)
+    title: str | None = Field(default=None, max_length=255)
+    context: dict[str, Any] = Field(default_factory=dict)
+
+
+class ConversationMessageCreate(BaseModel):
+    content: str = Field(..., min_length=1, max_length=6000)
+    property_id: str | None = None
+
+
+class ConversationMessageResponse(BaseModel):
+    id: str
+    conversation_id: str
+    role: str
+    content: str
+    citations: list[dict[str, Any]] = Field(default_factory=list)
+    prompt_tokens: int | None = None
+    completion_tokens: int | None = None
+    total_tokens: int | None = None
+    processing_time_ms: int | None = None
+    created_at: datetime
+
+    model_config = {"from_attributes": True}
+
+
+class ConversationResponse(BaseModel):
+    id: str
+    title: str | None = None
+    user_identifier: str
+    context: dict[str, Any] = Field(default_factory=dict)
+    created_at: datetime
+    updated_at: datetime
+    messages: list[ConversationMessageResponse] = Field(default_factory=list)
+
+    model_config = {"from_attributes": True}
+
+
+class ChatTurnResponse(BaseModel):
+    conversation_id: str
+    user_message: ConversationMessageResponse
+    assistant_message: ConversationMessageResponse
+
+
+class CompareWeights(BaseModel):
+    value: float = 0.4
+    location: float = 0.2
+    condition: float = 0.2
+    potential: float = 0.2
+
+
+class CompareSetRequest(BaseModel):
+    property_ids: list[str] = Field(..., min_length=2, max_length=5)
+    ranking_mode: str = Field(default="hybrid", pattern="^(llm_only|hybrid|user_weighted)$")
+    weights: CompareWeights | None = None

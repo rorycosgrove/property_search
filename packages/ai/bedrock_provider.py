@@ -49,6 +49,32 @@ class BedrockProvider(LLMProvider):
     def get_model_name(self) -> str:
         return self.model_id
 
+    @staticmethod
+    def _classify_error_name(error_name: str) -> str:
+        """Map provider/client exception class names to coarse error categories."""
+        throttle_errors = {"ThrottlingException", "TooManyRequestsException"}
+        config_errors = {
+            "AccessDeniedException",
+            "UnrecognizedClientException",
+            "ExpiredTokenException",
+            "ResourceNotFoundException",
+            "ValidationException",
+            "InvalidParameterException",
+            "UnknownServiceError",
+            "NoRegionError",
+            "NoCredentialsError",
+            "PartialCredentialsError",
+        }
+        transport_errors = {"EndpointConnectionError", "ConnectTimeoutError", "ReadTimeoutError"}
+
+        if error_name in throttle_errors:
+            return "throttle"
+        if error_name in config_errors:
+            return "configuration"
+        if error_name in transport_errors:
+            return "transport"
+        return "unknown"
+
     async def generate(
         self,
         prompt: str,
@@ -72,29 +98,47 @@ class BedrockProvider(LLMProvider):
                 accept="application/json",
                 body=json.dumps(body),
             )
-
-            response_body = json.loads(response["body"].read())
-            content = self._extract_content(response_body)
-            token_usage = self._extract_token_usage(response_body)
+            raw_body = response["body"].read()
+        except Exception as exc:
             elapsed_ms = int((time.monotonic() - start) * 1000)
-
-            return LLMResponse(
-                content=content,
+            error_name = exc.__class__.__name__
+            category = self._classify_error_name(error_name)
+            logger.error(
+                "bedrock_invoke_failed",
+                error=str(exc),
+                error_name=error_name,
+                category=category,
                 model=self.model_id,
-                provider="bedrock",
-                prompt_tokens=token_usage.get("prompt_tokens"),
-                completion_tokens=token_usage.get("completion_tokens"),
-                total_tokens=token_usage.get("total_tokens"),
-                processing_time_ms=elapsed_ms,
-                raw=response_body,
+                elapsed_ms=elapsed_ms,
             )
+            raise RuntimeError(f"bedrock_{category}_error: {exc}") from exc
 
-        except Exception as e:
+        try:
+            response_body = json.loads(raw_body)
+        except json.JSONDecodeError as exc:
             elapsed_ms = int((time.monotonic() - start) * 1000)
             logger.error(
-                "bedrock_error", error=str(e), model=self.model_id, elapsed_ms=elapsed_ms
+                "bedrock_response_json_invalid",
+                error=str(exc),
+                model=self.model_id,
+                elapsed_ms=elapsed_ms,
             )
-            raise
+            raise ValueError("bedrock_invalid_json_response") from exc
+
+        content = self._extract_content(response_body)
+        token_usage = self._extract_token_usage(response_body)
+        elapsed_ms = int((time.monotonic() - start) * 1000)
+
+        return LLMResponse(
+            content=content,
+            model=self.model_id,
+            provider="bedrock",
+            prompt_tokens=token_usage.get("prompt_tokens"),
+            completion_tokens=token_usage.get("completion_tokens"),
+            total_tokens=token_usage.get("total_tokens"),
+            processing_time_ms=elapsed_ms,
+            raw=response_body,
+        )
 
     async def health_check(self) -> bool:
         try:

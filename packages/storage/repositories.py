@@ -29,8 +29,12 @@ from packages.shared.schemas import (
 from packages.shared.utils import utc_now
 from packages.storage.models import (
     Alert,
+    Conversation,
+    ConversationMessage,
+    GrantProgram,
     LLMEnrichment,
     Property,
+    PropertyGrantMatch,
     PropertyPriceHistory,
     SavedSearch,
     SoldProperty,
@@ -747,3 +751,158 @@ class LLMEnrichmentRepository:
             )
         )
         return float(result) if result else None
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# GrantProgramRepository
+# ──────────────────────────────────────────────────────────────────────────────
+
+class GrantProgramRepository:
+    def __init__(self, session: Session):
+        self.session = session
+
+    def list_programs(
+        self,
+        country: str | None = None,
+        active_only: bool = True,
+    ) -> list[GrantProgram]:
+        query = select(GrantProgram).order_by(GrantProgram.name.asc())
+        if country:
+            query = query.where(GrantProgram.country == country)
+        if active_only:
+            query = query.where(GrantProgram.active.is_(True))
+        return list(self.session.scalars(query))
+
+    def get_by_id(self, grant_id: str) -> GrantProgram | None:
+        return self.session.get(GrantProgram, grant_id)
+
+    def get_by_code(self, code: str) -> GrantProgram | None:
+        return self.session.scalar(select(GrantProgram).where(GrantProgram.code == code))
+
+    def create(self, **kwargs) -> GrantProgram:
+        grant = GrantProgram(**kwargs)
+        self.session.add(grant)
+        self.session.flush()
+        return grant
+
+    def update(self, grant_id: str, **kwargs) -> GrantProgram | None:
+        grant = self.get_by_id(grant_id)
+        if not grant:
+            return None
+        for key, value in kwargs.items():
+            if value is not None and hasattr(grant, key):
+                setattr(grant, key, value)
+        grant.updated_at = utc_now()
+        self.session.flush()
+        return grant
+
+
+class PropertyGrantMatchRepository:
+    def __init__(self, session: Session):
+        self.session = session
+
+    def list_for_property(self, property_id: str) -> list[PropertyGrantMatch]:
+        return list(
+            self.session.scalars(
+                select(PropertyGrantMatch)
+                .options(joinedload(PropertyGrantMatch.grant_program))
+                .where(PropertyGrantMatch.property_id == property_id)
+                .order_by(PropertyGrantMatch.created_at.desc())
+            )
+        )
+
+    def upsert_match(
+        self,
+        property_id: str,
+        grant_program_id: str,
+        status: str,
+        reason: str | None = None,
+        estimated_benefit: float | None = None,
+        metadata: dict | None = None,
+    ) -> PropertyGrantMatch:
+        match = self.session.scalar(
+            select(PropertyGrantMatch).where(
+                and_(
+                    PropertyGrantMatch.property_id == property_id,
+                    PropertyGrantMatch.grant_program_id == grant_program_id,
+                )
+            )
+        )
+        if match:
+            match.status = status
+            match.reason = reason
+            match.estimated_benefit = estimated_benefit
+            match.metadata_json = metadata or {}
+        else:
+            match = PropertyGrantMatch(
+                property_id=property_id,
+                grant_program_id=grant_program_id,
+                status=status,
+                reason=reason,
+                estimated_benefit=estimated_benefit,
+                metadata_json=metadata or {},
+            )
+            self.session.add(match)
+        self.session.flush()
+        return match
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# ConversationRepository
+# ──────────────────────────────────────────────────────────────────────────────
+
+class ConversationRepository:
+    def __init__(self, session: Session):
+        self.session = session
+
+    def create_conversation(
+        self,
+        user_identifier: str,
+        title: str | None = None,
+        context: dict | None = None,
+    ) -> Conversation:
+        convo = Conversation(
+            user_identifier=user_identifier,
+            title=title,
+            context=context or {},
+        )
+        self.session.add(convo)
+        self.session.flush()
+        return convo
+
+    def get_conversation(self, conversation_id: str) -> Conversation | None:
+        return self.session.scalar(
+            select(Conversation)
+            .options(joinedload(Conversation.messages))
+            .where(Conversation.id == conversation_id)
+        )
+
+    def add_message(
+        self,
+        conversation_id: str,
+        role: str,
+        content: str,
+        citations: list | None = None,
+        prompt_tokens: int | None = None,
+        completion_tokens: int | None = None,
+        total_tokens: int | None = None,
+        processing_time_ms: int | None = None,
+    ) -> ConversationMessage:
+        msg = ConversationMessage(
+            conversation_id=conversation_id,
+            role=role,
+            content=content,
+            citations=citations or [],
+            prompt_tokens=prompt_tokens,
+            completion_tokens=completion_tokens,
+            total_tokens=total_tokens,
+            processing_time_ms=processing_time_ms,
+        )
+        self.session.add(msg)
+
+        convo = self.session.get(Conversation, conversation_id)
+        if convo:
+            convo.updated_at = utc_now()
+
+        self.session.flush()
+        return msg

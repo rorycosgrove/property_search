@@ -8,12 +8,12 @@ A comprehensive web-based platform for researching properties to buy across Irel
 
 - **Multi-source aggregation** — Daft.ie, MyHome.ie, PropertyPal, Property Price Register, RSS feeds
 - **Pluggable adapter system** — add new sources without modifying core code
-- **Interactive map** — Leaflet/OSM with price-label markers, spatial search
+- **Interactive map** — Leaflet/OSM with price labels, marker hover cards, and click-to-focus navigation
 - **Price tracking** — historical price changes, drop/increase detection
 - **Smart alerts** — new listings matching saved searches, price drops, status changes
 - **Market analytics** — county stats, price trends, BER/type distribution, heatmap
 - **AI enrichment** — property summaries, value scores, pros/cons via Amazon Bedrock (Titan / Nova models)
-- **Dark theme UI** — responsive, fast Next.js 14 frontend
+- **Modern map-first UI** — responsive panels, utility top nav, and mobile menu optimized for research workflows
 
 ## AWS Architecture
 
@@ -63,8 +63,24 @@ python deploy.py --deploy   # Deploy only (deps already installed)
 
 **Quick Start (Windows):**
 ```cmd
-start-local.cmd
+start-all.cmd
 ```
+
+Alternative resilient launch (manual split windows):
+```cmd
+start-local-services.cmd
+status-local.cmd
+```
+
+If ports/processes get stuck from previous sessions:
+```cmd
+stop-local.cmd
+```
+
+Launcher behavior on Windows:
+- API starter cleans stale local API instances and chooses first free port from `8000, 8001, 8002`.
+- Selected API port is written to `.dev-runtime/api-port.txt`.
+- Web starter reads `.dev-runtime/api-port.txt` and sets `NEXT_PUBLIC_API_URL` automatically.
 
 **Quick Start (Mac/Linux):**
 ```bash

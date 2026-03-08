@@ -12,7 +12,7 @@ interface Props {
 
 export default function PropertyFeed({ properties, total, loading }: Props) {
   const { filters, setFilter } = useFilterStore();
-  const { selectProperty } = useMapStore();
+  const { selectProperty, comparedPropertyIds, toggleCompareProperty } = useMapStore();
   const { openDetail } = useUIStore();
   const page = filters.page || 1;
   const size = filters.size || 20;
@@ -30,44 +30,68 @@ export default function PropertyFeed({ properties, total, loading }: Props) {
         {properties.map((prop) => (
           <div
             key={prop.id}
-            className="px-4 py-3 border-b border-[var(--card-border)] hover:bg-[var(--card-bg)] cursor-pointer transition-colors"
+            className="p-3 border-b border-[var(--card-border)] hover:bg-[var(--card-bg)] cursor-pointer transition-colors"
             onClick={() => {
               selectProperty(prop.id);
               openDetail(prop);
             }}
           >
-            {/* Price + BER */}
-            <div className="flex items-center justify-between mb-1">
-              <span className="font-semibold text-brand-400">
-                {formatEur(prop.price)}
-              </span>
-              {prop.ber_rating && (
-                <span
-                  className="text-xs font-bold px-1.5 py-0.5 rounded"
-                  style={{ backgroundColor: berColor(prop.ber_rating), color: '#fff' }}
+            <div className="flex gap-3">
+              <div className="w-24 h-20 rounded-md overflow-hidden bg-neutral-900 shrink-0">
+                {prop.images?.[0]?.url ? (
+                  // eslint-disable-next-line @next/next/no-img-element
+                  <img
+                    src={prop.images[0].url}
+                    alt={prop.title}
+                    className="w-full h-full object-cover"
+                  />
+                ) : (
+                  <div className="w-full h-full flex items-center justify-center text-[10px] text-[var(--muted)]">
+                    No image
+                  </div>
+                )}
+              </div>
+
+              <div className="min-w-0 flex-1">
+                <div className="flex items-center justify-between mb-1">
+                  <span className="font-semibold text-brand-300 text-sm">{formatEur(prop.price)}</span>
+                  {prop.ber_rating && (
+                    <span
+                      className="text-[10px] font-bold px-1.5 py-0.5 rounded"
+                      style={{ backgroundColor: berColor(prop.ber_rating), color: '#fff' }}
+                    >
+                      {prop.ber_rating}
+                    </span>
+                  )}
+                </div>
+
+                <h3 className="text-sm font-semibold leading-tight mb-0.5">{truncate(prop.title, 76)}</h3>
+                <p className="text-xs text-[var(--muted)] mb-1">
+                  {prop.county && `${prop.county} · `}
+                  {truncate(prop.address, 50)}
+                </p>
+
+                <div className="flex gap-2 text-[11px] text-[var(--muted)] mb-1">
+                  {prop.bedrooms != null && <span>{prop.bedrooms} bed</span>}
+                  {prop.bathrooms != null && <span>{prop.bathrooms} bath</span>}
+                  {prop.floor_area_sqm != null && <span>{prop.floor_area_sqm} m2</span>}
+                </div>
+
+                <button
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    toggleCompareProperty(prop.id);
+                  }}
+                  className={[
+                    'text-[11px] px-2 py-1 rounded border transition-colors',
+                    comparedPropertyIds.includes(prop.id)
+                      ? 'border-brand-500 text-brand-300 bg-brand-900/20'
+                      : 'border-[var(--card-border)] hover:bg-[var(--card-border)]',
+                  ].join(' ')}
                 >
-                  {prop.ber_rating}
-                </span>
-              )}
-            </div>
-
-            {/* Title */}
-            <h3 className="text-sm font-medium leading-tight mb-0.5">
-              {truncate(prop.title, 80)}
-            </h3>
-
-            {/* Address */}
-            <p className="text-xs text-[var(--muted)] mb-1">
-              {prop.county && `${prop.county} · `}
-              {truncate(prop.address, 60)}
-            </p>
-
-            {/* Meta */}
-            <div className="flex gap-3 text-xs text-[var(--muted)]">
-              {prop.bedrooms != null && <span>{prop.bedrooms} bed</span>}
-              {prop.bathrooms != null && <span>{prop.bathrooms} bath</span>}
-              {prop.floor_area_sqm != null && <span>{prop.floor_area_sqm} m²</span>}
-              {prop.property_type && <span className="capitalize">{prop.property_type}</span>}
+                  {comparedPropertyIds.includes(prop.id) ? 'In compare' : 'Add to compare'}
+                </button>
+              </div>
             </div>
           </div>
         ))}
