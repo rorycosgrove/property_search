@@ -4,7 +4,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from packages.shared.queue import _resolve_queue_url, send_task
+from packages.shared.queue import _build_deduplication_id, _resolve_queue_url, send_task
 
 
 class TestSendTask:
@@ -32,6 +32,24 @@ class TestSendTask:
             with pytest.raises(ValueError, match="No queue URL configured"):
                 send_task("nonexistent", "task", {})
 
+    @patch.dict(
+        "os.environ",
+        {"SCRAPE_QUEUE_URL": "https://sqs.eu-west-1.amazonaws.com/123/scrape.fifo"},
+    )
+    @patch("packages.shared.queue._get_sqs_client")
+    def test_send_task_fifo_uses_deterministic_dedup_id(self, mock_get_client):
+        mock_client = MagicMock()
+        mock_client.send_message.return_value = {"MessageId": "msg-123"}
+        mock_get_client.return_value = mock_client
+
+        payload = {"source_id": "abc", "force": False}
+        send_task("scrape", "scrape_source", payload)
+
+        call_kwargs = mock_client.send_message.call_args[1]
+        expected = _build_deduplication_id("scrape_source", payload)
+        assert call_kwargs["MessageGroupId"] == "scrape_source"
+        assert call_kwargs["MessageDeduplicationId"] == expected
+
 
 class TestResolveQueueUrl:
     @patch.dict(
@@ -44,3 +62,15 @@ class TestResolveQueueUrl:
 
     def test_resolve_unknown_returns_empty(self):
         assert _resolve_queue_url("unknown") == ""
+
+
+class TestDeduplicationId:
+    def test_dedup_id_is_order_insensitive_for_payload_keys(self):
+        a = _build_deduplication_id("scrape_source", {"source_id": "x", "force": False})
+        b = _build_deduplication_id("scrape_source", {"force": False, "source_id": "x"})
+        assert a == b
+
+    def test_dedup_id_changes_with_payload(self):
+        a = _build_deduplication_id("scrape_source", {"source_id": "x"})
+        b = _build_deduplication_id("scrape_source", {"source_id": "y"})
+        assert a != b

@@ -8,11 +8,12 @@ never ORM model instances. This decouples persistence from domain logic.
 
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, timedelta
 
 from geoalchemy2.elements import WKTElement
 from geoalchemy2.functions import ST_DWithin, ST_MakePoint, ST_SetSRID
 from sqlalchemy import and_, func, select
+from sqlalchemy.exc import DatabaseError
 from sqlalchemy.orm import Session, joinedload
 
 from packages.shared.constants import (
@@ -119,6 +120,40 @@ class SourceRepository:
             if source.error_count >= SOURCE_ERROR_THRESHOLD:
                 source.enabled = False
             self.session.flush()
+
+    def try_acquire_scrape_lock(self, source_id: str) -> bool:
+        """Acquire a transaction-scoped advisory lock for a source scrape.
+
+        Returns True when lock is acquired, False when another scrape is in-flight.
+        Falls back to True on non-Postgres dialects.
+        """
+        bind = self.session.get_bind()
+        dialect_name = bind.dialect.name if bind is not None else ""
+        if dialect_name != "postgresql":
+            return True
+
+        try:
+            # hashtext(source_id) provides a stable lock key per source.
+            acquired = self.session.scalar(
+                select(func.pg_try_advisory_xact_lock(func.hashtext(source_id)))
+            )
+            return bool(acquired)
+        except DatabaseError:
+            # Fail open to avoid halting ingestion if lock function is unavailable.
+            return True
+
+    def should_skip_poll(self, source: Source, now: datetime | None = None) -> bool:
+        """Return True when source poll interval has not elapsed yet."""
+        if source.last_polled_at is None:
+            return False
+
+        interval_seconds = max(int(source.poll_interval_seconds or 0), 0)
+        if interval_seconds == 0:
+            return False
+
+        now_dt = now or utc_now()
+        next_allowed = source.last_polled_at + timedelta(seconds=interval_seconds)
+        return now_dt < next_allowed
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -403,6 +438,25 @@ class PriceHistoryRepository:
         self.session.add(entry)
         self.session.flush()
         return entry
+
+    def add_entry_if_new_price(
+        self,
+        property_id: str,
+        price: float,
+        price_change: float | None = None,
+        price_change_pct: float | None = None,
+        tolerance: float = 0.01,
+    ) -> PropertyPriceHistory | None:
+        """Insert a history row only when latest recorded price is different."""
+        latest_price = self.get_latest_price(property_id)
+        if latest_price is not None and abs(float(latest_price) - float(price)) <= tolerance:
+            return None
+        return self.add_entry(
+            property_id=property_id,
+            price=price,
+            price_change=price_change,
+            price_change_pct=price_change_pct,
+        )
 
     def get_for_property(self, property_id: str) -> list[PropertyPriceHistory]:
         return list(

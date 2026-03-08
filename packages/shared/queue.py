@@ -11,6 +11,7 @@ import json
 import os
 import time
 import uuid
+import hashlib
 from typing import Any
 
 from packages.shared.logging import get_logger
@@ -58,12 +59,13 @@ def send_task(queue_name: str, task_type: str, payload: dict[str, Any] | None = 
     if not queue_url:
         raise ValueError(f"No queue URL configured for '{queue_name}'. Set the env var.")
 
+    resolved_payload = payload or {}
     message_id = str(uuid.uuid4())
     message_body = json.dumps(
         {
             "task_type": task_type,
             "task_id": message_id,
-            "payload": payload or {},
+            "payload": resolved_payload,
         }
     )
 
@@ -74,7 +76,7 @@ def send_task(queue_name: str, task_type: str, payload: dict[str, Any] | None = 
     }
     if queue_url.endswith(".fifo"):
         kwargs["MessageGroupId"] = task_type
-        kwargs["MessageDeduplicationId"] = message_id
+        kwargs["MessageDeduplicationId"] = _build_deduplication_id(task_type, resolved_payload)
 
     # Retry logic with exponential backoff
     last_error = None
@@ -119,3 +121,10 @@ def _resolve_queue_url(queue_name: str) -> str:
         "alert": _ALERT_QUEUE_URL or os.environ.get("ALERT_QUEUE_URL", ""),
     }
     return urls.get(queue_name, "")
+
+
+def _build_deduplication_id(task_type: str, payload: dict[str, Any]) -> str:
+    """Build deterministic FIFO dedup key from task type + canonical payload."""
+    payload_json = json.dumps(payload, sort_keys=True, separators=(",", ":"))
+    digest = hashlib.sha256(f"{task_type}:{payload_json}".encode("utf-8")).hexdigest()
+    return digest
