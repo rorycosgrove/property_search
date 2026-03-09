@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
+from datetime import UTC, datetime
+
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
 
 from packages.shared.schemas import SourceCreate, SourceUpdate
-from packages.sources.discovery import load_discovery_candidates
+from packages.sources.discovery import canonicalize_source_url, load_discovery_candidates
 from packages.sources.registry import get_adapter_names, list_adapters
 from packages.storage.database import get_db_session
 from packages.storage.repositories import OrganicSearchRunRepository, SourceRepository
@@ -97,7 +99,11 @@ def delete_source(source_id: str, db: Session = Depends(get_db_session)):
 
 
 @router.post("/{source_id}/trigger")
-def trigger_scrape(source_id: str, db: Session = Depends(get_db_session)):
+def trigger_scrape(
+    source_id: str,
+    force: bool = Query(False, description="Bypass poll interval and force immediate scrape"),
+    db: Session = Depends(get_db_session),
+):
     """Manually trigger a scrape for a source."""
     repo = SourceRepository(db)
     source = repo.get_by_id(source_id)
@@ -108,15 +114,16 @@ def trigger_scrape(source_id: str, db: Session = Depends(get_db_session)):
     from packages.shared.queue import send_task
 
     try:
-        message_id = send_task("scrape", "scrape_source", {"source_id": source_id})
-        return {"task_id": message_id, "status": "dispatched"}
-    except ValueError:
-        result = scrape_source(source_id)
-        return {"status": "processed_inline", "result": result}
+        message_id = send_task("scrape", "scrape_source", {"source_id": source_id, "force": force})
+        return {"task_id": message_id, "status": "dispatched", "force": force}
+    except Exception:
+        result = scrape_source(source_id, force=force)
+        return {"status": "processed_inline", "result": result, "force": force}
 
 
 @router.post("/trigger-all")
 def trigger_full_organic_search(
+    force: bool = Query(False, description="Bypass source poll intervals for this run"),
     run_alerts: bool = Query(True, description="Trigger alert evaluation after scrape"),
     run_llm_batch: bool = Query(True, description="Trigger LLM enrichment batch"),
     llm_limit: int = Query(50, ge=1, le=500, description="Max properties to enrich"),
@@ -143,7 +150,7 @@ def trigger_full_organic_search(
                 "status": "dispatched",
                 "task_id": task_id,
             }
-        except ValueError:
+        except Exception:
             result = inline_fn(**payload)
             return {
                 "step": task_type,
@@ -151,7 +158,7 @@ def trigger_full_organic_search(
                 "result": result,
             }
 
-    steps.append(_dispatch_or_inline("scrape", "scrape_all_sources", {}, scrape_all_sources))
+    steps.append(_dispatch_or_inline("scrape", "scrape_all_sources", {"force": force}, scrape_all_sources))
 
     if run_alerts:
         steps.append(_dispatch_or_inline("alert", "evaluate_alerts", {}, evaluate_alerts))
@@ -171,6 +178,7 @@ def trigger_full_organic_search(
         status=status,
         triggered_from="api_sources_trigger_all",
         options={
+            "force": force,
             "run_alerts": run_alerts,
             "run_llm_batch": run_llm_batch,
             "llm_limit": llm_limit,
@@ -200,15 +208,22 @@ def discover_sources_auto(
     created = []
     existing = []
     skipped_invalid = []
+    existing_sources = repo.get_all(enabled_only=False)
+    existing_by_canonical = {
+        canonicalize_source_url(str(s.url or "")): s
+        for s in existing_sources
+        if canonicalize_source_url(str(s.url or ""))
+    }
 
     for candidate in load_discovery_candidates()[:limit]:
         adapter_name = candidate.get("adapter_name")
         url = candidate.get("url")
-        if adapter_name not in adapter_names or not url:
+        canonical_url = canonicalize_source_url(str(url or ""))
+        if adapter_name not in adapter_names or not url or not canonical_url:
             skipped_invalid.append({"url": url, "reason": "unknown_adapter_or_missing_url"})
             continue
 
-        current = repo.get_by_url(url)
+        current = existing_by_canonical.get(canonical_url)
         if current:
             existing.append({"id": str(current.id), "url": current.url, "name": current.name})
             continue
@@ -227,9 +242,11 @@ def discover_sources_auto(
             poll_interval_seconds=int(candidate.get("poll_interval_seconds") or 21600),
             tags=tags,
         )
+        existing_by_canonical[canonical_url] = source
         created.append(_to_dict(source))
 
     return {
+        "run_at": datetime.now(UTC).isoformat(),
         "created": created,
         "existing": existing,
         "skipped_invalid": skipped_invalid,

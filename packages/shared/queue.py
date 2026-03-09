@@ -34,8 +34,17 @@ def _get_sqs_client():
     global _sqs_client
     if _sqs_client is None:
         import boto3
+        from botocore.config import Config
 
-        _sqs_client = boto3.client("sqs", region_name=os.environ.get("AWS_REGION", "eu-west-1"))
+        _sqs_client = boto3.client(
+            "sqs",
+            region_name=os.environ.get("AWS_REGION", "eu-west-1"),
+            config=Config(
+                connect_timeout=2,
+                read_timeout=3,
+                retries={"max_attempts": 1},
+            ),
+        )
     return _sqs_client
 
 

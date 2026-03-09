@@ -393,14 +393,24 @@ export async function getAdapters(): Promise<AdapterInfo[]> {
 
 export async function triggerScrape(
   sourceId: string,
+  options?: { force?: boolean },
 ): Promise<{ task_id?: string; status: string; result?: Record<string, unknown> }> {
+  const params = new URLSearchParams();
+  if (options?.force) {
+    params.set('force', 'true');
+  }
+  const suffix = params.toString();
+  const path = suffix
+    ? `/api/v1/sources/${sourceId}/trigger?${suffix}`
+    : `/api/v1/sources/${sourceId}/trigger`;
   return fetchJSON<{ task_id?: string; status: string; result?: Record<string, unknown> }>(
-    `/api/v1/sources/${sourceId}/trigger`,
+    path,
     { method: 'POST' },
   );
 }
 
 export interface SourceDiscoveryRunResult {
+  run_at?: string;
   created: Source[];
   existing: Array<{ id: string; url: string; name: string }>;
   skipped_invalid: Array<{ url?: string; reason: string }>;
@@ -468,9 +478,12 @@ export interface OrganicSearchHistoryItem {
 }
 
 export async function triggerFullOrganicSearch(
-  options?: { runAlerts?: boolean; runLlmBatch?: boolean; llmLimit?: number },
+  options?: { runAlerts?: boolean; runLlmBatch?: boolean; llmLimit?: number; force?: boolean },
 ): Promise<OrganicSearchRunResult> {
   const params = new URLSearchParams();
+  if (options?.force !== undefined) {
+    params.set('force', String(options.force));
+  }
   if (options?.runAlerts !== undefined) {
     params.set('run_alerts', String(options.runAlerts));
   }
@@ -488,6 +501,99 @@ export async function triggerFullOrganicSearch(
 
 export async function getOrganicSearchHistory(limit = 20): Promise<OrganicSearchHistoryItem[]> {
   return fetchJSON<OrganicSearchHistoryItem[]>(`/api/v1/sources/trigger-all/history?limit=${limit}`);
+}
+
+// ── Admin / Backend Logs ───────────────────────────────────────────────────
+
+export interface BackendFeedActivity {
+  id: string;
+  timestamp?: string;
+  source_id?: string;
+  source_name?: string;
+  new: number;
+  updated: number;
+  skipped: number;
+  total_fetched: number;
+  geocode_success_rate?: number;
+  status: string;
+}
+
+export interface BackendSourceStatus {
+  id: string;
+  name: string;
+  enabled: boolean;
+  status: 'active' | 'warning' | 'disabled' | string;
+  error_count: number;
+  last_error?: string;
+  last_polled_at?: string;
+  last_success_at?: string;
+  poll_interval_seconds: number;
+  total_listings: number;
+}
+
+export interface BackendDiscoveryActivity {
+  id: string;
+  timestamp?: string;
+  event_type: string;
+  level: string;
+  message: string;
+  context: Record<string, unknown>;
+}
+
+export interface BackendHealthSummary {
+  scrape_runs_24h: number;
+  geocode_attempts: number;
+  geocode_successes: number;
+  geocode_success_rate: number;
+  queue_config: {
+    scrape_queue_configured: boolean;
+    alert_queue_configured: boolean;
+    llm_queue_configured: boolean;
+  };
+  last_error: {
+    timestamp?: string;
+    message?: string;
+    event_type?: string;
+    level?: string;
+  };
+}
+
+export interface BackendLogEntry {
+  id: string;
+  timestamp?: string;
+  level: string;
+  event_type: string;
+  component: string;
+  source_id?: string;
+  message: string;
+  context: Record<string, unknown>;
+}
+
+export async function getBackendFeedActivity(limit = 10): Promise<BackendFeedActivity[]> {
+  return fetchJSON<BackendFeedActivity[]>(`/api/v1/admin/logs/feed-activity?limit=${limit}`);
+}
+
+export async function getBackendSourceStatus(): Promise<BackendSourceStatus[]> {
+  return fetchJSON<BackendSourceStatus[]>('/api/v1/admin/logs/sources');
+}
+
+export async function getBackendDiscoveryActivity(limit = 5): Promise<BackendDiscoveryActivity[]> {
+  return fetchJSON<BackendDiscoveryActivity[]>(`/api/v1/admin/logs/discovery?limit=${limit}`);
+}
+
+export async function getBackendHealthSummary(): Promise<BackendHealthSummary> {
+  return fetchJSON<BackendHealthSummary>('/api/v1/admin/logs/health');
+}
+
+export async function getBackendRecentErrors(
+  limit = 25,
+  level?: 'ERROR' | 'WARNING',
+): Promise<BackendLogEntry[]> {
+  const params = new URLSearchParams({ limit: String(limit) });
+  if (level) {
+    params.set('level', level);
+  }
+  return fetchJSON<BackendLogEntry[]>(`/api/v1/admin/logs/recent-errors?${params.toString()}`);
 }
 
 // ── LLM ─────────────────────────────────────────────────────────────────────

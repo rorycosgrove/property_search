@@ -29,6 +29,43 @@ from packages.shared.logging import get_logger
 logger = get_logger(__name__)
 
 
+def _record_backend_log(
+    *,
+    level: str,
+    event_type: str,
+    message: str,
+    component: str = "worker.tasks",
+    source_id: str | None = None,
+    context: dict[str, Any] | None = None,
+) -> None:
+    """Persist an operational event for settings diagnostics.
+
+    This is best-effort and should never break ingestion if logging persistence fails.
+    """
+    try:
+        from packages.storage.database import get_session
+        from packages.storage.models import BackendLog
+
+        retention_days = max(int(getattr(settings, "backend_log_retention_days", 7) or 7), 1)
+        cutoff = datetime.now(UTC) - timedelta(days=retention_days)
+
+        with get_session() as db:
+            # Keep the table bounded without requiring external cron.
+            db.query(BackendLog).filter(BackendLog.created_at < cutoff).delete()
+            db.add(
+                BackendLog(
+                    level=level.upper(),
+                    event_type=event_type,
+                    component=component,
+                    source_id=source_id,
+                    message=message,
+                    context_json=context or {},
+                )
+            )
+    except Exception:
+        logger.warning("backend_log_persist_failed", event_type=event_type)
+
+
 def _run_async(coro):
     """Helper to run async code in sync task functions."""
     try:
@@ -78,7 +115,7 @@ def _nested_tx_or_noop(db: Any):
 # ── Source scraping tasks ─────────────────────────────────────────────────────
 
 
-def scrape_all_sources() -> dict[str, Any]:
+def scrape_all_sources(force: bool = False) -> dict[str, Any]:
     """Scrape all enabled sources.
 
     In cloud environments this dispatches SQS scrape tasks. In local environments
@@ -107,12 +144,24 @@ def scrape_all_sources() -> dict[str, Any]:
                 **discover_sources(auto_enable=discovery_auto_enable, limit=discovery_limit),
             }
             logger.info("discovery_during_scrape_complete", **discovery_summary)
+            _record_backend_log(
+                level="INFO",
+                event_type="discovery_during_scrape_complete",
+                message="Source discovery during scrape completed",
+                context=discovery_summary,
+            )
         except Exception as exc:
             discovery_summary = {
                 **discovery_summary,
                 "error": str(exc),
             }
             logger.warning("discovery_during_scrape_failed", error=str(exc))
+            _record_backend_log(
+                level="WARNING",
+                event_type="discovery_during_scrape_failed",
+                message="Source discovery during scrape failed",
+                context=discovery_summary,
+            )
 
     with get_session() as db:
         repo = SourceRepository(db)
@@ -129,6 +178,20 @@ def scrape_all_sources() -> dict[str, Any]:
         source_ids = [str(s.id) for s in enabled_sources]
 
     logger.info(f"Dispatching scrape for {len(source_ids)} sources")
+    _record_backend_log(
+        level="INFO",
+        event_type="scrape_all_sources_started",
+        message="Dispatching scrape across enabled sources",
+        context={
+            "enabled_sources": len(source_ids),
+            "source_summary": {
+                "total": len(all_sources),
+                "enabled": len(enabled_sources),
+                "pending_approval": pending_approval_count,
+                "disabled_by_errors": auto_disabled_count,
+            },
+        },
+    )
 
     dispatched = 0
     processed_inline = 0
@@ -142,13 +205,31 @@ def scrape_all_sources() -> dict[str, Any]:
 
     for sid in source_ids:
         if use_sqs_dispatch:
-            send_task("scrape", "scrape_source", {"source_id": sid})
+            payload = {"source_id": sid}
+            if force:
+                payload["force"] = True
+            try:
+                send_task("scrape", "scrape_source", payload)
+            except Exception as exc:
+                logger.warning(
+                    "scrape_queue_dispatch_failed_fallback_inline",
+                    source_id=sid,
+                    error=str(exc),
+                )
+                if force:
+                    scrape_source(sid, force=True)
+                else:
+                    scrape_source(sid)
+                processed_inline += 1
         else:
-            scrape_source(sid)
+            if force:
+                scrape_source(sid, force=True)
+            else:
+                scrape_source(sid)
             processed_inline += 1
         dispatched += 1
 
-    return {
+    result = {
         "dispatched": dispatched,
         "processed_inline": processed_inline,
         "dispatch_mode": "sqs" if use_sqs_dispatch else "inline",
@@ -160,6 +241,13 @@ def scrape_all_sources() -> dict[str, Any]:
             "disabled_by_errors": auto_disabled_count,
         },
     }
+    _record_backend_log(
+        level="INFO",
+        event_type="scrape_all_sources_dispatched",
+        message="Scrape dispatch completed",
+        context=result,
+    )
+    return result
 
 
 def discover_sources(auto_enable: bool = True, limit: int = 25) -> dict[str, Any]:
@@ -168,7 +256,7 @@ def discover_sources(auto_enable: bool = True, limit: int = 25) -> dict[str, Any
     Sources are created disabled by default and require approval unless
     `auto_enable=True` is passed.
     """
-    from packages.sources.discovery import load_discovery_candidates
+    from packages.sources.discovery import canonicalize_source_url, load_discovery_candidates
     from packages.sources.registry import get_adapter_names
     from packages.storage.database import get_session
     from packages.storage.repositories import SourceRepository
@@ -182,15 +270,23 @@ def discover_sources(auto_enable: bool = True, limit: int = 25) -> dict[str, Any
 
     with get_session() as db:
         repo = SourceRepository(db)
+        existing_sources = repo.get_all(enabled_only=False)
+        existing_by_canonical = {
+            canonicalize_source_url(str(getattr(s, "url", "") or "")): s
+            for s in existing_sources
+            if canonicalize_source_url(str(getattr(s, "url", "") or ""))
+        }
+
         for candidate in load_discovery_candidates()[: max(limit, 1)]:
             adapter_name = candidate.get("adapter_name")
             url = candidate.get("url")
+            canonical_url = canonicalize_source_url(str(url or ""))
 
-            if adapter_name not in adapter_names or not url:
+            if adapter_name not in adapter_names or not url or not canonical_url:
                 skipped_invalid += 1
                 continue
 
-            if repo.get_by_url(url):
+            if canonical_url in existing_by_canonical:
                 existing += 1
                 continue
 
@@ -210,6 +306,7 @@ def discover_sources(auto_enable: bool = True, limit: int = 25) -> dict[str, Any
                 poll_interval_seconds=int(candidate.get("poll_interval_seconds") or 21600),
                 tags=tags,
             )
+            existing_by_canonical[canonical_url] = True
             created += 1
             if auto_enable:
                 created_enabled += 1
@@ -217,6 +314,7 @@ def discover_sources(auto_enable: bool = True, limit: int = 25) -> dict[str, Any
                 created_pending_approval += 1
 
     result = {
+        "run_at": datetime.now(UTC).isoformat(),
         "created": created,
         "created_enabled": created_enabled,
         "created_pending_approval": created_pending_approval,
@@ -225,10 +323,16 @@ def discover_sources(auto_enable: bool = True, limit: int = 25) -> dict[str, Any
         "auto_enable": auto_enable,
     }
     logger.info("source_discovery_complete", **result)
+    _record_backend_log(
+        level="INFO",
+        event_type="source_discovery_complete",
+        message="Source discovery run completed",
+        context=result,
+    )
     return result
 
 
-def scrape_source(source_id: str) -> dict[str, Any]:
+def scrape_source(source_id: str, force: bool = False) -> dict[str, Any]:
     """
     Scrape a single source and run the full ingestion pipeline.
 
@@ -254,7 +358,7 @@ def scrape_source(source_id: str) -> dict[str, Any]:
         if not source.enabled:
             return {"skipped": True, "reason": "Source disabled"}
 
-        if source_repo.should_skip_poll(source):
+        if source_repo.should_skip_poll(source) and not force:
             logger.info(
                 "source_poll_interval_skip",
                 source_id=source_id,
@@ -308,6 +412,8 @@ def scrape_source(source_id: str) -> dict[str, Any]:
             updated_count = 0
             skipped_count = 0
             dedup_conflict_count = 0
+            geocode_attempts = 0
+            geocode_successes = 0
 
             for raw in raw_listings:
                 parsed = adapter.parse_listing(raw)
@@ -363,12 +469,26 @@ def scrape_source(source_id: str) -> dict[str, Any]:
                 else:
                     # 4. Geocode if no lat/lng
                     if not record.get("latitude"):
+                        geocode_attempts += 1
                         geo = _run_async(
                             _geocode_safe(record.get("address", ""), record.get("county"))
                         )
                         if geo:
                             record["latitude"] = geo.latitude
                             record["longitude"] = geo.longitude
+                            geocode_successes += 1
+                        else:
+                            _record_backend_log(
+                                level="WARNING",
+                                event_type="geocode_failed",
+                                message="Geocoding returned no result for property",
+                                source_id=source_id,
+                                context={
+                                    "source_name": source.name,
+                                    "address": record.get("address"),
+                                    "county": record.get("county"),
+                                },
+                            )
 
                     # 5. Store new property
                     record["source_id"] = source_id
@@ -398,9 +518,23 @@ def scrape_source(source_id: str) -> dict[str, Any]:
                 "updated": updated_count,
                 "skipped": skipped_count,
                 "total_fetched": len(raw_listings),
+                "geocode_attempts": geocode_attempts,
+                "geocode_successes": geocode_successes,
+                "geocode_success_rate": (
+                    round((geocode_successes / geocode_attempts) * 100, 2)
+                    if geocode_attempts
+                    else 100.0
+                ),
             }
 
             logger.info(f"Scrape complete: {result}")
+            _record_backend_log(
+                level="INFO",
+                event_type="scrape_source_complete",
+                message="Source scrape completed",
+                source_id=source_id,
+                context=result,
+            )
             logger.info(
                 "scrape_redundancy_metrics",
                 source_id=source_id,
@@ -417,7 +551,14 @@ def scrape_source(source_id: str) -> dict[str, Any]:
                 from packages.shared.queue import send_task
 
                 if _is_queue_configured("alert"):
-                    send_task("alert", "evaluate_alerts", {})
+                    try:
+                        send_task("alert", "evaluate_alerts", {})
+                    except Exception as exc:
+                        logger.warning(
+                            "alert_queue_dispatch_failed",
+                            source_id=source_id,
+                            error=str(exc),
+                        )
                 else:
                     logger.warning(
                         "alert_queue_not_configured",
@@ -433,9 +574,29 @@ def scrape_source(source_id: str) -> dict[str, Any]:
             # Use existing session for error marking
             try:
                 source_repo.mark_poll_error(source_id, str(exc))
+                refreshed_source = source_repo.get_by_id(source_id)
                 db.commit()
+                if refreshed_source and not refreshed_source.enabled:
+                    _record_backend_log(
+                        level="ERROR",
+                        event_type="source_auto_disabled",
+                        message="Source auto-disabled after consecutive scrape errors",
+                        source_id=source_id,
+                        context={
+                            "source_name": source.name,
+                            "error_count": refreshed_source.error_count,
+                            "last_error": refreshed_source.last_error,
+                        },
+                    )
             except Exception as mark_err:
                 logger.warning(f"Failed to persist scrape error status: {mark_err}")
+            _record_backend_log(
+                level="ERROR",
+                event_type="scrape_source_failed",
+                message="Source scrape failed",
+                source_id=source_id,
+                context={"source_name": source.name, "error": str(exc)},
+            )
             raise
 
 

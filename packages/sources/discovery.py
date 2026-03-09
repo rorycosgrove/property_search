@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 import os
+from urllib.parse import urlsplit, urlunsplit
 from typing import Any
 
 DEFAULT_DISCOVERY_CANDIDATES: list[dict[str, Any]] = [
@@ -46,6 +47,20 @@ def _validate_candidate(item: dict[str, Any]) -> bool:
     return required.issubset(item.keys())
 
 
+def canonicalize_source_url(url: str) -> str:
+    """Normalize source URLs for duplicate-safe comparisons."""
+    value = (url or "").strip()
+    if not value:
+        return ""
+
+    parts = urlsplit(value)
+    scheme = (parts.scheme or "https").lower()
+    netloc = parts.netloc.lower()
+    path = parts.path.rstrip("/") or "/"
+    # Ignore query/fragment for source identity, as feeds often vary params.
+    return urlunsplit((scheme, netloc, path, "", ""))
+
+
 def load_discovery_candidates() -> list[dict[str, Any]]:
     """Load discovery candidates from defaults + optional env JSON override.
 
@@ -69,4 +84,14 @@ def load_discovery_candidates() -> list[dict[str, Any]]:
         if isinstance(item, dict) and _validate_candidate(item):
             candidates.append(item)
 
-    return candidates
+    # Deduplicate candidates by canonical URL while preserving order.
+    deduped: list[dict[str, Any]] = []
+    seen_urls: set[str] = set()
+    for candidate in candidates:
+        key = canonicalize_source_url(str(candidate.get("url") or ""))
+        if not key or key in seen_urls:
+            continue
+        seen_urls.add(key)
+        deduped.append(candidate)
+
+    return deduped

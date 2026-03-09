@@ -21,15 +21,23 @@ def health_check(db: Session = Depends(get_db_session)):
     except Exception:
         pass
 
-    # Check Bedrock availability
-    bedrock_ok = False
-    try:
-        import boto3
-        client = boto3.client("bedrock", region_name=settings.aws_region)
-        response = client.list_foundation_models(byProvider="Amazon")
-        bedrock_ok = len(response.get("modelSummaries", [])) > 0
-    except Exception:
-        pass
+    # Check Bedrock availability with bounded latency.
+    # When LLM is disabled we consider Bedrock non-blocking for health checks.
+    bedrock_ok = not settings.llm_enabled
+    if settings.llm_enabled:
+        try:
+            import boto3
+            from botocore.config import Config
+
+            client = boto3.client(
+                "bedrock",
+                region_name=settings.aws_region,
+                config=Config(connect_timeout=2, read_timeout=3, retries={"max_attempts": 1}),
+            )
+            response = client.list_foundation_models(byProvider="Amazon")
+            bedrock_ok = len(response.get("modelSummaries", [])) > 0
+        except Exception:
+            bedrock_ok = False
 
     all_ok = db_ok and bedrock_ok
     return HealthResponse(

@@ -42,20 +42,20 @@ export default function SourcesPage() {
   }, []);
 
   const handleTrigger = async (id: string) => {
-    const response = await triggerScrape(id);
+    const response = await triggerScrape(id, { force: true });
     setToast(response.status === 'processed_inline'
-      ? 'Source processed inline (local mode).'
-      : 'Scrape dispatched to queue.');
+      ? 'Source forced refresh processed inline (local mode).'
+      : 'Source forced refresh dispatched to queue.');
     window.setTimeout(() => setToast(null), 2500);
   };
 
   const handleFullOrganicSearch = async () => {
     setRunningFullSearch(true);
     try {
-      const response = await triggerFullOrganicSearch();
+      const response = await triggerFullOrganicSearch({ force: true });
       const steps = response.steps.map((s) => s.step).join(' -> ');
       const mode = response.status === 'processed_inline' ? 'inline' : response.status;
-      setToast(`Full organic search started (${mode}): ${steps}`);
+      setToast(`Forced full organic search started (${mode}): ${steps}`);
 
       loadRunHistory();
 
@@ -73,8 +73,9 @@ export default function SourcesPage() {
     setDiscoveringSources(true);
     try {
       const result = await discoverSourcesAuto(true, 25);
+      const runAt = result.run_at ? new Date(result.run_at).toLocaleString() : null;
       setToast(
-        `Discovery complete: ${result.created.length} created and enabled, ${result.existing.length} already known, ${result.skipped_invalid.length} skipped.`,
+        `Discovery complete${runAt ? ` (${runAt})` : ''}: ${result.created.length} created and enabled, ${result.existing.length} already known, ${result.skipped_invalid.length} skipped.`,
       );
       getSources().then(setSources).catch(console.error);
       loadPendingDiscovered();

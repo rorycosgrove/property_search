@@ -350,6 +350,30 @@ class OrganicSearchRun(Base):
 
 
 # ──────────────────────────────────────────────────────────────────────────────
+# BackendLog — operational events for settings diagnostics
+# ──────────────────────────────────────────────────────────────────────────────
+
+class BackendLog(Base):
+    __tablename__ = "backend_logs"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid)
+    level: Mapped[str] = mapped_column(String(16), nullable=False, index=True)
+    event_type: Mapped[str] = mapped_column(String(100), nullable=False, index=True)
+    component: Mapped[str] = mapped_column(String(100), nullable=False, default="worker", server_default="worker")
+    source_id: Mapped[str | None] = mapped_column(String(36), nullable=True, index=True)
+    message: Mapped[str] = mapped_column(Text, nullable=False)
+    context_json: Mapped[dict] = mapped_column("context", JSONB, default=dict, server_default="{}")
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=_utcnow, server_default="now()", index=True
+    )
+
+    __table_args__ = (
+        Index("ix_backend_logs_event_created", "event_type", "created_at"),
+        Index("ix_backend_logs_level_created", "level", "created_at"),
+    )
+
+
+# ──────────────────────────────────────────────────────────────────────────────
 # LLMEnrichment — LLM analysis results for a property
 # ──────────────────────────────────────────────────────────────────────────────
 
