@@ -1,0 +1,19 @@
+Stage: <0-6>
+Date: <YYYY-MM-DD>
+Branch: <branch-name>
+Status: <Complete|Blocked>
+
+Completed Deliverables:
+- 
+
+Validation Evidence:
+- 
+
+Risks / Open Items:
+- 
+
+Decision Log Updates:
+- 
+
+Recommended Next Step:
+- 

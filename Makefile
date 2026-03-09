@@ -1,4 +1,4 @@
-.PHONY: up down logs seed scrape test lint format migrate deploy synth diff destroy help
+.PHONY: up down logs seed scrape test lint format migrate deploy synth diff destroy help workspace-list workspace-lint workspace-build boundary-check
 
 # ── Local PostgreSQL (dev) ────────────────────
 up:
@@ -30,6 +30,19 @@ test-cov:
 lint:
 	uv run ruff check packages/ apps/ tests/
 	uv run mypy packages/ apps/
+	uv run python scripts/restructure/check_dependency_boundaries.py
+
+workspace-list:
+	uv run python scripts/restructure/workspace_runner.py list
+
+workspace-lint:
+	uv run python scripts/restructure/workspace_runner.py run lint
+
+workspace-build:
+	uv run python scripts/restructure/workspace_runner.py run build
+
+boundary-check:
+	uv run python scripts/restructure/check_dependency_boundaries.py
 
 format:
 	uv run black packages/ apps/ tests/

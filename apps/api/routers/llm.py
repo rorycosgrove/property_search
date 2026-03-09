@@ -9,6 +9,8 @@ from typing import Any
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
 
+from packages.ai.bedrock_provider import BedrockProvider
+from packages.shared.config import settings
 from packages.shared.schemas import (
     AutoCompareRequest,
     CompareSetRequest,
@@ -24,8 +26,6 @@ from packages.storage.repositories import (
     PropertyGrantMatchRepository,
     PropertyRepository,
 )
-from packages.shared.config import settings
-from packages.ai.bedrock_provider import BedrockProvider
 
 router = APIRouter()
 
@@ -35,6 +35,7 @@ def _model_requires_inference_profile(model_id: str | None) -> bool:
     if not model_id:
         return False
     return model_id.startswith("amazon.nova-")
+
 
 def _llm_queue_configured() -> bool:
     return bool(settings.llm_queue_url or os.environ.get("LLM_QUEUE_URL", ""))

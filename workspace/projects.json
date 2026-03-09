@@ -1,0 +1,136 @@
+{
+  "version": 1,
+  "projects": [
+    {
+      "id": "api",
+      "path": "apps/api",
+      "type": "service",
+      "language": "python",
+      "tags": ["layer:app", "domain:api"],
+      "dependsOn": ["shared", "storage", "sources", "normalizer", "alerts", "analytics", "ai"],
+      "commands": {
+        "lint": "uv run ruff check apps/api",
+        "build": "python -m compileall apps/api"
+      }
+    },
+    {
+      "id": "worker",
+      "path": "apps/worker",
+      "type": "service",
+      "language": "python",
+      "tags": ["layer:app", "domain:worker"],
+      "dependsOn": ["shared", "storage", "sources", "normalizer", "alerts", "analytics", "ai"],
+      "commands": {
+        "lint": "uv run ruff check apps/worker",
+        "build": "python -m compileall apps/worker"
+      }
+    },
+    {
+      "id": "web",
+      "path": "web",
+      "type": "frontend",
+      "language": "typescript",
+      "tags": ["layer:app", "domain:web"],
+      "dependsOn": ["shared"],
+      "commands": {
+        "lint": "npm --prefix web run lint",
+        "build": "npm --prefix web run build"
+      }
+    },
+    {
+      "id": "shared",
+      "path": "packages/shared",
+      "type": "package",
+      "language": "python",
+      "tags": ["layer:foundation", "domain:shared"],
+      "dependsOn": [],
+      "commands": {
+        "lint": "uv run ruff check packages/shared",
+        "build": "python -m compileall packages/shared"
+      }
+    },
+    {
+      "id": "storage",
+      "path": "packages/storage",
+      "type": "package",
+      "language": "python",
+      "tags": ["layer:domain", "domain:storage"],
+      "dependsOn": ["shared"],
+      "commands": {
+        "lint": "uv run ruff check packages/storage",
+        "build": "python -m compileall packages/storage"
+      }
+    },
+    {
+      "id": "sources",
+      "path": "packages/sources",
+      "type": "package",
+      "language": "python",
+      "tags": ["layer:domain", "domain:sources"],
+      "dependsOn": ["shared", "storage", "normalizer"],
+      "commands": {
+        "lint": "uv run ruff check packages/sources",
+        "build": "python -m compileall packages/sources"
+      }
+    },
+    {
+      "id": "normalizer",
+      "path": "packages/normalizer",
+      "type": "package",
+      "language": "python",
+      "tags": ["layer:domain", "domain:normalizer"],
+      "dependsOn": ["shared", "storage"],
+      "commands": {
+        "lint": "uv run ruff check packages/normalizer",
+        "build": "python -m compileall packages/normalizer"
+      }
+    },
+    {
+      "id": "alerts",
+      "path": "packages/alerts",
+      "type": "package",
+      "language": "python",
+      "tags": ["layer:domain", "domain:alerts"],
+      "dependsOn": ["shared", "storage", "analytics"],
+      "commands": {
+        "lint": "uv run ruff check packages/alerts",
+        "build": "python -m compileall packages/alerts"
+      }
+    },
+    {
+      "id": "analytics",
+      "path": "packages/analytics",
+      "type": "package",
+      "language": "python",
+      "tags": ["layer:domain", "domain:analytics"],
+      "dependsOn": ["shared", "storage"],
+      "commands": {
+        "lint": "uv run ruff check packages/analytics",
+        "build": "python -m compileall packages/analytics"
+      }
+    },
+    {
+      "id": "ai",
+      "path": "packages/ai",
+      "type": "package",
+      "language": "python",
+      "tags": ["layer:domain", "domain:ai"],
+      "dependsOn": ["shared", "storage"],
+      "commands": {
+        "lint": "uv run ruff check packages/ai",
+        "build": "python -m compileall packages/ai"
+      }
+    },
+    {
+      "id": "infra",
+      "path": "infra",
+      "type": "infrastructure",
+      "language": "typescript",
+      "tags": ["layer:platform", "domain:infra"],
+      "dependsOn": [],
+      "commands": {
+        "build": "npm --prefix infra run build"
+      }
+    }
+  ]
+}

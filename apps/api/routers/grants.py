@@ -8,7 +8,11 @@ from sqlalchemy.orm import Session
 from packages.grants.engine import evaluate_property_grants
 from packages.shared.schemas import GrantProgramCreate, GrantProgramUpdate
 from packages.storage.database import get_db_session
-from packages.storage.repositories import GrantProgramRepository, PropertyGrantMatchRepository, PropertyRepository
+from packages.storage.repositories import (
+    GrantProgramRepository,
+    PropertyGrantMatchRepository,
+    PropertyRepository,
+)
 
 router = APIRouter()
 
