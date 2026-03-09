@@ -6,12 +6,28 @@ const API_BASE = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000';
 let resolvedAPIBase = API_BASE;
 let discoveringAPIBase: Promise<string | null> | null = null;
 
+const DISCOVERY_PROBE_PATHS = [
+  '/api/v1/properties?size=1',
+  '/api/v1/alerts/unread-count',
+  '/api/v1/sources',
+];
+
+async function fetchWithTimeout(url: string, timeoutMs = 1800): Promise<Response> {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    return await fetch(url, { method: 'GET', signal: controller.signal });
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 // Validate API_BASE to prevent SSRF
 function validateAPIBase(base: string): void {
   try {
     const url = new URL(base);
     const allowedHosts = ['localhost', '127.0.0.1', 'execute-api.eu-west-1.amazonaws.com'];
-    if (!allowedHosts.some(host => url.hostname === host || url.hostname.endsWith(`.${host}`))) {
+    if (!allowedHosts.some((host) => url.hostname === host || url.hostname.endsWith(`.${host}`))) {
       throw new Error('Invalid API host');
     }
   } catch {
@@ -51,7 +67,7 @@ async function discoverLocalAPIBase(excludeBase?: string): Promise<string | null
   if (!discoveringAPIBase) {
     discoveringAPIBase = (async () => {
       const candidates = buildCandidateBases(API_BASE);
-      const healthyCandidates: string[] = [];
+      const healthOnlyFallbacks: string[] = [];
 
       for (const candidate of candidates) {
         if (excludeBase && candidate === excludeBase) {
@@ -59,25 +75,27 @@ async function discoverLocalAPIBase(excludeBase?: string): Promise<string | null
         }
 
         try {
-          const health = await fetch(`${candidate}/health`, { method: 'GET' });
+          const health = await fetchWithTimeout(`${candidate}/health`);
           if (!health.ok) {
             continue;
           }
 
-          healthyCandidates.push(candidate);
-
-          // Prefer API instances that expose the newer LLM models endpoint.
-          const llmModels = await fetch(`${candidate}/api/v1/llm/models`, { method: 'GET' });
-          if (llmModels.ok) {
-            return candidate;
+          // Accept only bases that expose at least one core API path.
+          for (const probePath of DISCOVERY_PROBE_PATHS) {
+            const probe = await fetchWithTimeout(`${candidate}${probePath}`);
+            if (probe.ok) {
+              return candidate;
+            }
           }
+
+          healthOnlyFallbacks.push(candidate);
         } catch {
           // Try next candidate port.
         }
       }
 
-      if (healthyCandidates.length > 0) {
-        return healthyCandidates[0];
+      if (healthOnlyFallbacks.length > 0) {
+        return healthOnlyFallbacks[0];
       }
 
       return null;
@@ -90,7 +108,8 @@ async function discoverLocalAPIBase(excludeBase?: string): Promise<string | null
 }
 
 async function fetchJSON<T>(path: string, options?: RequestInit): Promise<T> {
-  let res = await fetch(`${resolvedAPIBase}${path}`, {
+  let requestUrl = `${resolvedAPIBase}${path}`;
+  let res = await fetch(requestUrl, {
     ...options,
     headers: {
       'Content-Type': 'application/json',
@@ -102,7 +121,8 @@ async function fetchJSON<T>(path: string, options?: RequestInit): Promise<T> {
     const discovered = await discoverLocalAPIBase(resolvedAPIBase);
     if (discovered && discovered !== resolvedAPIBase) {
       resolvedAPIBase = discovered;
-      res = await fetch(`${resolvedAPIBase}${path}`, {
+      requestUrl = `${resolvedAPIBase}${path}`;
+      res = await fetch(requestUrl, {
         ...options,
         headers: {
           'Content-Type': 'application/json',
@@ -114,7 +134,7 @@ async function fetchJSON<T>(path: string, options?: RequestInit): Promise<T> {
 
   if (!res.ok) {
     const body = await res.text().catch(() => '');
-    throw new Error(`API error ${res.status}: ${body}`);
+    throw new Error(`API error ${res.status} at ${requestUrl}: ${body}`);
   }
 
   return res.json();
