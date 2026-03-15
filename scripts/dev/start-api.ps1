@@ -85,16 +85,19 @@ if ($useSqsLocal) {
   Write-Host 'LOCAL_USE_SQS not set; running tasks inline for local dev.' -ForegroundColor Yellow
 }
 
-if ($env:SCRAPE_QUEUE_URL) {
-  Write-Host 'SCRAPE_QUEUE_URL is set' -ForegroundColor DarkCyan
+if ($useSqsLocal) {
+  if ($env:SCRAPE_QUEUE_URL) {
+    Write-Host 'SCRAPE_QUEUE_URL is set' -ForegroundColor DarkCyan
+  } else {
+    Write-Host '[WARN] LOCAL_USE_SQS=1 but SCRAPE_QUEUE_URL not set; source scrapes will fail to dispatch.' -ForegroundColor Yellow
+  }
+  if ($env:LLM_QUEUE_URL) {
+    Write-Host 'LLM_QUEUE_URL is set' -ForegroundColor DarkCyan
+  } else {
+    Write-Host '[WARN] LOCAL_USE_SQS=1 but LLM_QUEUE_URL not set; /api/v1/llm/enrich/* may return 503.' -ForegroundColor Yellow
+  }
 } else {
-  Write-Host '[INFO] SCRAPE_QUEUE_URL not set; source triggers run inline locally.' -ForegroundColor DarkCyan
-}
-
-if ($env:LLM_QUEUE_URL) {
-  Write-Host 'LLM_QUEUE_URL is set' -ForegroundColor DarkCyan
-} else {
-  Write-Host '[WARN] LLM_QUEUE_URL not set; /api/v1/llm/enrich/* may return 503.' -ForegroundColor Yellow
+  Write-Host '[INFO] Queue URLs not required; all tasks run inline.' -ForegroundColor DarkCyan
 }
 
 python -m uvicorn apps.api.main:app --reload --port $port
