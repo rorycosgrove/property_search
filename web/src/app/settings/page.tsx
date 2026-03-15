@@ -1,7 +1,24 @@
 'use client';
 
 import { useEffect, useState } from 'react';
-import { getLLMConfig, getLLMHealth, getLLMModels, type LLMHealth, type LLMModelOption, updateLLMConfig } from '@/lib/api';
+import {
+  getBackendDiscoveryActivity,
+  getBackendFeedActivity,
+  getBackendHealthSummary,
+  getBackendRecentErrors,
+  getBackendSourceStatus,
+  getLLMConfig,
+  getLLMHealth,
+  getLLMModels,
+  type BackendDiscoveryActivity,
+  type BackendFeedActivity,
+  type BackendHealthSummary,
+  type BackendLogEntry,
+  type BackendSourceStatus,
+  type LLMHealth,
+  type LLMModelOption,
+  updateLLMConfig,
+} from '@/lib/api';
 
 const FALLBACK_MODELS: LLMModelOption[] = [
   { id: 'amazon.titan-text-express-v1', label: 'Amazon Titan Text Express' },
@@ -25,6 +42,14 @@ export default function SettingsPage() {
   const [isSaving, setIsSaving] = useState(false);
   const [isLoading, setIsLoading] = useState(true);
   const [saved, setSaved] = useState(false);
+  const [backendFeedActivity, setBackendFeedActivity] = useState<BackendFeedActivity[]>([]);
+  const [backendSourceStatus, setBackendSourceStatus] = useState<BackendSourceStatus[]>([]);
+  const [backendDiscoveryActivity, setBackendDiscoveryActivity] = useState<BackendDiscoveryActivity[]>([]);
+  const [backendHealth, setBackendHealth] = useState<BackendHealthSummary | null>(null);
+  const [backendErrors, setBackendErrors] = useState<BackendLogEntry[]>([]);
+  const [backendLogsLoading, setBackendLogsLoading] = useState(true);
+  const [backendLogsError, setBackendLogsError] = useState<string | null>(null);
+  const [backendLogLevel, setBackendLogLevel] = useState<'ERROR' | 'WARNING' | 'ALL'>('ALL');
 
   useEffect(() => {
     let isMounted = true;
@@ -72,6 +97,55 @@ export default function SettingsPage() {
       isMounted = false;
     };
   }, []);
+
+  useEffect(() => {
+    let mounted = true;
+
+    const loadBackendDiagnostics = async () => {
+      try {
+        if (mounted) {
+          setBackendLogsError(null);
+        }
+
+        const selectedLevel = backendLogLevel === 'ALL' ? undefined : backendLogLevel;
+        const [feed, sources, discovery, healthSummary, errors] = await Promise.all([
+          getBackendFeedActivity(10),
+          getBackendSourceStatus(),
+          getBackendDiscoveryActivity(5),
+          getBackendHealthSummary(),
+          getBackendRecentErrors(25, selectedLevel),
+        ]);
+
+        if (!mounted) {
+          return;
+        }
+
+        setBackendFeedActivity(feed);
+        setBackendSourceStatus(sources);
+        setBackendDiscoveryActivity(discovery);
+        setBackendHealth(healthSummary);
+        setBackendErrors(errors);
+      } catch (error) {
+        if (!mounted) {
+          return;
+        }
+        const message = error instanceof Error ? error.message : 'Unable to load backend diagnostics.';
+        setBackendLogsError(message);
+      } finally {
+        if (mounted) {
+          setBackendLogsLoading(false);
+        }
+      }
+    };
+
+    void loadBackendDiagnostics();
+    const timer = setInterval(loadBackendDiagnostics, 15000);
+
+    return () => {
+      mounted = false;
+      clearInterval(timer);
+    };
+  }, [backendLogLevel]);
 
   const handleSave = async () => {
     if (!model || isSaving) {
@@ -138,7 +212,7 @@ export default function SettingsPage() {
                     className={[
                       'text-left rounded-lg border px-3 py-3 transition-colors',
                       selected
-                        ? 'border-[var(--accent)] bg-cyan-900/10'
+                        ? 'border-[var(--accent)] bg-[var(--accent-soft)]'
                         : 'border-[var(--card-border)] bg-[var(--background)] hover:border-[var(--accent)]',
                     ].join(' ')}
                   >
@@ -191,6 +265,147 @@ export default function SettingsPage() {
           SQS, and Amplify. Aggregates property listings from Daft.ie,
           MyHome.ie, PropertyPal, and the Property Price Register.
         </p>
+      </div>
+
+      <div className="bg-[var(--card-bg)] border border-[var(--card-border)] rounded-lg p-6 space-y-5">
+        <div className="flex items-center justify-between gap-4 flex-wrap">
+          <div>
+            <h2 className="text-lg font-semibold">Backend Status</h2>
+            <p className="text-sm text-[var(--muted)] mt-1">Live feed refresh, discovery, and ingestion diagnostics.</p>
+          </div>
+          <div className="flex items-center gap-2">
+            <label className="text-xs text-[var(--muted)]">Errors</label>
+            <select
+              value={backendLogLevel}
+              onChange={(e) => setBackendLogLevel(e.target.value as 'ERROR' | 'WARNING' | 'ALL')}
+              className="bg-[var(--background)] border border-[var(--card-border)] rounded px-2 py-1 text-xs"
+            >
+              <option value="ALL">Warnings + Errors</option>
+              <option value="ERROR">Errors only</option>
+              <option value="WARNING">Warnings only</option>
+            </select>
+          </div>
+        </div>
+
+        {backendLogsError ? (
+          <div className="rounded border border-[var(--danger)]/40 bg-[var(--danger)]/10 px-3 py-2 text-sm text-[var(--danger)]">
+            {backendLogsError}
+          </div>
+        ) : null}
+
+        <div className="grid grid-cols-1 md:grid-cols-4 gap-3">
+          <StatusCard label="Scrapes (24h)" value={String(backendHealth?.scrape_runs_24h ?? 0)} tone="neutral" />
+          <StatusCard
+            label="Geocode Success"
+            value={`${backendHealth?.geocode_success_rate?.toFixed(1) ?? '0.0'}%`}
+            tone={(backendHealth?.geocode_success_rate ?? 0) >= 80 ? 'ok' : 'warn'}
+          />
+          <StatusCard
+            label="Scrape Queue"
+            value={backendHealth?.queue_config.scrape_queue_configured ? 'Configured' : 'Inline mode'}
+            tone={backendHealth?.queue_config.scrape_queue_configured ? 'ok' : 'warn'}
+          />
+          <StatusCard
+            label="Recent Error"
+            value={backendHealth?.last_error?.event_type || 'None'}
+            tone={backendHealth?.last_error?.event_type ? 'warn' : 'ok'}
+          />
+        </div>
+
+        <section>
+          <h3 className="text-sm font-semibold mb-2">Recent Feed Refresh Activity</h3>
+          <div className="overflow-auto border border-[var(--card-border)] rounded-md">
+            <table className="w-full text-sm">
+              <thead className="bg-[var(--background)] text-[var(--muted)]">
+                <tr>
+                  <th className="text-left px-3 py-2">Source</th>
+                  <th className="text-left px-3 py-2">Fetched</th>
+                  <th className="text-left px-3 py-2">New</th>
+                  <th className="text-left px-3 py-2">Updated</th>
+                  <th className="text-left px-3 py-2">Geocode</th>
+                  <th className="text-left px-3 py-2">Timestamp</th>
+                </tr>
+              </thead>
+              <tbody>
+                {backendFeedActivity.map((row) => (
+                  <tr key={row.id} className="border-t border-[var(--card-border)]">
+                    <td className="px-3 py-2">{row.source_name || row.source_id || 'Unknown'}</td>
+                    <td className="px-3 py-2">{row.total_fetched}</td>
+                    <td className="px-3 py-2">{row.new}</td>
+                    <td className="px-3 py-2">{row.updated}</td>
+                    <td className="px-3 py-2">{(row.geocode_success_rate ?? 0).toFixed(1)}%</td>
+                    <td className="px-3 py-2 text-[var(--muted)]">{row.timestamp ? new Date(row.timestamp).toLocaleString() : '-'}</td>
+                  </tr>
+                ))}
+                {!backendFeedActivity.length && !backendLogsLoading ? (
+                  <tr>
+                    <td className="px-3 py-3 text-[var(--muted)]" colSpan={6}>No recent feed refresh activity.</td>
+                  </tr>
+                ) : null}
+              </tbody>
+            </table>
+          </div>
+        </section>
+
+        <section>
+          <h3 className="text-sm font-semibold mb-2">Source Status</h3>
+          <div className="flex flex-wrap gap-2">
+            {backendSourceStatus.slice(0, 12).map((source) => (
+              <span
+                key={source.id}
+                className={[
+                  'inline-flex items-center gap-2 rounded-full border px-3 py-1 text-xs',
+                  source.status === 'active'
+                    ? 'border-emerald-300 text-emerald-700'
+                    : source.status === 'warning'
+                      ? 'border-amber-300 text-amber-700'
+                      : 'border-red-300 text-red-700',
+                ].join(' ')}
+                title={source.last_error || 'No errors'}
+              >
+                <span>{source.name}</span>
+                <span>errors: {source.error_count}</span>
+              </span>
+            ))}
+            {!backendSourceStatus.length && !backendLogsLoading ? (
+              <span className="text-sm text-[var(--muted)]">No sources found.</span>
+            ) : null}
+          </div>
+        </section>
+
+        <section>
+          <h3 className="text-sm font-semibold mb-2">Recent Discovery Runs</h3>
+          <ul className="space-y-2">
+            {backendDiscoveryActivity.map((item) => (
+              <li key={item.id} className="rounded border border-[var(--card-border)] px-3 py-2">
+                <p className="text-sm font-medium">{item.event_type}</p>
+                <p className="text-xs text-[var(--muted)] mt-1">{item.timestamp ? new Date(item.timestamp).toLocaleString() : '-'}</p>
+                <p className="text-xs mt-1">{item.message}</p>
+              </li>
+            ))}
+            {!backendDiscoveryActivity.length && !backendLogsLoading ? (
+              <li className="text-sm text-[var(--muted)]">No discovery activity logged yet.</li>
+            ) : null}
+          </ul>
+        </section>
+
+        <section>
+          <h3 className="text-sm font-semibold mb-2">Recent Errors & Warnings</h3>
+          <div className="space-y-2 max-h-72 overflow-auto pr-1">
+            {backendErrors.map((entry) => (
+              <div key={entry.id} className="rounded border border-[var(--card-border)] px-3 py-2">
+                <p className="text-xs uppercase tracking-wide text-[var(--muted)]">
+                  {entry.level} · {entry.event_type}
+                </p>
+                <p className="text-sm mt-1">{entry.message}</p>
+                <p className="text-xs text-[var(--muted)] mt-1">{entry.timestamp ? new Date(entry.timestamp).toLocaleString() : '-'}</p>
+              </div>
+            ))}
+            {!backendErrors.length && !backendLogsLoading ? (
+              <p className="text-sm text-[var(--muted)]">No recent warnings or errors.</p>
+            ) : null}
+          </div>
+        </section>
       </div>
     </div>
   );

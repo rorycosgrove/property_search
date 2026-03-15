@@ -9,6 +9,7 @@ switching via DynamoDB config and caching of results.
 from __future__ import annotations
 
 import json
+import os
 from typing import Any
 
 from packages.ai.bedrock_provider import BedrockProvider
@@ -29,6 +30,29 @@ _runtime_model_override: str | None = None
 
 # ── Provider factory ──────────────────────────────────────────────────────────
 
+def llm_runtime_status() -> dict:
+    """Return LLM runtime status for diagnostics and API readiness checks."""
+    provider = _get_active_provider_name()
+    model = _get_active_model()
+    enabled = bool(settings.llm_enabled)
+    queue_configured = bool(settings.llm_queue_url or os.environ.get("LLM_QUEUE_URL", ""))
+    reason = "ok"
+    if not enabled:
+        reason = "llm_disabled"
+    elif not queue_configured:
+        reason = "llm_queue_unconfigured"
+
+    return {
+        "enabled": enabled,
+        "provider": provider,
+        "model": model,
+        "queue_configured": queue_configured,
+        "ready_for_enrichment": enabled and queue_configured,
+        "reason": reason,
+        "runtime_override": bool(_runtime_provider_override or _runtime_model_override),
+        "dynamo_config_table": getattr(settings, "dynamodb_config_table", None),
+        "aws_region": getattr(settings, "aws_region", None),
+    }
 
 def get_provider(provider_name: str | None = None, model: str | None = None) -> LLMProvider:
     """

@@ -10,6 +10,46 @@ interface Props {
   properties: Property[];
 }
 
+function _asValidCoord(value: unknown, min: number, max: number): number | null {
+  const numeric = typeof value === 'number' ? value : Number(value);
+  if (!Number.isFinite(numeric)) {
+    return null;
+  }
+  if (numeric < min || numeric > max) {
+    return null;
+  }
+  return numeric;
+}
+
+function _propertyLatLng(prop: Property): [number, number] | null {
+  const lat = _asValidCoord(prop.latitude, -90, 90);
+  const lng = _asValidCoord(prop.longitude, -180, 180);
+  if (lat == null || lng == null) {
+    return null;
+  }
+  return [lat, lng];
+}
+
+function _isFiniteLatLng(value: [number, number] | null): value is [number, number] {
+  return !!value && Number.isFinite(value[0]) && Number.isFinite(value[1]);
+}
+
+function _safeFlyTo(map: LeafletMap, latLng: [number, number] | null, requestedZoom: number): void {
+  if (!_isFiniteLatLng(latLng)) {
+    return;
+  }
+
+  const zoom = Number.isFinite(requestedZoom) ? requestedZoom : 13;
+  try {
+    map.flyTo(latLng, zoom, {
+      animate: true,
+      duration: 0.7,
+    });
+  } catch {
+    // Prevent map runtime crashes from malformed coordinates in incoming data.
+  }
+}
+
 function _escapeHtml(value: string): string {
   return value
     .replaceAll('&', '&amp;')
@@ -60,8 +100,13 @@ export default function PropertyMap({ properties }: Props) {
     import('leaflet').then((L) => {
       if (mapInstanceRef.current) return;
 
+      const safeCenter: [number, number] = [
+        _asValidCoord(center[0], -90, 90) ?? 53.35,
+        _asValidCoord(center[1], -180, 180) ?? -6.26,
+      ];
+
       const map = L.map(mapRef.current!, {
-        center: center,
+        center: safeCenter,
         zoom: zoom,
         zoomControl: true,
       });
@@ -73,7 +118,11 @@ export default function PropertyMap({ properties }: Props) {
 
       map.on('moveend', () => {
         const c = map.getCenter();
-        setCenter([c.lat, c.lng]);
+        const nextLat = _asValidCoord(c.lat, -90, 90);
+        const nextLng = _asValidCoord(c.lng, -180, 180);
+        if (nextLat != null && nextLng != null) {
+          setCenter([nextLat, nextLng]);
+        }
         setZoom(map.getZoom());
       });
 
@@ -92,21 +141,16 @@ export default function PropertyMap({ properties }: Props) {
   useEffect(() => {
     if (!mapInstanceRef.current || !selectedPropertyId) return;
 
-    const selected = properties.find((p) => p.id === selectedPropertyId);
-    if (!selected || selected.latitude == null || selected.longitude == null) return;
-
     const map = mapInstanceRef.current;
-    const targetZoom = Math.max(map.getZoom(), 13);
-    map.flyTo([selected.latitude, selected.longitude], targetZoom, {
-      animate: true,
-      duration: 0.7,
-    });
-
     const selectedMarker = markersRef.current.find((entry) => entry.id === selectedPropertyId);
     if (selectedMarker) {
+      const ll = selectedMarker.marker.getLatLng();
+      const latLng: [number, number] = [ll.lat, ll.lng];
+      const targetZoom = Math.max(map.getZoom(), 13);
+      _safeFlyTo(map, latLng, targetZoom);
       selectedMarker.marker.openPopup();
     }
-  }, [properties, selectedPropertyId]);
+  }, [selectedPropertyId]);
 
   // Update markers when properties change
   useEffect(() => {
@@ -124,7 +168,8 @@ export default function PropertyMap({ properties }: Props) {
 
       // Add new markers
       properties.forEach((prop) => {
-        if (prop.latitude == null || prop.longitude == null) return;
+        const latLng = _propertyLatLng(prop);
+        if (!latLng) return;
 
         const isSelected = prop.id === selectedPropertyId;
 
@@ -135,7 +180,7 @@ export default function PropertyMap({ properties }: Props) {
           iconAnchor: [48, 14],
         });
 
-        const marker = L.marker([prop.latitude, prop.longitude], { icon })
+        const marker = L.marker(latLng, { icon })
           .bindTooltip(_hoverCardHtml(prop), {
             className: 'marker-hover-card',
             direction: 'top',
@@ -161,14 +206,19 @@ export default function PropertyMap({ properties }: Props) {
 
         marker.on('click', () => {
           const targetZoom = Math.max(map.getZoom(), 13);
-          map.flyTo([prop.latitude!, prop.longitude!], targetZoom, {
-            animate: true,
-            duration: 0.7,
-          });
+          const ll = marker.getLatLng();
+          _safeFlyTo(map, [ll.lat, ll.lng], targetZoom);
           marker.openPopup();
           selectProperty(prop.id);
           openDetail(prop);
         });
+
+        if (isSelected) {
+          const targetZoom = Math.max(map.getZoom(), 13);
+          const ll = marker.getLatLng();
+          _safeFlyTo(map, [ll.lat, ll.lng], targetZoom);
+          marker.openPopup();
+        }
 
         markersRef.current.push({ id: prop.id, marker });
       });

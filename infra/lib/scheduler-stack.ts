@@ -100,5 +100,53 @@ export class SchedulerStack extends cdk.Stack {
         }),
       ],
     });
+
+    // Discover new source/feed candidates daily at 4am (approval required before enablement)
+    // Unified property + grant discovery — daily at 4am (static candidates only, no live crawl).
+    // High-confidence sources are auto-enabled; others pend for approval.
+    new events.Rule(this, "DiscoverSourcesRule", {
+      ruleName: "property-search-discover-sources",
+      schedule: events.Schedule.cron({ minute: "0", hour: "4" }),
+      targets: [
+        new targets.SqsQueue(props.scrapeQueue, {
+          message: events.RuleTargetInput.fromObject({
+            task_type: "discover_all_sources",
+            task_id: "scheduled",
+            payload: {
+              limit: 200,
+              dry_run: false,
+              follow_links: false,
+              include_grants: true,
+            },
+          }),
+        }),
+      ],
+    });
+
+    // Deep live-crawl discovery — weekly on Monday at 3am.
+    // Enables follow_links=true to HTTP-fetch seed pages for additional source discovery.
+    // Slower run; kept weekly to avoid hammering external sites.
+    new events.Rule(this, "DeepDiscoverSourcesRule", {
+      ruleName: "property-search-deep-discover-sources",
+      schedule: events.Schedule.cron({
+        minute: "0",
+        hour: "3",
+        weekDay: "MON",
+      }),
+      targets: [
+        new targets.SqsQueue(props.scrapeQueue, {
+          message: events.RuleTargetInput.fromObject({
+            task_type: "discover_all_sources",
+            task_id: "scheduled-deep",
+            payload: {
+              limit: 200,
+              dry_run: false,
+              follow_links: true,
+              include_grants: true,
+            },
+          }),
+        }),
+      ],
+    });
   }
 }

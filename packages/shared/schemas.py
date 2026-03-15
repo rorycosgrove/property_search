@@ -396,6 +396,7 @@ class HealthResponse(BaseModel):
     database: str
     bedrock: str
     worker: str | None = None
+    backend_errors_last_hour: int | None = None
 
 
 class AdapterInfo(BaseModel):
@@ -476,6 +477,7 @@ class ConversationCreate(BaseModel):
 class ConversationMessageCreate(BaseModel):
     content: str = Field(..., min_length=1, max_length=6000)
     property_id: str | None = None
+    retrieval_context: dict[str, Any] | None = None
 
 
 class ConversationMessageResponse(BaseModel):
@@ -521,4 +523,12 @@ class CompareWeights(BaseModel):
 class CompareSetRequest(BaseModel):
     property_ids: list[str] = Field(..., min_length=2, max_length=5)
     ranking_mode: str = Field(default="hybrid", pattern="^(llm_only|hybrid|user_weighted)$")
+    weights: CompareWeights | None = None
+
+
+class AutoCompareRequest(BaseModel):
+    session_id: str = Field(..., min_length=1, max_length=120)
+    property_ids: list[str] = Field(..., min_length=2, max_length=5)
+    ranking_mode: str = Field(default="hybrid", pattern="^(llm_only|hybrid|user_weighted)$")
+    search_context: dict[str, Any] = Field(default_factory=dict)
     weights: CompareWeights | None = None

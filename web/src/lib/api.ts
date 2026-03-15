@@ -6,12 +6,28 @@ const API_BASE = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000';
 let resolvedAPIBase = API_BASE;
 let discoveringAPIBase: Promise<string | null> | null = null;
 
+const DISCOVERY_PROBE_PATHS = [
+  '/api/v1/properties?size=1',
+  '/api/v1/alerts/unread-count',
+  '/api/v1/sources',
+];
+
+async function fetchWithTimeout(url: string, timeoutMs = 1800): Promise<Response> {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    return await fetch(url, { method: 'GET', signal: controller.signal });
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 // Validate API_BASE to prevent SSRF
 function validateAPIBase(base: string): void {
   try {
     const url = new URL(base);
     const allowedHosts = ['localhost', '127.0.0.1', 'execute-api.eu-west-1.amazonaws.com'];
-    if (!allowedHosts.some(host => url.hostname === host || url.hostname.endsWith(`.${host}`))) {
+    if (!allowedHosts.some((host) => url.hostname === host || url.hostname.endsWith(`.${host}`))) {
       throw new Error('Invalid API host');
     }
   } catch {
@@ -51,7 +67,7 @@ async function discoverLocalAPIBase(excludeBase?: string): Promise<string | null
   if (!discoveringAPIBase) {
     discoveringAPIBase = (async () => {
       const candidates = buildCandidateBases(API_BASE);
-      const healthyCandidates: string[] = [];
+      const healthOnlyFallbacks: string[] = [];
 
       for (const candidate of candidates) {
         if (excludeBase && candidate === excludeBase) {
@@ -59,25 +75,27 @@ async function discoverLocalAPIBase(excludeBase?: string): Promise<string | null
         }
 
         try {
-          const health = await fetch(`${candidate}/health`, { method: 'GET' });
+          const health = await fetchWithTimeout(`${candidate}/health`);
           if (!health.ok) {
             continue;
           }
 
-          healthyCandidates.push(candidate);
-
-          // Prefer API instances that expose the newer LLM models endpoint.
-          const llmModels = await fetch(`${candidate}/api/v1/llm/models`, { method: 'GET' });
-          if (llmModels.ok) {
-            return candidate;
+          // Accept only bases that expose at least one core API path.
+          for (const probePath of DISCOVERY_PROBE_PATHS) {
+            const probe = await fetchWithTimeout(`${candidate}${probePath}`);
+            if (probe.ok) {
+              return candidate;
+            }
           }
+
+          healthOnlyFallbacks.push(candidate);
         } catch {
           // Try next candidate port.
         }
       }
 
-      if (healthyCandidates.length > 0) {
-        return healthyCandidates[0];
+      if (healthOnlyFallbacks.length > 0) {
+        return healthOnlyFallbacks[0];
       }
 
       return null;
@@ -90,7 +108,8 @@ async function discoverLocalAPIBase(excludeBase?: string): Promise<string | null
 }
 
 async function fetchJSON<T>(path: string, options?: RequestInit): Promise<T> {
-  let res = await fetch(`${resolvedAPIBase}${path}`, {
+  let requestUrl = `${resolvedAPIBase}${path}`;
+  let res = await fetch(requestUrl, {
     ...options,
     headers: {
       'Content-Type': 'application/json',
@@ -102,7 +121,8 @@ async function fetchJSON<T>(path: string, options?: RequestInit): Promise<T> {
     const discovered = await discoverLocalAPIBase(resolvedAPIBase);
     if (discovered && discovered !== resolvedAPIBase) {
       resolvedAPIBase = discovered;
-      res = await fetch(`${resolvedAPIBase}${path}`, {
+      requestUrl = `${resolvedAPIBase}${path}`;
+      res = await fetch(requestUrl, {
         ...options,
         headers: {
           'Content-Type': 'application/json',
@@ -114,7 +134,7 @@ async function fetchJSON<T>(path: string, options?: RequestInit): Promise<T> {
 
   if (!res.ok) {
     const body = await res.text().catch(() => '');
-    throw new Error(`API error ${res.status}: ${body}`);
+    throw new Error(`API error ${res.status} at ${requestUrl}: ${body}`);
   }
 
   return res.json();
@@ -373,11 +393,233 @@ export async function getAdapters(): Promise<AdapterInfo[]> {
 
 export async function triggerScrape(
   sourceId: string,
-): Promise<{ task_id?: string; status: string; result?: Record<string, unknown> }> {
-  return fetchJSON<{ task_id?: string; status: string; result?: Record<string, unknown> }>(
-    `/api/v1/sources/${sourceId}/trigger`,
+  options?: { force?: boolean },
+): Promise<{ task_id?: string; status: string; result?: Record<string, unknown>; timestamp?: string; force?: boolean }> {
+  const params = new URLSearchParams();
+  if (options?.force) {
+    params.set('force', 'true');
+  }
+  const suffix = params.toString();
+  const path = suffix
+    ? `/api/v1/sources/${sourceId}/trigger?${suffix}`
+    : `/api/v1/sources/${sourceId}/trigger`;
+  return fetchJSON<{ task_id?: string; status: string; result?: Record<string, unknown>; timestamp?: string; force?: boolean }>(
+    path,
     { method: 'POST' },
   );
+}
+
+export interface SourceDiscoveryRunResult {
+  run_at?: string;
+  created: Source[];
+  existing: Array<{ id: string; url: string; name: string; timestamp?: string }>;
+  skipped_invalid: Array<{ url?: string; reason: string; timestamp?: string }>;
+  auto_enable: boolean;
+}
+
+export interface ScrapeSourceSummary {
+  total: number;
+  enabled: number;
+  pending_approval: number;
+  disabled_by_errors: number;
+}
+
+export interface DiscoveryDuringScrapeSummary {
+  created: number;
+  created_enabled?: number;
+  created_pending_approval?: number;
+  existing: number;
+  skipped_invalid: number;
+  auto_enable: boolean;
+  enabled: boolean;
+  limit: number;
+  error?: string;
+}
+
+export async function discoverSourcesAuto(
+  autoEnable = false,
+  limit = 25,
+): Promise<SourceDiscoveryRunResult> {
+  return fetchJSON<SourceDiscoveryRunResult>(
+    `/api/v1/sources/discover-auto?auto_enable=${String(autoEnable)}&limit=${limit}`,
+    { method: 'POST' },
+  );
+}
+
+export async function getPendingDiscoveredSources(): Promise<Source[]> {
+  return fetchJSON<Source[]>('/api/v1/sources/discovery/pending');
+}
+
+export async function approveDiscoveredSource(sourceId: string): Promise<Source> {
+  return fetchJSON<Source>(`/api/v1/sources/${sourceId}/approve-discovered`, { method: 'POST' });
+}
+
+export interface OrganicSearchStepResult {
+  step: string;
+  status: 'dispatched' | 'processed_inline';
+  timestamp?: string;
+  task_id?: string;
+  result?: Record<string, unknown>;
+}
+
+export interface OrganicSearchRunResult {
+  run_id?: string;
+  status: 'dispatched' | 'processed_inline' | 'mixed';
+  steps: OrganicSearchStepResult[];
+  created_at?: string;
+}
+
+export interface OrganicSearchHistoryItem {
+  id: string;
+  status: 'dispatched' | 'processed_inline' | 'mixed' | 'failed' | string;
+  triggered_from: string;
+  options: Record<string, unknown>;
+  steps: OrganicSearchStepResult[];
+  error?: string | null;
+  created_at?: string;
+}
+
+export async function triggerFullOrganicSearch(
+  options?: { runAlerts?: boolean; runLlmBatch?: boolean; llmLimit?: number; force?: boolean },
+): Promise<OrganicSearchRunResult> {
+  const params = new URLSearchParams();
+  if (options?.force !== undefined) {
+    params.set('force', String(options.force));
+  }
+  if (options?.runAlerts !== undefined) {
+    params.set('run_alerts', String(options.runAlerts));
+  }
+  if (options?.runLlmBatch !== undefined) {
+    params.set('run_llm_batch', String(options.runLlmBatch));
+  }
+  if (options?.llmLimit !== undefined) {
+    params.set('llm_limit', String(options.llmLimit));
+  }
+
+  const suffix = params.toString();
+  const path = suffix ? `/api/v1/sources/trigger-all?${suffix}` : '/api/v1/sources/trigger-all';
+  return fetchJSON<OrganicSearchRunResult>(path, { method: 'POST' });
+}
+
+export async function getOrganicSearchHistory(limit = 20): Promise<OrganicSearchHistoryItem[]> {
+  return fetchJSON<OrganicSearchHistoryItem[]>(`/api/v1/sources/trigger-all/history?limit=${limit}`);
+}
+
+// ── Admin / Backend Logs ───────────────────────────────────────────────────
+
+export interface BackendFeedActivity {
+  id: string;
+  timestamp?: string;
+  source_id?: string;
+  source_name?: string;
+  new: number;
+  updated: number;
+  skipped: number;
+  total_fetched: number;
+  geocode_success_rate?: number;
+  status: string;
+}
+
+export interface BackendSourceStatus {
+  id: string;
+  name: string;
+  enabled: boolean;
+  status: 'active' | 'warning' | 'disabled' | string;
+  error_count: number;
+  last_error?: string;
+  last_polled_at?: string;
+  last_success_at?: string;
+  poll_interval_seconds: number;
+  total_listings: number;
+}
+
+export interface BackendDiscoveryActivity {
+  id: string;
+  timestamp?: string;
+  event_type: string;
+  level: string;
+  message: string;
+  context: Record<string, unknown>;
+}
+
+export interface BackendHealthSummary {
+  scrape_runs_24h: number;
+  geocode_attempts: number;
+  geocode_successes: number;
+  geocode_success_rate: number;
+  queue_config: {
+    scrape_queue_configured: boolean;
+    alert_queue_configured: boolean;
+    llm_queue_configured: boolean;
+  };
+  last_error: {
+    timestamp?: string;
+    message?: string;
+    event_type?: string;
+    level?: string;
+  };
+}
+
+export interface BackendLogEntry {
+  id: string;
+  timestamp?: string;
+  level: string;
+  event_type: string;
+  component: string;
+  source_id?: string;
+  message: string;
+  context: Record<string, unknown>;
+}
+
+export async function getBackendLogs(options?: {
+  hours?: number;
+  limit?: number;
+  level?: string;
+  eventType?: string;
+}): Promise<BackendLogEntry[]> {
+  const params = new URLSearchParams();
+  if (options?.hours !== undefined) {
+    params.set('hours', String(options.hours));
+  }
+  if (options?.limit !== undefined) {
+    params.set('limit', String(options.limit));
+  }
+  if (options?.level) {
+    params.set('level', options.level);
+  }
+  if (options?.eventType) {
+    params.set('event_type', options.eventType);
+  }
+  const suffix = params.toString();
+  const path = suffix ? `/api/v1/admin/backend-logs?${suffix}` : '/api/v1/admin/backend-logs';
+  return fetchJSON<BackendLogEntry[]>(path);
+}
+
+export async function getBackendFeedActivity(limit = 10): Promise<BackendFeedActivity[]> {
+  return fetchJSON<BackendFeedActivity[]>(`/api/v1/admin/logs/feed-activity?limit=${limit}`);
+}
+
+export async function getBackendSourceStatus(): Promise<BackendSourceStatus[]> {
+  return fetchJSON<BackendSourceStatus[]>('/api/v1/admin/logs/sources');
+}
+
+export async function getBackendDiscoveryActivity(limit = 5): Promise<BackendDiscoveryActivity[]> {
+  return fetchJSON<BackendDiscoveryActivity[]>(`/api/v1/admin/logs/discovery?limit=${limit}`);
+}
+
+export async function getBackendHealthSummary(): Promise<BackendHealthSummary> {
+  return fetchJSON<BackendHealthSummary>('/api/v1/admin/logs/health');
+}
+
+export async function getBackendRecentErrors(
+  limit = 25,
+  level?: 'ERROR' | 'WARNING',
+): Promise<BackendLogEntry[]> {
+  const params = new URLSearchParams({ limit: String(limit) });
+  if (level) {
+    params.set('level', level);
+  }
+  return fetchJSON<BackendLogEntry[]>(`/api/v1/admin/logs/recent-errors?${params.toString()}`);
 }
 
 // ── LLM ─────────────────────────────────────────────────────────────────────
@@ -476,12 +718,44 @@ export interface ConversationMessage {
   conversation_id: string;
   role: 'user' | 'assistant' | string;
   content: string;
-  citations: Array<Record<string, unknown>>;
+  citations: Citation[];
   prompt_tokens?: number;
   completion_tokens?: number;
   total_tokens?: number;
   processing_time_ms?: number;
   created_at?: string;
+}
+
+export interface PropertyCitation {
+  type: 'property';
+  property_id: string;
+  url?: string | null;
+  label?: string | null;
+  county?: string | null;
+  price?: number | null;
+}
+
+export interface GrantCitation {
+  type: 'grant';
+  grant_program_id?: string;
+  code?: string | null;
+  label?: string | null;
+  url?: string | null;
+  status?: string | null;
+  estimated_benefit?: number | null;
+}
+
+export type Citation = PropertyCitation | GrantCitation;
+
+export interface RetrievalContext {
+  selected_property_id?: string | null;
+  selected_property_title?: string | null;
+  ranking_mode?: RankingMode | null;
+  shortlist_size?: number;
+  winner_property_id?: string | null;
+  winner_property_title?: string | null;
+  grant_count?: number;
+  grants_considered?: Array<{ code?: string | null; status?: string | null; estimated_benefit?: number | null }>;
 }
 
 export interface Conversation {
@@ -498,6 +772,7 @@ export interface ChatTurnResponse {
   conversation_id: string;
   user_message: ConversationMessage;
   assistant_message: ConversationMessage;
+  retrieval_context?: RetrievalContext;
 }
 
 export type RankingMode = 'llm_only' | 'hybrid' | 'user_weighted';
@@ -531,8 +806,34 @@ export interface CompareSetResponse {
     recommendation: string;
     key_tradeoffs: string[];
     confidence: 'low' | 'medium' | 'high';
-    citations: Array<Record<string, unknown>>;
+    citations: Citation[];
+    reasoning?: string;
   };
+}
+
+export interface AutoCompareRequest {
+  session_id: string;
+  property_ids: string[];
+  ranking_mode: RankingMode;
+  search_context?: Record<string, unknown>;
+  weights?: { value?: number; location?: number; condition?: number; potential?: number };
+}
+
+export interface AutoCompareRunResponse {
+  run_id: string;
+  session_id: string;
+  result: CompareSetResponse;
+  cached?: boolean;
+}
+
+export interface AutoCompareLatestResponse {
+  run_id: string;
+  status: string;
+  options: Record<string, unknown>;
+  steps: Array<Record<string, unknown>>;
+  result?: CompareSetResponse | null;
+  error?: string | null;
+  created_at?: string | null;
 }
 
 export async function createConversation(userIdentifier: string, title?: string) {
@@ -550,10 +851,11 @@ export async function sendConversationMessage(
   conversationId: string,
   content: string,
   propertyId?: string,
+  retrievalContext?: RetrievalContext,
 ) {
   return fetchJSON<ChatTurnResponse>(`/api/v1/llm/chat/conversations/${conversationId}/messages`, {
     method: 'POST',
-    body: JSON.stringify({ content, property_id: propertyId }),
+    body: JSON.stringify({ content, property_id: propertyId, retrieval_context: retrievalContext }),
   });
 }
 
@@ -566,6 +868,18 @@ export async function comparePropertySet(
     method: 'POST',
     body: JSON.stringify({ property_ids: propertyIds, ranking_mode: rankingMode, weights }),
   });
+}
+
+export async function triggerAutoCompare(payload: AutoCompareRequest) {
+  return fetchJSON<AutoCompareRunResponse>('/api/v1/llm/auto-compare', {
+    method: 'POST',
+    body: JSON.stringify(payload),
+  });
+}
+
+export async function getLatestAutoCompare(sessionId: string) {
+  const params = new URLSearchParams({ session_id: sessionId });
+  return fetchJSON<AutoCompareLatestResponse>(`/api/v1/llm/auto-compare/latest?${params.toString()}`);
 }
 
 // ── Grants ──────────────────────────────────────────────────────────────────

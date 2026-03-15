@@ -36,7 +36,33 @@ A comprehensive web-based platform for researching properties to buy across Irel
 - **AWS CLI** configured with credentials (`aws configure`)
 - **Node.js 20+** (for CDK and frontend)
 - **Python 3.12+**
+- **uv** package manager (used by Makefile commands, tests, and scripts)
 - **Docker** (for local PostgreSQL only)
+
+## Reliability Progress (Mar 2026)
+
+The reliability-first stabilization plan is implemented and validated:
+
+- Queue dispatch semantics unified (`dispatch_or_inline`) with typed dispatch failures (`QueueDispatchError`) and safer API error mapping.
+- Worker ownership consolidated with compatibility shims in `packages/worker/service.py` delegating to canonical `apps/worker/tasks.py`.
+- Backend logs operationalized through admin endpoints and repository queries.
+- Health diagnostics expanded with `backend_errors_last_hour` signal.
+- Migration safety and repository behavior reinforced with dedicated tests.
+- Focused verification workflow added: `make test-cov-plan`.
+
+See `docs/RELEASE_NOTES_MAR_2026.md` for implementation details and validation outcomes.
+
+## Run/Deploy At A Glance
+
+| Path | Entry Command | Typical Time | Ease | Notes |
+|------|---------------|--------------|------|-------|
+| Local (Windows) | `start-all.cmd` | 2-5 min first run, then ~1 min restarts | Easy | Best default for local development. Includes health checks and startup orchestration. |
+| Local (Manual split) | `start-local-services.cmd` + `status-local.cmd` | 2-5 min | Moderate | Better for debugging separate API/web terminals. |
+| Remote (AWS) | `python deploy.py` | 15-25 min | Moderate | Mostly automated, but Bedrock model access remains a manual AWS Console step. |
+
+Practical assessment:
+- Local is straightforward once prerequisites are installed.
+- Remote deployment is practical and repeatable, but not fully one-click due to required AWS account setup and Bedrock enablement.
 
 ### Deploy to AWS
 
@@ -102,6 +128,11 @@ uvicorn apps.api.main:app --reload --port 8000
 # 6. Start frontend
 cd web && npm install && npm run dev
 ```
+
+Note: if `make` is unavailable in your environment, use direct equivalents such as:
+- `docker compose up -d` instead of `make up`
+- `uv run alembic upgrade head` instead of `make migrate`
+- `uv run pytest -q` instead of `make test`
 
 ## Architecture
 

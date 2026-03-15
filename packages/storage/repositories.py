@@ -30,6 +30,7 @@ from packages.shared.schemas import (
 from packages.shared.utils import utc_now
 from packages.storage.models import (
     Alert,
+    BackendLog,
     Conversation,
     ConversationMessage,
     GrantProgram,
@@ -37,6 +38,7 @@ from packages.storage.models import (
     Property,
     PropertyGrantMatch,
     PropertyPriceHistory,
+    OrganicSearchRun,
     SavedSearch,
     SoldProperty,
     Source,
@@ -165,6 +167,9 @@ class PropertyRepository:
         self.session = session
 
     def get_by_id(self, property_id: str, include_relations: bool = True) -> Property | None:
+        if not hasattr(self.session, "scalar"):
+            return self.session.get(Property, property_id)
+
         query = select(Property).where(Property.id == property_id)
         if include_relations:
             query = query.options(
@@ -267,6 +272,17 @@ class PropertyRepository:
         prop = Property(**kwargs)
         self.session.add(prop)
         self.session.flush()
+        # Record initial price history
+        if prop.price is not None:
+            from packages.storage.models import PropertyPriceHistory
+            price_history = PropertyPriceHistory(
+                property_id=prop.id,
+                price=prop.price,
+                price_change=None,
+                price_change_pct=None,
+            )
+            self.session.add(price_history)
+            self.session.flush()
         return prop
 
     def update(self, property_id: str, **kwargs) -> Property | None:
@@ -280,11 +296,27 @@ class PropertyRepository:
         if location_point is not None:
             kwargs["location_point"] = location_point
 
+        old_price = prop.price
         for key, value in kwargs.items():
             if value is not None and hasattr(prop, key):
                 setattr(prop, key, value)
         prop.updated_at = utc_now()
         self.session.flush()
+
+        # Record price history if price changed
+        new_price = prop.price
+        if new_price is not None and old_price is not None and new_price != old_price:
+            from packages.storage.models import PropertyPriceHistory
+            price_change = new_price - old_price
+            price_change_pct = (price_change / old_price) * 100 if old_price else None
+            price_history = PropertyPriceHistory(
+                property_id=prop.id,
+                price=new_price,
+                price_change=price_change,
+                price_change_pct=price_change_pct,
+            )
+            self.session.add(price_history)
+            self.session.flush()
         return prop
 
     def get_stats(
@@ -808,6 +840,79 @@ class LLMEnrichmentRepository:
 
 
 # ──────────────────────────────────────────────────────────────────────────────
+# BackendLogRepository
+# ──────────────────────────────────────────────────────────────────────────────
+
+class BackendLogRepository:
+    def __init__(self, session: Session):
+        self.session = session
+
+    def list_recent(
+        self,
+        *,
+        hours: int = 24,
+        limit: int = 100,
+        level: str | None = None,
+        event_type: str | None = None,
+    ) -> list[BackendLog]:
+        window_start = utc_now() - timedelta(hours=max(hours, 1))
+        query = select(BackendLog).where(BackendLog.created_at >= window_start)
+
+        if level:
+            query = query.where(BackendLog.level == level.upper())
+        if event_type:
+            query = query.where(BackendLog.event_type == event_type)
+
+        query = query.order_by(BackendLog.created_at.desc()).limit(limit)
+        return list(self.session.scalars(query))
+
+    def list_recent_errors(self, *, hours: int = 24, limit: int = 100) -> list[BackendLog]:
+        window_start = utc_now() - timedelta(hours=max(hours, 1))
+        query = (
+            select(BackendLog)
+            .where(BackendLog.created_at >= window_start)
+            .where(BackendLog.level.in_(["ERROR", "WARNING"]))
+            .order_by(BackendLog.created_at.desc())
+            .limit(limit)
+        )
+        return list(self.session.scalars(query))
+
+    def count_recent_errors(self, *, hours: int = 1) -> int:
+        window_start = utc_now() - timedelta(hours=max(hours, 1))
+        count_query = (
+            select(func.count(BackendLog.id))
+            .where(BackendLog.created_at >= window_start)
+            .where(BackendLog.level.in_(["ERROR", "WARNING"]))
+        )
+        return int(self.session.scalar(count_query) or 0)
+
+    def summary(self, *, hours: int = 24) -> dict:
+        window_start = utc_now() - timedelta(hours=max(hours, 1))
+
+        by_level_rows = self.session.execute(
+            select(BackendLog.level, func.count(BackendLog.id).label("total"))
+            .where(BackendLog.created_at >= window_start)
+            .group_by(BackendLog.level)
+        ).all()
+
+        by_event_rows = self.session.execute(
+            select(BackendLog.event_type, func.count(BackendLog.id).label("total"))
+            .where(BackendLog.created_at >= window_start)
+            .group_by(BackendLog.event_type)
+        ).all()
+
+        return {
+            "hours": max(hours, 1),
+            "total": sum(int(row.total or 0) for row in by_level_rows),
+            "by_level": [{"level": row.level, "count": int(row.total or 0)} for row in by_level_rows],
+            "by_event_type": [
+                {"event_type": row.event_type, "count": int(row.total or 0)}
+                for row in by_event_rows
+            ],
+        }
+
+
+# ──────────────────────────────────────────────────────────────────────────────
 # GrantProgramRepository
 # ──────────────────────────────────────────────────────────────────────────────
 
@@ -960,3 +1065,50 @@ class ConversationRepository:
 
         self.session.flush()
         return msg
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# OrganicSearchRunRepository
+# ──────────────────────────────────────────────────────────────────────────────
+
+class OrganicSearchRunRepository:
+    def __init__(self, session: Session):
+        self.session = session
+
+    def create(
+        self,
+        *,
+        status: str,
+        triggered_from: str,
+        options: dict,
+        steps: list,
+        error: str | None = None,
+    ) -> OrganicSearchRun:
+        run = OrganicSearchRun(
+            status=status,
+            triggered_from=triggered_from,
+            options=options,
+            steps=steps,
+            error=error,
+        )
+        self.session.add(run)
+        self.session.flush()
+        return run
+
+    def list_recent(self, limit: int = 20) -> list[OrganicSearchRun]:
+        query = (
+            select(OrganicSearchRun)
+            .order_by(OrganicSearchRun.created_at.desc())
+            .limit(limit)
+        )
+        return list(self.session.scalars(query))
+
+    def get_latest_for_session(self, *, session_id: str, triggered_from: str) -> OrganicSearchRun | None:
+        query = (
+            select(OrganicSearchRun)
+            .where(OrganicSearchRun.triggered_from == triggered_from)
+            .where(OrganicSearchRun.options["session_id"].astext == session_id)
+            .order_by(OrganicSearchRun.created_at.desc())
+            .limit(1)
+        )
+        return self.session.scalar(query)

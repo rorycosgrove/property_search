@@ -328,6 +328,53 @@ class Alert(Base):
 
 
 # ──────────────────────────────────────────────────────────────────────────────
+# OrganicSearchRun — execution log for full organic search triggers
+# ──────────────────────────────────────────────────────────────────────────────
+
+class OrganicSearchRun(Base):
+    __tablename__ = "organic_search_runs"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid)
+    status: Mapped[str] = mapped_column(String(32), nullable=False, index=True)
+    triggered_from: Mapped[str] = mapped_column(String(80), nullable=False, server_default="api")
+    options: Mapped[dict] = mapped_column(JSONB, default=dict, server_default="{}")
+    steps: Mapped[list] = mapped_column(JSONB, default=list, server_default="[]")
+    error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=_utcnow, server_default="now()"
+    )
+
+    __table_args__ = (
+        Index("ix_organic_search_runs_created_at", "created_at"),
+    )
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# BackendLog — operational events for settings diagnostics
+# ──────────────────────────────────────────────────────────────────────────────
+
+class BackendLog(Base):
+    __tablename__ = "backend_logs"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid)
+    level: Mapped[str] = mapped_column(String(16), nullable=False, index=True)
+    event_type: Mapped[str] = mapped_column(String(100), nullable=False, index=True)
+    component: Mapped[str] = mapped_column(String(100), nullable=False, default="worker", server_default="worker")
+    source_id: Mapped[str | None] = mapped_column(String(36), nullable=True, index=True)
+    message: Mapped[str] = mapped_column(Text, nullable=False)
+    # DB column is named 'context'; ORM uses context_json to avoid shadowing common names.
+    context_json: Mapped[dict] = mapped_column("context", JSONB, default=dict, server_default="{}")
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=_utcnow, server_default="now()", index=True
+    )
+
+    __table_args__ = (
+        Index("ix_backend_logs_event_created", "event_type", "created_at"),
+        Index("ix_backend_logs_level_created", "level", "created_at"),
+    )
+
+
+# ──────────────────────────────────────────────────────────────────────────────
 # LLMEnrichment — LLM analysis results for a property
 # ──────────────────────────────────────────────────────────────────────────────
 

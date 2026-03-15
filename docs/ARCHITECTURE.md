@@ -111,6 +111,7 @@ Next.js 14 frontend deployed on AWS Amplify. TypeScript, Tailwind CSS dark theme
 ```
 EventBridge (every 6h) → SQS (scrape queue)
   → Lambda worker: scrape_all_sources()
+    → discover_sources(auto_enable=false) to find/feed new candidates
     → fan-out: send_task("scrape", "scrape_source", {source_id}) per source
       → Lambda worker: scrape_source(source_id)
         → adapter.fetch_listings() → adapter.parse_listing()
@@ -118,6 +119,10 @@ EventBridge (every 6h) → SQS (scrape queue)
         → repository.upsert() (dedup via content_hash)
         → detect price changes → send_task("alert", "evaluate_alerts")
 ```
+
+Discovery policy: feeds discovered during scrape are tagged `auto_discovered` and remain
+`pending_approval` (disabled) by default. They are included in future scrape cycles only
+after explicit approval/enabling.
 
 ### Alert Pipeline
 ```

@@ -30,12 +30,31 @@ _ALERT_QUEUE_URL = os.environ.get("ALERT_QUEUE_URL", "")
 _sqs_client = None
 
 
+class QueueDispatchError(Exception):
+    """Raised when sending a task to a queue fails for non-config reasons."""
+
+    def __init__(self, queue_name: str, task_type: str, cause: Exception):
+        super().__init__(str(cause))
+        self.queue_name = queue_name
+        self.task_type = task_type
+        self.cause = cause
+
+
 def _get_sqs_client():
     global _sqs_client
     if _sqs_client is None:
         import boto3
+        from botocore.config import Config
 
-        _sqs_client = boto3.client("sqs", region_name=os.environ.get("AWS_REGION", "eu-west-1"))
+        _sqs_client = boto3.client(
+            "sqs",
+            region_name=os.environ.get("AWS_REGION", "eu-west-1"),
+            config=Config(
+                connect_timeout=2,
+                read_timeout=3,
+                retries={"max_attempts": 1},
+            ),
+        )
     return _sqs_client
 
 
@@ -112,6 +131,39 @@ def send_task(queue_name: str, task_type: str, payload: dict[str, Any] | None = 
         error=str(last_error),
     )
     raise Exception(f"Failed to send message after {MAX_RETRIES} attempts: {last_error}")
+
+
+def is_queue_unconfigured_error(exc: Exception) -> bool:
+    """Return True when dispatch failed because queue URL is not configured."""
+    if not isinstance(exc, ValueError):
+        return False
+    return "no queue url configured" in str(exc).lower()
+
+
+def dispatch_or_inline(
+    queue_name: str,
+    task_type: str,
+    payload: dict[str, Any],
+    inline_fn,
+) -> dict[str, Any]:
+    """Dispatch a task to queue, with inline fallback for queue misconfiguration only.
+
+    Unexpected dispatch/runtime errors are re-raised for caller-specific handling.
+    """
+    try:
+        task_id = send_task(queue_name, task_type, payload)
+        return {
+            "status": "dispatched",
+            "task_id": task_id,
+        }
+    except Exception as exc:
+        if not is_queue_unconfigured_error(exc):
+            raise QueueDispatchError(queue_name, task_type, exc) from exc
+        result = inline_fn(**payload)
+        return {
+            "status": "processed_inline",
+            "result": result,
+        }
 
 
 def _resolve_queue_url(queue_name: str) -> str:

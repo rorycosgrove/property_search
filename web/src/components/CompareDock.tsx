@@ -9,8 +9,11 @@ interface Props {
   onRankingModeChange: (mode: RankingMode) => void;
   onRemove: (propertyId: string) => void;
   onClear: () => void;
-  onAnalyze: () => void;
+  onRunAnalysis: () => void;
   loading: boolean;
+  canRunAnalysis: boolean;
+  analysisStale: boolean;
+  autoCompareTargetCount: number;
 }
 
 const MODE_LABELS: Record<RankingMode, string> = {
@@ -31,60 +34,78 @@ export default function CompareDock({
   onRankingModeChange,
   onRemove,
   onClear,
-  onAnalyze,
+  onRunAnalysis,
   loading,
+  canRunAnalysis,
+  analysisStale,
+  autoCompareTargetCount,
 }: Props) {
+  const slotsRemaining = Math.max(0, 5 - compared.length);
+  const canRun = canRunAnalysis && !loading;
+
   return (
-    <section className="border-t border-[var(--card-border)] ai-glass px-4 py-3 rise-in">
-      <div className="flex flex-wrap items-center justify-between gap-3 mb-3">
+    <section className="rise-in border-t border-[var(--card-border)] bg-[var(--card-bg)]/88 px-4 py-4">
+      <div className="mb-3 flex flex-wrap items-start justify-between gap-3">
         <div>
-          <h2 className="text-sm font-semibold tracking-wide">Decision Studio</h2>
-          <p className="text-xs text-[var(--muted)]">
-            {compared.length}/5 selected. Atlas AI will rank, explain trade-offs, and suggest next actions.
+          <p className="text-[11px] uppercase tracking-[0.16em] text-[var(--muted)]">Compare workspace</p>
+          <h2 className="text-base font-semibold tracking-tight">Comparison shortlist</h2>
+          <p className="mt-1 text-xs text-[var(--muted)]">
+            {compared.length}/5 selected, {slotsRemaining} slot{slotsRemaining === 1 ? '' : 's'} open.
           </p>
         </div>
 
-        <div className="flex flex-wrap gap-2 items-center">
-          <select
-            value={rankingMode}
-            onChange={(e) => onRankingModeChange(e.target.value as RankingMode)}
-            className="bg-[var(--background)] border border-[var(--card-border)] rounded px-2 py-1.5 text-xs"
-          >
-            {Object.entries(MODE_LABELS).map(([key, label]) => (
-              <option key={key} value={key}>
-                {label}
-              </option>
-            ))}
-          </select>
-
+        <div className="flex flex-wrap items-center gap-2">
+          <label className="text-[11px] text-[var(--muted)]">
+            <span className="mr-2">Ranking mode</span>
+            <select
+              value={rankingMode}
+              onChange={(e) => onRankingModeChange(e.target.value as RankingMode)}
+              className="rounded-full border border-[var(--card-border)] bg-[var(--background)] px-3 py-1.5 text-xs focus-ring"
+            >
+              {Object.entries(MODE_LABELS).map(([key, label]) => (
+                <option key={key} value={key}>
+                  {label}
+                </option>
+              ))}
+            </select>
+          </label>
           <button
-            onClick={onAnalyze}
-            disabled={loading || compared.length < 2}
-            className="px-3 py-1.5 text-xs font-semibold rounded bg-[var(--accent)] text-white hover:bg-[var(--accent-strong)] disabled:opacity-50"
+            onClick={onRunAnalysis}
+            disabled={!canRun}
+            className="rounded-full border border-[var(--accent)] bg-[var(--accent-soft)] px-3 py-1.5 text-xs text-[var(--accent-strong)] hover:bg-[var(--accent-soft-strong)] disabled:cursor-not-allowed disabled:opacity-50"
           >
-            {loading ? 'Running AI mission...' : 'Run AI decision analysis'}
+            {loading ? 'Running...' : analysisStale ? 'Re-run analysis' : 'Run analysis'}
           </button>
           <button
             onClick={onClear}
             disabled={compared.length === 0}
-            className="px-3 py-1.5 text-xs rounded border border-[var(--card-border)] hover:bg-[var(--card-border)] disabled:opacity-50"
+            className="rounded-full border border-[var(--card-border)] px-3 py-1.5 text-xs hover:bg-[var(--background)] disabled:opacity-50"
           >
-            Clear
+            Clear shortlist
           </button>
         </div>
       </div>
 
-      <p className="text-xs text-[var(--muted)] mb-3">{MODE_HINTS[rankingMode]}</p>
+      <p className="mb-1 text-sm text-[var(--muted)]">{MODE_HINTS[rankingMode]}</p>
+      <p className="mb-4 text-xs text-[var(--muted)]">
+        {loading
+          ? 'Atlas is running analysis for your current search context...'
+          : analysisStale
+            ? 'Search context changed. Re-run analysis to refresh the recommendation.'
+            : autoCompareTargetCount >= 2
+              ? `Ready to analyze top ${autoCompareTargetCount} homes in this search.`
+              : 'Analysis becomes available when at least 2 properties are available.'}
+      </p>
 
-      <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-5 gap-2">
+      <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 md:grid-cols-3 xl:grid-cols-4">
         {compared.map((property) => {
           const imageUrl = property.images?.[0]?.url;
           return (
             <article
               key={property.id}
-              className="rounded-md border border-[var(--card-border)] overflow-hidden bg-[var(--background)]"
+              className="overflow-hidden rounded-2xl border border-[var(--card-border)] bg-[var(--background)] shadow-[0_8px_22px_rgba(27,36,48,0.05)]"
             >
-              <div className="h-20 bg-neutral-900">
+              <div className="h-24 bg-neutral-900">
                 {imageUrl ? (
                   // eslint-disable-next-line @next/next/no-img-element
                   <img src={imageUrl} alt={property.title} className="w-full h-full object-cover" />
@@ -94,13 +115,13 @@ export default function CompareDock({
                   </div>
                 )}
               </div>
-              <div className="p-2">
+              <div className="p-3">
                 <p className="text-[11px] text-[var(--muted)] mb-1">{property.county || 'Unknown county'}</p>
-                <p className="text-xs font-semibold leading-tight line-clamp-2 min-h-[2rem]">{property.title}</p>
-                <p className="text-sm text-[var(--accent)] font-bold mt-1">{formatEur(property.price)}</p>
+                <p className="text-sm font-semibold leading-tight line-clamp-2 min-h-[2.4rem]">{property.title}</p>
+                <p className="text-base text-[var(--accent)] font-bold mt-1">{formatEur(property.price)}</p>
                 <button
                   onClick={() => onRemove(property.id)}
-                  className="text-[11px] text-[var(--danger)] mt-2 hover:opacity-80"
+                  className="mt-2 rounded-full border border-[var(--card-border)] px-2.5 py-1 text-[11px] text-[var(--danger)] hover:bg-[var(--card-bg)]"
                 >
                   Remove
                 </button>
@@ -112,9 +133,9 @@ export default function CompareDock({
         {Array.from({ length: Math.max(0, 5 - compared.length) }).map((_, idx) => (
           <div
             key={`empty-${idx}`}
-            className="rounded-md border border-dashed border-[var(--card-border)] h-[132px] flex items-center justify-center text-xs text-[var(--muted)]"
+            className="flex h-[148px] items-center justify-center rounded-2xl border border-dashed border-[var(--card-border)] text-xs text-[var(--muted)]"
           >
-            Add property
+            Select home from shortlist
           </div>
         ))}
       </div>
