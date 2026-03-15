@@ -5,7 +5,11 @@ from __future__ import annotations
 from fastapi import APIRouter, Depends, Query
 from sqlalchemy.orm import Session
 
-from packages.shared.schemas import SoldPropertyFilters
+from packages.sold.service import (
+    list_sold_payload,
+    nearby_sold_payload,
+    sold_stats_payload,
+)
 from packages.storage.database import get_db_session
 from packages.storage.repositories import SoldPropertyRepository
 
@@ -29,44 +33,20 @@ def list_sold(
     db: Session = Depends(get_db_session),
 ):
     """List sold properties (PPR data) with filtering and pagination."""
-    from datetime import date as date_type
-
     repo = SoldPropertyRepository(db)
-    filters = SoldPropertyFilters(
+    return list_sold_payload(
+        repo=repo,
+        page=page,
+        size=size,
         county=county,
         min_price=min_price,
         max_price=max_price,
-        date_from=date_type(min_year, 1, 1) if min_year else None,
-        date_to=date_type(max_year, 12, 31) if max_year else None,
+        min_year=min_year,
+        max_year=max_year,
         lat=lat,
         lng=lng,
         radius_km=radius_km,
-        page=page,
-        per_page=size,
     )
-    items, total = repo.list_sold(filters)
-
-    return {
-        "items": [
-            {
-                "id": str(s.id),
-                "address": s.address,
-                "county": s.county,
-                "price": float(s.price) if s.price else None,
-                "sale_date": s.sale_date.isoformat() if s.sale_date else None,
-                "is_new": s.is_new,
-                "is_full_market_price": s.is_full_market_price,
-                "property_size_description": s.property_size_description,
-                "latitude": s.latitude,
-                "longitude": s.longitude,
-            }
-            for s in items
-        ],
-        "total": total,
-        "page": page,
-        "per_page": size,
-        "pages": -(-total // size),
-    }
 
 
 @router.get("/nearby")
@@ -79,19 +59,7 @@ def get_nearby_sold(
 ):
     """Get sold properties near a location."""
     repo = SoldPropertyRepository(db)
-    items = repo.get_nearby_sold(lat=lat, lng=lng, radius_km=radius_km, limit=limit)
-    return [
-        {
-            "id": str(s.id),
-            "address": s.address,
-            "county": s.county,
-            "price": float(s.price) if s.price else None,
-            "sale_date": s.sale_date.isoformat() if s.sale_date else None,
-            "latitude": s.latitude,
-            "longitude": s.longitude,
-        }
-        for s in items
-    ]
+    return nearby_sold_payload(repo=repo, lat=lat, lng=lng, radius_km=radius_km, limit=limit)
 
 
 @router.get("/stats")
@@ -102,4 +70,4 @@ def get_sold_stats(
 ):
     """Get sold property statistics grouped by time period."""
     repo = SoldPropertyRepository(db)
-    return repo.get_stats_by_county(county=county, group_by=group_by)
+    return sold_stats_payload(repo=repo, county=county, group_by=group_by)
