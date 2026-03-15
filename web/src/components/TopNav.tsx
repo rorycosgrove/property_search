@@ -83,7 +83,7 @@ export default function TopNav() {
                 key={item.href}
                 href={item.href}
                 className={[
-                  'px-3 py-1.5 rounded-full text-sm border transition-colors focus:outline-none focus:ring-2 focus:ring-cyan-700',
+                  'px-3 py-1.5 rounded-full text-sm border transition-colors focus:outline-none focus:ring-2 focus:ring-[var(--accent)]',
                   active
                     ? 'border-[var(--accent)] bg-[var(--accent-soft)] text-[var(--accent-strong)]'
                     : 'border-transparent text-[var(--muted)] hover:text-[var(--foreground)] hover:border-[var(--card-border)]',
@@ -99,7 +99,7 @@ export default function TopNav() {
         <button
           type="button"
           onClick={() => setMobileOpen((prev) => !prev)}
-          className="lg:hidden px-3 py-1.5 rounded-md border border-[var(--card-border)] text-xs font-semibold hover:bg-[var(--background)] focus:outline-none focus:ring-2 focus:ring-cyan-700"
+          className="lg:hidden px-3 py-1.5 rounded-md border border-[var(--card-border)] text-xs font-semibold hover:bg-[var(--background)] focus:outline-none focus:ring-2 focus:ring-[var(--accent)]"
           aria-expanded={mobileOpen}
           aria-label="Toggle navigation menu"
         >
@@ -145,7 +145,7 @@ export default function TopNav() {
                 onClick={() => setMobileOpen(false)}
                 className="px-3 py-2 rounded-md text-sm border border-[var(--accent)] bg-[var(--accent-soft)] text-[var(--accent-strong)]"
               >
-                Open Atlas AI Query
+                Open Atlas AI query
               </Link>
               {allLinks.map((item) => {
                 const active = isActiveRoute(item.href);
@@ -155,9 +155,9 @@ export default function TopNav() {
                     href={item.href}
                     onClick={() => setMobileOpen(false)}
                     className={[
-                      'px-3 py-2 rounded-md text-sm border transition-colors focus:outline-none focus:ring-2 focus:ring-cyan-700 flex items-center justify-between',
+                      'px-3 py-2 rounded-md text-sm border transition-colors focus:outline-none focus:ring-2 focus:ring-[var(--accent)] flex items-center justify-between',
                       active
-                        ? 'border-cyan-800 bg-cyan-800 text-white'
+                        ? 'border-[var(--accent)] bg-[var(--accent)] text-white'
                         : 'border-[var(--card-border)] text-[var(--muted)] hover:text-[var(--foreground)] hover:bg-[var(--background)]',
                     ].join(' ')}
                     aria-current={active ? 'page' : undefined}
