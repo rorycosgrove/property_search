@@ -396,6 +396,7 @@ class HealthResponse(BaseModel):
     database: str
     bedrock: str
     worker: str | None = None
+    backend_errors_last_hour: int | None = None
 
 
 class AdapterInfo(BaseModel):

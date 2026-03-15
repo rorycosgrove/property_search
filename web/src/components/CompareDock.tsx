@@ -54,7 +54,7 @@ export default function CompareDock({
           <button
             onClick={onRunAnalysis}
             disabled={!canRunAnalysis || loading}
-            className="px-3 py-1.5 text-xs rounded border border-[var(--accent)] bg-cyan-900/10 text-[var(--accent-strong)] hover:bg-cyan-900/15 disabled:opacity-50 disabled:cursor-not-allowed"
+            className="px-3 py-1.5 text-xs rounded border border-[var(--accent)] bg-[var(--accent-soft)] text-[var(--accent-strong)] hover:bg-[var(--accent-soft-strong)] disabled:opacity-50 disabled:cursor-not-allowed"
           >
             {loading ? 'Running...' : analysisStale ? 'Re-run analysis' : 'Run analysis'}
           </button>

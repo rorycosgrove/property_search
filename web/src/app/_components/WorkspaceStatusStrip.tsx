@@ -39,7 +39,7 @@ export default function WorkspaceStatusStrip({
         <button
           type="button"
           onClick={onUseContext}
-          className="ml-auto px-3 py-1.5 rounded-full border border-[var(--accent)] bg-cyan-900/10 text-[var(--accent-strong)] hover:bg-cyan-900/15 text-xs"
+          className="ml-auto px-3 py-1.5 rounded-full border border-[var(--accent)] bg-[var(--accent-soft)] text-[var(--accent-strong)] hover:bg-[var(--accent-soft-strong)] text-xs"
         >
           Add context to query
         </button>

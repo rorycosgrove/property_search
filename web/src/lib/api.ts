@@ -394,7 +394,7 @@ export async function getAdapters(): Promise<AdapterInfo[]> {
 export async function triggerScrape(
   sourceId: string,
   options?: { force?: boolean },
-): Promise<{ task_id?: string; status: string; result?: Record<string, unknown> }> {
+): Promise<{ task_id?: string; status: string; result?: Record<string, unknown>; timestamp?: string; force?: boolean }> {
   const params = new URLSearchParams();
   if (options?.force) {
     params.set('force', 'true');
@@ -403,7 +403,7 @@ export async function triggerScrape(
   const path = suffix
     ? `/api/v1/sources/${sourceId}/trigger?${suffix}`
     : `/api/v1/sources/${sourceId}/trigger`;
-  return fetchJSON<{ task_id?: string; status: string; result?: Record<string, unknown> }>(
+  return fetchJSON<{ task_id?: string; status: string; result?: Record<string, unknown>; timestamp?: string; force?: boolean }>(
     path,
     { method: 'POST' },
   );
@@ -412,8 +412,8 @@ export async function triggerScrape(
 export interface SourceDiscoveryRunResult {
   run_at?: string;
   created: Source[];
-  existing: Array<{ id: string; url: string; name: string }>;
-  skipped_invalid: Array<{ url?: string; reason: string }>;
+  existing: Array<{ id: string; url: string; name: string; timestamp?: string }>;
+  skipped_invalid: Array<{ url?: string; reason: string; timestamp?: string }>;
   auto_enable: boolean;
 }
 
@@ -437,7 +437,7 @@ export interface DiscoveryDuringScrapeSummary {
 }
 
 export async function discoverSourcesAuto(
-  autoEnable = true,
+  autoEnable = false,
   limit = 25,
 ): Promise<SourceDiscoveryRunResult> {
   return fetchJSON<SourceDiscoveryRunResult>(
@@ -457,6 +457,7 @@ export async function approveDiscoveredSource(sourceId: string): Promise<Source>
 export interface OrganicSearchStepResult {
   step: string;
   status: 'dispatched' | 'processed_inline';
+  timestamp?: string;
   task_id?: string;
   result?: Record<string, unknown>;
 }
@@ -465,6 +466,7 @@ export interface OrganicSearchRunResult {
   run_id?: string;
   status: 'dispatched' | 'processed_inline' | 'mixed';
   steps: OrganicSearchStepResult[];
+  created_at?: string;
 }
 
 export interface OrganicSearchHistoryItem {
@@ -567,6 +569,30 @@ export interface BackendLogEntry {
   source_id?: string;
   message: string;
   context: Record<string, unknown>;
+}
+
+export async function getBackendLogs(options?: {
+  hours?: number;
+  limit?: number;
+  level?: string;
+  eventType?: string;
+}): Promise<BackendLogEntry[]> {
+  const params = new URLSearchParams();
+  if (options?.hours !== undefined) {
+    params.set('hours', String(options.hours));
+  }
+  if (options?.limit !== undefined) {
+    params.set('limit', String(options.limit));
+  }
+  if (options?.level) {
+    params.set('level', options.level);
+  }
+  if (options?.eventType) {
+    params.set('event_type', options.eventType);
+  }
+  const suffix = params.toString();
+  const path = suffix ? `/api/v1/admin/backend-logs?${suffix}` : '/api/v1/admin/backend-logs';
+  return fetchJSON<BackendLogEntry[]>(path);
 }
 
 export async function getBackendFeedActivity(limit = 10): Promise<BackendFeedActivity[]> {

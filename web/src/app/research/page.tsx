@@ -34,7 +34,7 @@ export default function ResearchPage() {
         <div className="mt-4">
           <Link
             href="/"
-            className="inline-flex px-4 py-2 rounded-full border border-[var(--accent)] bg-cyan-900/10 text-[var(--accent-strong)] hover:bg-cyan-900/15 text-sm"
+            className="inline-flex px-4 py-2 rounded-full border border-[var(--accent)] bg-[var(--accent-soft)] text-[var(--accent-strong)] hover:bg-[var(--accent-soft-strong)] text-sm"
           >
             Continue to Decide workspace
           </Link>

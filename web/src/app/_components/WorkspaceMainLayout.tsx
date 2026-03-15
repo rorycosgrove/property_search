@@ -21,6 +21,7 @@ interface CompareErrorState {
 
 interface Props {
   properties: Property[];
+  mapProperties: Property[];
   total: number;
   loading: boolean;
   comparedProperties: Property[];
@@ -56,6 +57,7 @@ interface Props {
 
 export default function WorkspaceMainLayout({
   properties,
+  mapProperties,
   total,
   loading,
   comparedProperties,
@@ -113,7 +115,7 @@ export default function WorkspaceMainLayout({
     <div className="relative flex flex-1 min-h-0 overflow-hidden bg-[var(--background)]/40">
       <div className="hidden lg:flex flex-1 min-h-0">
         <div className="relative flex-1 min-w-0 bg-[var(--card-bg)]/35 border-r border-[var(--card-border)]">
-          <PropertyMap properties={properties} />
+          <PropertyMap properties={mapProperties} />
         </div>
 
         <aside
@@ -144,7 +146,7 @@ export default function WorkspaceMainLayout({
                     onClick={() => setDesktopPanel('controls')}
                     className={[
                       'px-2 py-1.5 rounded-md border transition-colors',
-                      desktopPanel === 'controls' ? 'border-[var(--accent)] bg-cyan-900/10 text-[var(--accent-strong)]' : 'border-[var(--card-border)] hover:bg-[var(--background)]',
+                      desktopPanel === 'controls' ? 'border-[var(--accent)] bg-[var(--accent-soft)] text-[var(--accent-strong)]' : 'border-[var(--card-border)] hover:bg-[var(--background)]',
                     ].join(' ')}
                   >
                     Controls
@@ -154,7 +156,7 @@ export default function WorkspaceMainLayout({
                     onClick={() => setDesktopPanel('feed')}
                     className={[
                       'px-2 py-1.5 rounded-md border transition-colors',
-                      desktopPanel === 'feed' ? 'border-[var(--accent)] bg-cyan-900/10 text-[var(--accent-strong)]' : 'border-[var(--card-border)] hover:bg-[var(--background)]',
+                      desktopPanel === 'feed' ? 'border-[var(--accent)] bg-[var(--accent-soft)] text-[var(--accent-strong)]' : 'border-[var(--card-border)] hover:bg-[var(--background)]',
                     ].join(' ')}
                   >
                     Shortlist
@@ -164,7 +166,7 @@ export default function WorkspaceMainLayout({
                     onClick={() => setDesktopPanel('compare')}
                     className={[
                       'px-2 py-1.5 rounded-md border transition-colors',
-                      desktopPanel === 'compare' ? 'border-[var(--accent)] bg-cyan-900/10 text-[var(--accent-strong)]' : 'border-[var(--card-border)] hover:bg-[var(--background)]',
+                      desktopPanel === 'compare' ? 'border-[var(--accent)] bg-[var(--accent-soft)] text-[var(--accent-strong)]' : 'border-[var(--card-border)] hover:bg-[var(--background)]',
                     ].join(' ')}
                   >
                     Compare
@@ -174,7 +176,7 @@ export default function WorkspaceMainLayout({
                     onClick={() => setDesktopPanel('analysis')}
                     className={[
                       'px-2 py-1.5 rounded-md border transition-colors',
-                      desktopPanel === 'analysis' ? 'border-[var(--accent)] bg-cyan-900/10 text-[var(--accent-strong)]' : 'border-[var(--card-border)] hover:bg-[var(--background)]',
+                      desktopPanel === 'analysis' ? 'border-[var(--accent)] bg-[var(--accent-soft)] text-[var(--accent-strong)]' : 'border-[var(--card-border)] hover:bg-[var(--background)]',
                     ].join(' ')}
                   >
                     AI Brief
@@ -184,7 +186,7 @@ export default function WorkspaceMainLayout({
                     onClick={() => setDesktopPanel('detail')}
                     className={[
                       'px-2 py-1.5 rounded-md border transition-colors',
-                      desktopPanel === 'detail' ? 'border-[var(--accent)] bg-cyan-900/10 text-[var(--accent-strong)]' : 'border-[var(--card-border)] hover:bg-[var(--background)]',
+                      desktopPanel === 'detail' ? 'border-[var(--accent)] bg-[var(--accent-soft)] text-[var(--accent-strong)]' : 'border-[var(--card-border)] hover:bg-[var(--background)]',
                     ].join(' ')}
                     disabled={!detailPanelProperty}
                   >
@@ -324,7 +326,7 @@ export default function WorkspaceMainLayout({
 
       <div className="flex-1 flex flex-col min-h-0 lg:hidden">
         <div className="relative flex-1 min-h-0 bg-[var(--card-bg)]/35">
-          <PropertyMap properties={properties} />
+          <PropertyMap properties={mapProperties} />
 
           <div className="lg:hidden absolute bottom-3 left-1/2 -translate-x-1/2 z-[450] flex items-center gap-1 rounded-full border border-[var(--card-border)] bg-[var(--card-bg)]/95 px-2 py-1 backdrop-blur-md shadow-lg">
             <button

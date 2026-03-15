@@ -1,6 +1,6 @@
 # Quick Start Guide
 
-Get the Irish Property Research Dashboard running on AWS in under 10 minutes.
+Get the Irish Property Research Dashboard running locally or on AWS with a practical step-by-step path.
 
 ## Option A: Deploy to AWS (Recommended)
 
@@ -9,6 +9,7 @@ Get the Irish Property Research Dashboard running on AWS in under 10 minutes.
 - **AWS CLI** configured with credentials (`aws configure`)
 - **Node.js 20+**
 - **Python 3.12+**
+- **uv** package manager
 - AWS account with Bedrock model access enabled in your region
 
 ### One-Command Deploy
@@ -90,8 +91,9 @@ curl -X POST https://<api-url>/api/v1/sources \
 - **Docker** (for PostgreSQL)
 - **Python 3.12+**
 - **Node.js 20+**
+- **uv** package manager
 
-### Step 1: Set Up
+### Step 1: First-Time Local Setup
 
 ```bash
 git clone <repo-url> property_search
@@ -106,6 +108,9 @@ make up
 # Run migrations and seed data
 make migrate
 python scripts/seed.py
+
+# Optional: install frontend deps once
+cd web && npm install && cd ..
 ```
 
 ### Step 2: Start Services
@@ -115,6 +120,12 @@ Recommended (Windows, resilient):
 ```bash
 start-all.cmd
 status-local.cmd
+```
+
+Repeat-start path after first-time setup:
+
+```cmd
+start-all.cmd
 ```
 
 ```bash
@@ -154,11 +165,12 @@ Navigate to **http://localhost:3000**
 
 After starting services, verify:
 
-1. API health: `http://localhost:8000/health`
+1. API health: `http://localhost:8000/health` (or selected API port from `.dev-runtime/api-port.txt`)
 2. LLM health: `http://localhost:8000/api/v1/llm/health`
 3. Frontend app: `http://localhost:3000`
+4. Optional focused reliability checks: `make test-cov-plan`
 
-If LLM is disabled (`llm_enabled=false`), `/api/v1/llm/health` returns `{"reason":"llm_disabled"}` and enrichment dispatch endpoints return `503`.
+If LLM is disabled (`llm_enabled=false`), `/api/v1/llm/health` reports disabled state and enrichment dispatch endpoints return `503`.
 
 ### Enable LLM Locally
 
@@ -170,9 +182,9 @@ If LLM is disabled (`llm_enabled=false`), `/api/v1/llm/health` returns `{"reason
 3. Verify: `GET /api/v1/llm/health` returns `{"enabled":true,...}`.
 
 Notes:
-- Queue-backed enrichment dispatch (`POST /api/v1/llm/enrich/{property_id}`) also requires `LLM_QUEUE_URL` and AWS credentials.
-- Without `LLM_QUEUE_URL`, enrichment dispatch returns `503` with an explicit queue configuration message.
-- Ensure `LLM_QUEUE_URL` is present in the API process environment when launching `uvicorn` (for example, exported in your shell session before start).
+- Queue-backed enrichment dispatch (`POST /api/v1/llm/enrich/{property_id}`) requires AWS credentials.
+- If `LLM_QUEUE_URL` is not configured, enrich endpoints fall back to inline processing for queue-misconfiguration cases.
+- Unexpected queue runtime failures return `503` with structured dispatch-failure details.
 
 ## What Happens Automatically
 

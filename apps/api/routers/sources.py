@@ -8,9 +8,22 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
 
 from packages.shared.schemas import SourceCreate, SourceUpdate
-from packages.sources.discovery import canonicalize_source_url, load_discovery_candidates
+from packages.sources.discovery import load_discovery_candidates
 from packages.sources.registry import get_adapter_names, list_adapters
-from packages.sources.service import validate_discovery_candidate, validate_source_config
+from packages.sources.service import (
+    SourceConfigValidationError,
+    SourceDispatchFailedError,
+    SourceNotFoundError,
+    approve_discovered_source as approve_discovered_source_service,
+    create_source as create_source_service,
+    discover_sources_auto as discover_sources_auto_service,
+    list_pending_discovered_sources as list_pending_discovered_sources_service,
+    organic_run_to_dict,
+    source_to_dict,
+    trigger_full_organic_search as trigger_full_organic_search_service,
+    trigger_source_scrape as trigger_source_scrape_service,
+    update_source as update_source_service,
+)
 from packages.storage.database import get_db_session
 from packages.storage.models import BackendLog
 from packages.storage.repositories import OrganicSearchRunRepository, SourceRepository
@@ -42,66 +55,33 @@ def _record_backend_event(
             context_json=context or {},
         )
     )
-
-
-def _validate_source_config(adapter_name: str, config: dict | None) -> None:
-    errors = validate_source_config(adapter_name, config)
-    if errors:
-        if len(errors) == 1 and errors[0] == f"unknown adapter: {adapter_name}":
-            raise HTTPException(400, f"Unknown adapter: {adapter_name}")
-        raise HTTPException(
-            status_code=400,
-            detail={
-                "code": "invalid_source_config",
-                "adapter_name": adapter_name,
-                "errors": errors,
-            },
-        )
-
-def _merge_tags(existing: list[str] | None, additions: list[str]) -> list[str]:
-    seen: set[str] = set()
-    merged: list[str] = []
-    for value in (existing or []) + additions:
-        if value and value not in seen:
-            seen.add(value)
-            merged.append(value)
-    return merged
-
-
 @router.get("")
 def list_sources(db: Session = Depends(get_db_session)):
     """List all configured sources."""
     repo = SourceRepository(db)
     sources = repo.get_all()
-    return [_to_dict(s) for s in sources]
+    return [source_to_dict(source) for source in sources]
 
 
 @router.post("", status_code=201)
 def create_source(data: SourceCreate, db: Session = Depends(get_db_session)):
     """Create a new source configuration."""
     repo = SourceRepository(db)
-
-    # Validate adapter name
-    if data.adapter_name not in get_adapter_names():
-        raise HTTPException(400, f"Unknown adapter: {data.adapter_name}")
-
-    _validate_source_config(data.adapter_name, data.config)
-
-    existing = repo.get_by_url(data.url)
-    if existing:
-        raise HTTPException(409, "Source with this URL already exists")
-
-    source = repo.create(
-        name=data.name,
-        url=data.url,
-        adapter_type=data.adapter_type,
-        adapter_name=data.adapter_name,
-        config=data.config or {},
-        enabled=data.enabled,
-        poll_interval_seconds=data.poll_interval_seconds,
-        tags=data.tags or [],
-    )
-    return _to_dict(source)
+    try:
+        return create_source_service(repo=repo, data=data, adapter_names=set(get_adapter_names()))
+    except SourceConfigValidationError as exc:
+        if len(exc.errors) == 1 and exc.errors[0] == f"unknown adapter: {data.adapter_name}":
+            raise HTTPException(400, f"Unknown adapter: {data.adapter_name}") from exc
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "code": "invalid_source_config",
+                "adapter_name": exc.adapter_name,
+                "errors": exc.errors,
+            },
+        ) from exc
+    except ValueError as exc:
+        raise HTTPException(409, str(exc)) from exc
 
 
 @router.get("/adapters")
@@ -117,22 +97,28 @@ def get_source(source_id: str, db: Session = Depends(get_db_session)):
     source = repo.get_by_id(source_id)
     if not source:
         raise HTTPException(404, "Source not found")
-    return _to_dict(source)
+    return source_to_dict(source)
 
 
 @router.patch("/{source_id}")
 def update_source(source_id: str, data: SourceUpdate, db: Session = Depends(get_db_session)):
     """Update a source configuration."""
     repo = SourceRepository(db)
-    source = repo.get_by_id(source_id)
-    if not source:
-        raise HTTPException(404, "Source not found")
-
-    updates = data.model_dump(exclude_unset=True)
-    if "config" in updates:
-        _validate_source_config(source.adapter_name, updates.get("config") or {})
-    updated = repo.update(source_id, **updates)
-    return _to_dict(updated)
+    try:
+        return update_source_service(repo=repo, source_id=source_id, data=data)
+    except SourceNotFoundError as exc:
+        raise HTTPException(404, "Source not found") from exc
+    except SourceConfigValidationError as exc:
+        if len(exc.errors) == 1 and exc.errors[0] == f"unknown adapter: {exc.adapter_name}":
+            raise HTTPException(400, f"Unknown adapter: {exc.adapter_name}") from exc
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "code": "invalid_source_config",
+                "adapter_name": exc.adapter_name,
+                "errors": exc.errors,
+            },
+        ) from exc
 
 
 @router.delete("/{source_id}", status_code=204)
@@ -152,35 +138,23 @@ def trigger_scrape(
 ):
     """Manually trigger a scrape for a source."""
     repo = SourceRepository(db)
-    source = repo.get_by_id(source_id)
-    if not source:
-        raise HTTPException(404, "Source not found")
-
-    from apps.worker.tasks import scrape_source
-    timestamp = _now_iso()
-
     try:
-        dispatch_result = dispatch_or_inline(
-            "scrape",
-            "scrape_source",
-            {"source_id": source_id, "force": force},
-            scrape_source,
-        )
-        _record_backend_event(
-            db,
-            event_type="source_scrape_triggered",
-            message="Manual source scrape triggered",
+        return trigger_source_scrape_service(
+            repo=repo,
             source_id=source_id,
-            context={"force": force, "status": dispatch_result.get("status"), "timestamp": timestamp},
+            force=force,
+            now_iso=_now_iso,
+            record_event=lambda **kwargs: _record_backend_event(db, **kwargs),
         )
-        return {**dispatch_result, "force": force, "timestamp": timestamp}
-    except QueueDispatchError as exc:
+    except SourceNotFoundError as exc:
+        raise HTTPException(404, "Source not found") from exc
+    except SourceDispatchFailedError as exc:
         raise HTTPException(
             status_code=503,
             detail={
-                "code": "scrape_dispatch_failed",
-                "message": "Failed to dispatch scrape task to queue.",
-                "error": str(exc)[:300],
+                "code": exc.code,
+                "message": exc.message,
+                "error": exc.error,
             },
         ) from exc
 
@@ -200,81 +174,26 @@ def trigger_full_organic_search(
     2) evaluate_alerts (optional)
     3) enrich_batch_llm (optional)
     """
-    from apps.worker.tasks import enrich_batch_llm, evaluate_alerts, scrape_all_sources
-
-    steps: list[dict] = []
     run_repo = OrganicSearchRunRepository(db)
-
-    def _dispatch_or_inline(queue_type: str, task_type: str, payload: dict, inline_fn):
-        timestamp = _now_iso()
-        try:
-            dispatch_result = dispatch_or_inline(queue_type, task_type, payload, inline_fn)
-            return {
-                "step": task_type,
-                "timestamp": timestamp,
-                **dispatch_result,
-            }
-        except QueueDispatchError as exc:
-            raise HTTPException(
-                status_code=503,
-                detail={
-                    "code": "pipeline_dispatch_failed",
-                    "message": f"Failed to dispatch task '{task_type}' to queue.",
-                    "task_type": task_type,
-                    "error": str(exc)[:300],
-                },
-            ) from exc
-
-    steps.append(_dispatch_or_inline("scrape", "scrape_all_sources", {"force": force}, scrape_all_sources))
-
-    if run_alerts:
-        steps.append(_dispatch_or_inline("alert", "evaluate_alerts", {}, evaluate_alerts))
-
-    if run_llm_batch:
-        steps.append(_dispatch_or_inline("llm", "enrich_batch_llm", {"limit": llm_limit}, enrich_batch_llm))
-
-    statuses = {s["status"] for s in steps}
-    if statuses == {"dispatched"}:
-        status = "dispatched"
-    elif statuses == {"processed_inline"}:
-        status = "processed_inline"
-    else:
-        status = "mixed"
-
-    run = run_repo.create(
-        status=status,
-        triggered_from="api_sources_trigger_all",
-        options={
-            "force": force,
-            "run_alerts": run_alerts,
-            "run_llm_batch": run_llm_batch,
-            "llm_limit": llm_limit,
-        },
-        steps=steps,
-    )
-    _record_backend_event(
-        db,
-        event_type="organic_search_triggered",
-        message="Full organic search triggered",
-        context={
-            "status": status,
-            "steps": steps,
-            "options": {
-                "force": force,
-                "run_alerts": run_alerts,
-                "run_llm_batch": run_llm_batch,
-                "llm_limit": llm_limit,
-            },
-            "timestamp": _now_iso(),
-        },
-    )
-
-    return {
-        "run_id": str(run.id),
-        "status": status,
-        "steps": steps,
-        "created_at": run.created_at.isoformat() if run.created_at else None,
-    }
+    try:
+        return trigger_full_organic_search_service(
+            run_repo=run_repo,
+            force=force,
+            run_alerts=run_alerts,
+            run_llm_batch=run_llm_batch,
+            llm_limit=llm_limit,
+            now_iso=_now_iso,
+            record_event=lambda **kwargs: _record_backend_event(db, **kwargs),
+        )
+    except SourceDispatchFailedError as exc:
+        detail = {
+            "code": exc.code,
+            "message": exc.message,
+            "error": exc.error,
+        }
+        if exc.task_type:
+            detail["task_type"] = exc.task_type
+        raise HTTPException(status_code=503, detail=detail) from exc
 
 
 @router.post("/discover-auto")
@@ -288,108 +207,37 @@ def discover_sources_auto(
     By default discovered sources are created disabled with `pending_approval` tag.
     """
     repo = SourceRepository(db)
-    adapter_names = set(get_adapter_names())
-    created = []
-    existing = []
-    skipped_invalid = []
-    timestamp = _now_iso()
-    existing_sources = repo.get_all(enabled_only=False)
-    existing_by_canonical = {
-        canonicalize_source_url(str(s.url or "")): s
-        for s in existing_sources
-        if canonicalize_source_url(str(s.url or ""))
-    }
-
-    for candidate in load_discovery_candidates()[:limit]:
-        validated, reason, errors = validate_discovery_candidate(candidate, adapter_names=adapter_names)
-        if not validated:
-            skipped_invalid.append(
-                {
-                    "url": candidate.get("url"),
-                    "reason": reason,
-                    **({"errors": errors} if errors else {}),
-                    "timestamp": timestamp,
-                }
-            )
-            continue
-
-        current = existing_by_canonical.get(validated.canonical_url)
-        if current:
-            existing.append({"id": str(current.id), "url": current.url, "name": current.name, "timestamp": timestamp})
-            continue
-
-        tags = _merge_tags(
-            validated.tags,
-            ["auto_discovered"] + ([] if auto_enable else ["pending_approval"]),
-        )
-        source = repo.create(
-            name=validated.name,
-            url=validated.url,
-            adapter_type=validated.adapter_type,
-            adapter_name=validated.adapter_name,
-            config=validated.config,
-            enabled=auto_enable,
-            poll_interval_seconds=validated.poll_interval_seconds,
-            tags=tags,
-        )
-        existing_by_canonical[validated.canonical_url] = source
-        created.append(_to_dict(source))
-
-    _record_backend_event(
-        db,
-        event_type="source_discovery_manual_complete",
-        message="Manual source discovery completed",
-        context={
-            "created": len(created),
-            "existing": len(existing),
-            "skipped_invalid": len(skipped_invalid),
-            "auto_enable": auto_enable,
-            "limit": limit,
-            "timestamp": timestamp,
-        },
+    return discover_sources_auto_service(
+        repo=repo,
+        auto_enable=auto_enable,
+        limit=limit,
+        adapter_names=set(get_adapter_names()),
+        candidate_loader=load_discovery_candidates,
+        now_iso=_now_iso,
+        record_event=lambda **kwargs: _record_backend_event(db, **kwargs),
     )
-
-    return {
-        "run_at": timestamp,
-        "created": created,
-        "existing": existing,
-        "skipped_invalid": skipped_invalid,
-        "auto_enable": auto_enable,
-    }
 
 
 @router.get("/discovery/pending")
 def list_pending_discovered_sources(db: Session = Depends(get_db_session)):
     """List auto-discovered sources awaiting manual approval."""
     repo = SourceRepository(db)
-    pending = [
-        s for s in repo.get_all() if isinstance(s.tags, list) and "pending_approval" in s.tags
-    ]
-    return [_to_dict(s) for s in pending]
+    return list_pending_discovered_sources_service(repo=repo)
 
 
 @router.post("/{source_id}/approve-discovered")
 def approve_discovered_source(source_id: str, db: Session = Depends(get_db_session)):
     """Approve a pending auto-discovered source and enable it."""
     repo = SourceRepository(db)
-    source = repo.get_by_id(source_id)
-    if not source:
-        raise HTTPException(404, "Source not found")
-
-    if not isinstance(source.tags, list):
-        source.tags = []
-
-    source.tags = [tag for tag in source.tags if tag != "pending_approval"]
-    source.enabled = True
-    updated = repo.update(source_id, tags=source.tags, enabled=True)
-    _record_backend_event(
-        db,
-        event_type="source_discovered_approved",
-        message="Discovered source approved",
-        source_id=source_id,
-        context={"timestamp": _now_iso(), "source_name": getattr(updated, "name", None)},
-    )
-    return _to_dict(updated)
+    try:
+        return approve_discovered_source_service(
+            repo=repo,
+            source_id=source_id,
+            now_iso=_now_iso,
+            record_event=lambda **kwargs: _record_backend_event(db, **kwargs),
+        )
+    except SourceNotFoundError as exc:
+        raise HTTPException(404, "Source not found") from exc
 
 
 @router.get("/trigger-all/history")
@@ -400,40 +248,7 @@ def list_full_organic_search_history(
     """List recent full organic search trigger runs."""
     run_repo = OrganicSearchRunRepository(db)
     runs = run_repo.list_recent(limit=limit)
-    return [_organic_run_to_dict(r) for r in runs]
-
-
-def _to_dict(source) -> dict:
-    return {
-        "id": str(source.id),
-        "name": source.name,
-        "url": source.url,
-        "adapter_type": source.adapter_type,
-        "adapter_name": source.adapter_name,
-        "config": source.config,
-        "enabled": source.enabled,
-        "poll_interval_seconds": source.poll_interval_seconds,
-        "tags": source.tags,
-        "last_polled_at": source.last_polled_at.isoformat() if source.last_polled_at else None,
-        "last_success_at": source.last_success_at.isoformat() if source.last_success_at else None,
-        "last_error": source.last_error,
-        "error_count": source.error_count,
-        "total_listings": source.total_listings,
-        "created_at": source.created_at.isoformat() if source.created_at else None,
-        "updated_at": source.updated_at.isoformat() if source.updated_at else None,
-    }
-
-
-def _organic_run_to_dict(run) -> dict:
-    return {
-        "id": str(run.id),
-        "status": run.status,
-        "triggered_from": run.triggered_from,
-        "options": run.options or {},
-        "steps": run.steps or [],
-        "error": run.error,
-        "created_at": run.created_at.isoformat() if run.created_at else None,
-    }
+    return [organic_run_to_dict(run) for run in runs]
 
 
 @router.post("/discover-full")

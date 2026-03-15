@@ -119,7 +119,7 @@ export default function PropertyDetail({ property: prop, onClose }: Props) {
           className={[
             'px-3 py-1.5 text-xs rounded border transition-colors',
             comparedPropertyIds.includes(prop.id)
-              ? 'border-[var(--accent)] text-[var(--accent)] bg-cyan-900/10'
+              ? 'border-[var(--accent)] text-[var(--accent)] bg-[var(--accent-soft)]'
               : 'border-[var(--card-border)] hover:bg-[var(--card-border)]',
           ].join(' ')}
         >

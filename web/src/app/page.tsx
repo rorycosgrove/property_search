@@ -5,6 +5,7 @@ import { useSearchParams } from 'next/navigation';
 import {
   type RetrievalContext,
 } from '@/lib/api';
+import { buildSearchContextKey } from '@/lib/searchContext';
 import { useFilterStore, useMapStore, useUIStore } from '@/lib/stores';
 import WorkspaceMainLayout from '@/app/_components/WorkspaceMainLayout';
 import { useAIConversation } from '@/app/_hooks/useAIConversation';
@@ -33,7 +34,7 @@ function HomePageContent() {
 
   const AUTO_COMPARE_SESSION_KEY = 'property_search_auto_compare_session_id';
 
-  const { data, loading, properties } = usePropertySearch(filters);
+  const { data, loading, properties, mapProperties } = usePropertySearch(filters);
 
   useEffect(() => {
     if (typeof window === 'undefined') {
@@ -124,20 +125,7 @@ function HomePageContent() {
     setAiError(null);
   };
 
-  const searchContextKey = useMemo(() => JSON.stringify({
-    county: filters.county || null,
-    min_price: filters.min_price ?? null,
-    max_price: filters.max_price ?? null,
-    min_beds: filters.min_beds ?? null,
-    max_beds: filters.max_beds ?? null,
-    property_types: filters.property_types || null,
-    sale_type: filters.sale_type || null,
-    keywords: filters.keywords || null,
-    ber_ratings: filters.ber_ratings || null,
-    lat: filters.lat ?? null,
-    lng: filters.lng ?? null,
-    radius_km: filters.radius_km ?? null,
-  }), [filters]);
+  const searchContextKey = useMemo(() => buildSearchContextKey(filters), [filters]);
 
   useEffect(() => {
     const previous = previousSearchContextKeyRef.current;
@@ -158,6 +146,7 @@ function HomePageContent() {
     <div className="flex flex-col h-[calc(100dvh-64px)] lg:h-[calc(100dvh-62px)]">
       <WorkspaceMainLayout
         properties={properties}
+        mapProperties={mapProperties}
         total={data?.total || 0}
         loading={loading}
         comparedProperties={comparedProperties}

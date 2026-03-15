@@ -99,7 +99,7 @@ export default function PropertyFeed({ properties, total, loading }: Props) {
                   className={[
                     'text-[11px] px-2 py-1 rounded border transition-colors disabled:cursor-not-allowed disabled:opacity-60',
                     inCompare
-                      ? 'border-[var(--accent)] text-[var(--accent)] bg-cyan-900/10'
+                      ? 'border-[var(--accent)] text-[var(--accent)] bg-[var(--accent-soft)]'
                       : compareFull
                         ? 'border-[var(--card-border)] text-[var(--muted)]'
                       : 'border-[var(--card-border)] hover:bg-[var(--background)]',

@@ -212,7 +212,7 @@ export default function SettingsPage() {
                     className={[
                       'text-left rounded-lg border px-3 py-3 transition-colors',
                       selected
-                        ? 'border-[var(--accent)] bg-cyan-900/10'
+                        ? 'border-[var(--accent)] bg-[var(--accent-soft)]'
                         : 'border-[var(--card-border)] bg-[var(--background)] hover:border-[var(--accent)]',
                     ].join(' ')}
                   >

@@ -15,10 +15,24 @@ from packages.shared.constants import MIGRATION_STATUS_TIMEOUT_SECONDS, MIGRATIO
 from packages.shared.logging import get_logger
 from packages.storage.database import get_db_session
 from packages.storage.models import BackendLog, Source
+from packages.storage.repositories import BackendLogRepository
 
 logger = get_logger(__name__)
 
 router = APIRouter()
+
+
+def _backend_log_to_dict(row: BackendLog) -> dict:
+    return {
+        "id": row.id,
+        "timestamp": row.created_at.isoformat() if row.created_at else None,
+        "level": row.level,
+        "event_type": row.event_type,
+        "component": row.component,
+        "source_id": row.source_id,
+        "message": row.message,
+        "context": row.context_json or {},
+    }
 
 
 @router.post("/migrate", summary="Run Alembic migrations (upgrade head)")
@@ -137,6 +151,28 @@ def get_discovery_activity(
     ]
 
 
+@router.get("/backend-logs", summary="Query backend logs")
+def get_backend_logs(
+    hours: int = Query(24, ge=1, le=168),
+    limit: int = Query(100, ge=1, le=500),
+    level: str | None = Query(None, description="Optional log level filter, e.g. ERROR or WARNING"),
+    event_type: str | None = Query(None, description="Optional event type filter"),
+    db: Session = Depends(get_db_session),
+):
+    repo = BackendLogRepository(db)
+    rows = repo.list_recent(hours=hours, limit=limit, level=level, event_type=event_type)
+    return [_backend_log_to_dict(row) for row in rows]
+
+
+@router.get("/backend-logs/summary", summary="Backend logs summary")
+def get_backend_logs_summary(
+    hours: int = Query(24, ge=1, le=168),
+    db: Session = Depends(get_db_session),
+):
+    repo = BackendLogRepository(db)
+    return repo.summary(hours=hours)
+
+
 @router.get("/logs/health", summary="Backend ingestion health summary")
 def get_backend_health_summary(db: Session = Depends(get_db_session)):
     recent_scrapes = (
@@ -198,23 +234,10 @@ def get_recent_errors(
     limit: int = Query(25, ge=1, le=200),
     db: Session = Depends(get_db_session),
 ):
-    query = db.query(BackendLog)
+    repo = BackendLogRepository(db)
     if level:
-        query = query.filter(BackendLog.level == level.upper())
+        rows = repo.list_recent(hours=24, limit=limit, level=level)
     else:
-        query = query.filter(BackendLog.level.in_(["ERROR", "WARNING"]))
+        rows = repo.list_recent_errors(hours=24, limit=limit)
 
-    rows = query.order_by(BackendLog.created_at.desc()).limit(limit).all()
-    return [
-        {
-            "id": row.id,
-            "timestamp": row.created_at.isoformat() if row.created_at else None,
-            "level": row.level,
-            "event_type": row.event_type,
-            "component": row.component,
-            "source_id": row.source_id,
-            "message": row.message,
-            "context": row.context_json or {},
-        }
-        for row in rows
-    ]
+    return [_backend_log_to_dict(row) for row in rows]

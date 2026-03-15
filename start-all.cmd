@@ -12,6 +12,32 @@ echo  Property Search - Start All
 echo ========================================
 echo.
 
+echo [preflight] Checking required tools...
+where docker >nul 2>&1
+if errorlevel 1 (
+  echo [ERROR] docker command not found. Install Docker Desktop and ensure docker is in PATH.
+  exit /b 1
+)
+
+where python >nul 2>&1
+if errorlevel 1 (
+  echo [ERROR] python command not found. Install Python 3.12+ and ensure python is in PATH.
+  exit /b 1
+)
+
+where powershell >nul 2>&1
+if errorlevel 1 (
+  echo [ERROR] powershell command not found. This script requires Windows PowerShell.
+  exit /b 1
+)
+
+echo [preflight] Checking Docker daemon...
+docker info >nul 2>&1
+if errorlevel 1 (
+  echo [ERROR] Docker daemon is not running. Start Docker Desktop, then run start-all.cmd again.
+  exit /b 1
+)
+
 echo [1/6] Cleaning existing local instances...
 call "%~dp0stop-local.cmd"
 if errorlevel 1 (

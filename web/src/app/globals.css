@@ -8,8 +8,10 @@
   --card-bg: #fcfbf8;
   --card-border: #cfd7d4;
   --muted: #596675;
-  --accent: #1f7a8c;
-  --accent-strong: #185f6e;
+  --accent: #b42318;
+  --accent-strong: #8f1d14;
+  --accent-soft: rgba(180, 35, 24, 0.1);
+  --accent-soft-strong: rgba(180, 35, 24, 0.16);
   --success: #2e7d5b;
   --danger: #a54545;
 }
@@ -40,7 +42,7 @@ h4 {
 
 .focus-ring {
   outline: none;
-  box-shadow: 0 0 0 2px rgba(31, 122, 140, 0.2);
+  box-shadow: 0 0 0 2px rgba(180, 35, 24, 0.2);
 }
 
 .rise-in {
@@ -177,7 +179,7 @@ h4 {
 }
 
 .property-marker-badge {
-  background: #1f7a8c;
+  background: var(--accent);
   color: #fff;
   padding: 3px 8px;
   border-radius: 999px;
@@ -191,9 +193,9 @@ h4 {
 }
 
 .property-marker-badge.is-selected {
-  background: #155f6f;
+  background: var(--accent-strong);
   border-color: #0f172a;
-  box-shadow: 0 0 0 3px rgba(31, 122, 140, 0.24), 0 8px 18px rgba(0, 0, 0, 0.32);
+  box-shadow: 0 0 0 3px rgba(180, 35, 24, 0.24), 0 8px 18px rgba(0, 0, 0, 0.32);
   transform: scale(1.08);
 }
 

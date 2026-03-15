@@ -25,7 +25,14 @@ from packages.storage.repositories import (
     PropertyRepository,
 )
 from packages.shared.config import settings
+from packages.shared.queue import QueueDispatchError, dispatch_or_inline
 from packages.ai.bedrock_provider import BedrockProvider
+from packages.ai.service import (
+    llm_runtime_status,
+    set_active_provider,
+    get_provider,
+    _get_active_provider_name,
+)
 
 router = APIRouter()
 
@@ -40,27 +47,8 @@ def _llm_queue_configured() -> bool:
     return bool(settings.llm_queue_url or os.environ.get("LLM_QUEUE_URL", ""))
 
 
-def _llm_runtime_status() -> dict[str, Any]:
-    enabled = bool(settings.llm_enabled)
-    queue_configured = _llm_queue_configured()
-    reason = "ok"
-    if not enabled:
-        reason = "llm_disabled"
-    elif not queue_configured:
-        reason = "llm_queue_unconfigured"
-
-    return {
-        "enabled": enabled,
-        "provider": settings.llm_provider,
-        "model": settings.bedrock_model_id,
-        "queue_configured": queue_configured,
-        "ready_for_enrichment": enabled and queue_configured,
-        "reason": reason,
-    }
-
-
 def _ensure_property_grants(db: Session, prop) -> list:
-    """Return existing grant matches and evaluate when none exist yet."""
+    """Return cached grant matches for a property, evaluating once when missing."""
     grant_match_repo = PropertyGrantMatchRepository(db)
     matches = grant_match_repo.list_for_property(str(prop.id))
     if matches:
@@ -73,6 +61,7 @@ def _ensure_property_grants(db: Session, prop) -> list:
         if refreshed:
             return refreshed
     except Exception:
+        # Grant evaluation failures should not block compare/chat flows.
         return matches
     return matches
 
@@ -125,12 +114,9 @@ def _search_context_signature(value: Any) -> str:
 @router.get("/config")
 def get_llm_config():
     """Get current LLM configuration."""
-    from packages.ai.service import _get_active_provider_name, get_provider
-
-    runtime = _llm_runtime_status()
+    runtime = llm_runtime_status()
     provider_name = _get_active_provider_name()
     provider = get_provider(provider_name)
-
     return {
         "enabled": runtime["enabled"],
         "provider": provider.get_provider_name(),
@@ -167,8 +153,6 @@ def get_llm_models():
 @router.put("/config")
 def update_llm_config(data: LLMConfigUpdate):
     """Update LLM provider configuration (stored in DynamoDB)."""
-    from packages.ai.service import set_active_provider
-
     provider_str = data.provider or "bedrock"
     model_str = data.bedrock_model
     updated = set_active_provider(provider_str, model_str)
@@ -200,11 +184,9 @@ def update_llm_config(data: LLMConfigUpdate):
 @router.get("/health")
 async def llm_health():
     """Check LLM provider availability."""
-    runtime = _llm_runtime_status()
+    runtime = llm_runtime_status()
     if not runtime["enabled"]:
         return {**runtime, "healthy": False}
-
-    from packages.ai.service import get_provider
 
     provider = get_provider()
     healthy = await provider.health_check()
@@ -279,40 +261,63 @@ def get_enrichment(property_id: str, db: Session = Depends(get_db_session)):
 @router.post("/enrich/{property_id}")
 def trigger_enrichment(property_id: str, db: Session = Depends(get_db_session)):
     """Trigger LLM enrichment for a property."""
-    runtime = _llm_runtime_status()
+    runtime = llm_runtime_status()
     if not runtime["enabled"]:
         raise HTTPException(status_code=503, detail="LLM enrichment is disabled")
-    if not runtime["queue_configured"]:
-        raise HTTPException(status_code=503, detail="LLM queue is not configured")
 
     repo = PropertyRepository(db)
     prop = repo.get_by_id(property_id)
     if not prop:
         raise HTTPException(404, "Property not found")
 
-    from packages.shared.queue import send_task
+    from apps.worker.tasks import enrich_property_llm
+
     try:
-        message_id = send_task("llm", "enrich_property_llm", {"property_id": property_id})
-    except ValueError as exc:
-        raise HTTPException(status_code=503, detail=str(exc)) from exc
-    return {"task_id": message_id, "status": "dispatched"}
+        return dispatch_or_inline(
+            "llm",
+            "enrich_property_llm",
+            {"property_id": property_id},
+            enrich_property_llm,
+        )
+    except QueueDispatchError as exc:
+        raise HTTPException(
+            status_code=503,
+            detail={
+                "code": "llm_dispatch_failed",
+                "task_type": "enrich_property_llm",
+                "message": "Failed to dispatch LLM enrichment task to queue.",
+                "error": str(exc)[:300],
+            },
+        ) from exc
 
 
 @router.post("/enrich-batch")
 def trigger_batch_enrichment(limit: int = 50):
     """Trigger LLM enrichment for a batch of un-enriched properties."""
-    runtime = _llm_runtime_status()
+    runtime = llm_runtime_status()
     if not runtime["enabled"]:
         raise HTTPException(status_code=503, detail="LLM enrichment is disabled")
-    if not runtime["queue_configured"]:
-        raise HTTPException(status_code=503, detail="LLM queue is not configured")
 
-    from packages.shared.queue import send_task
+    from apps.worker.tasks import enrich_batch_llm
+
     try:
-        message_id = send_task("llm", "enrich_batch_llm", {"limit": limit})
-    except ValueError as exc:
-        raise HTTPException(status_code=503, detail=str(exc)) from exc
-    return {"task_id": message_id, "status": "dispatched", "limit": limit}
+        dispatch_result = dispatch_or_inline(
+            "llm",
+            "enrich_batch_llm",
+            {"limit": limit},
+            enrich_batch_llm,
+        )
+        return {**dispatch_result, "limit": limit}
+    except QueueDispatchError as exc:
+        raise HTTPException(
+            status_code=503,
+            detail={
+                "code": "llm_dispatch_failed",
+                "task_type": "enrich_batch_llm",
+                "message": "Failed to dispatch LLM batch enrichment task to queue.",
+                "error": str(exc)[:300],
+            },
+        ) from exc
 
 
 @router.post("/compare")

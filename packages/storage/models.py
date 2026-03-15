@@ -362,6 +362,7 @@ class BackendLog(Base):
     component: Mapped[str] = mapped_column(String(100), nullable=False, default="worker", server_default="worker")
     source_id: Mapped[str | None] = mapped_column(String(36), nullable=True, index=True)
     message: Mapped[str] = mapped_column(Text, nullable=False)
+    # DB column is named 'context'; ORM uses context_json to avoid shadowing common names.
     context_json: Mapped[dict] = mapped_column("context", JSONB, default=dict, server_default="{}")
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=_utcnow, server_default="now()", index=True

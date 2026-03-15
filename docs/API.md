@@ -18,7 +18,8 @@ Check API, database, and Bedrock health.
 {
   "status": "healthy",
   "database": "connected",
-  "bedrock": "available"
+  "bedrock": "available",
+  "backend_errors_last_hour": 0
 }
 ```
 
@@ -26,6 +27,51 @@ Fields:
 - `status` — `healthy` (all OK) or `degraded` (partial failure)
 - `database` — `connected` or `disconnected`
 - `bedrock` — `available` or `unavailable`
+- `backend_errors_last_hour` — warning/error backend log count in the last hour (nullable if check unavailable)
+
+---
+
+## Admin
+
+### GET /api/v1/admin/backend-logs
+Query backend operational logs with optional filters.
+
+**Query Parameters**
+| Param | Type | Description |
+|-------|------|-------------|
+| hours | int | Window size in hours (1..168, default: 24) |
+| limit | int | Max rows (1..500, default: 100) |
+| level | string | Optional level filter (e.g., ERROR, WARNING, INFO) |
+| event_type | string | Optional event type filter |
+
+### GET /api/v1/admin/backend-logs/summary
+Return backend log counts grouped by level and event type.
+
+**Query Parameters**
+| Param | Type | Description |
+|-------|------|-------------|
+| hours | int | Window size in hours (1..168, default: 24) |
+
+### GET /api/v1/admin/logs/feed-activity
+Recent feed refresh activity summary.
+
+### GET /api/v1/admin/logs/sources
+Current source status with polling/error metadata.
+
+### GET /api/v1/admin/logs/discovery
+Recent source discovery activity and candidate outcomes.
+
+### GET /api/v1/admin/logs/health
+Backend ingestion health summary (recent scrape/error indicators).
+
+### GET /api/v1/admin/logs/recent-errors
+Recent warning/error events.
+
+**Query Parameters**
+| Param | Type | Description |
+|-------|------|-------------|
+| level | string | Optional level override (default ERROR/WARNING set) |
+| limit | int | Max rows (1..200, default: 25) |
 
 ---
 
@@ -187,10 +233,18 @@ Approve a discovered source and enable it for scheduled scraping.
 ### POST /api/v1/sources/{id}/trigger
 Manually trigger a scrape for this source. Sends a task to the SQS scrape queue.
 
-**Response** `202`
+**Response** `200`
 ```json
-{"task_id": "sqs-message-id", "status": "queued"}
+{"task_id": "sqs-message-id", "status": "dispatched"}
 ```
+
+If queue URLs are unconfigured locally, this endpoint can process inline and return:
+
+```json
+{"status": "processed_inline", "result": {...}}
+```
+
+Unexpected queue runtime dispatch failures return `503` with structured error detail.
 
 ### POST /api/v1/sources/trigger-all
 Trigger the full organic search pipeline in one request.

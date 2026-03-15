@@ -15,7 +15,7 @@ export default function CopilotPage() {
         <div className="mt-4 flex items-center justify-center gap-2">
           <Link
             href="/?focus=ask"
-            className="px-4 py-2 rounded-lg border border-[var(--accent)] bg-cyan-900/10 text-[var(--accent-strong)] hover:bg-cyan-900/15 text-sm"
+            className="px-4 py-2 rounded-lg border border-[var(--accent)] bg-[var(--accent-soft)] text-[var(--accent-strong)] hover:bg-[var(--accent-soft-strong)] text-sm"
           >
             Go to workspace AI query
           </Link>
