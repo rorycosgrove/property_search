@@ -6,6 +6,10 @@ import { useState } from 'react';
 
 const PHASE_GROUPS = [
   {
+    phase: 'Start',
+    links: [{ href: '/', label: 'Home' }],
+  },
+  {
     phase: 'Research',
     links: [
       { href: '/research', label: 'Overview' },
@@ -16,7 +20,7 @@ const PHASE_GROUPS = [
   },
   {
     phase: 'Decide',
-    links: [{ href: '/', label: 'Workspace' }],
+    links: [{ href: '/workspace', label: 'Workspace' }],
   },
   {
     phase: 'Execute',
@@ -137,7 +141,7 @@ export default function TopNav() {
 
             <div className="grid grid-cols-1 gap-2 max-h-[58vh] overflow-y-auto pb-1">
               <Link
-                href="/?focus=ask"
+                href="/workspace?focus=ask"
                 onClick={() => setMobileOpen(false)}
                 className="px-3 py-2 rounded-md text-sm border border-[var(--accent)] bg-[var(--accent-soft)] text-[var(--accent-strong)]"
               >
