@@ -9,10 +9,9 @@ export default function FilterBar() {
   const { filters, setFilter, setFilters, resetFilters } = useFilterStore();
   const { setRankingMode } = useUIStore();
   const [advancedOpen, setAdvancedOpen] = useState(false);
-  const [presetsOpen, setPresetsOpen] = useState(false);
 
   const controlClasses = [
-    'bg-[var(--background)] border border-[var(--card-border)] rounded-md px-2.5 py-2',
+    'bg-[var(--background)] border border-[var(--card-border)] rounded-xl px-3 py-2.5',
     'focus:outline-none focus:ring-2 focus:ring-cyan-700/60 focus:border-cyan-700',
     'hover:border-stone-500 transition-colors',
   ].join(' ');
@@ -74,7 +73,7 @@ export default function FilterBar() {
         <option value="price_desc">Price High-Low</option>
       </select>
 
-      <div className="flex items-center justify-center text-xs text-[var(--muted)] border border-dashed border-[var(--card-border)] rounded-md px-2 py-2 bg-[var(--card-bg)]/80">
+      <div className="flex items-center justify-center text-xs text-[var(--muted)] border border-dashed border-[var(--card-border)] rounded-xl px-3 py-2.5 bg-[var(--card-bg)]/80">
         Compare up to 5
       </div>
     </>
@@ -114,103 +113,131 @@ export default function FilterBar() {
   }, [filters]);
 
   return (
-    <section className="px-3 lg:px-4 py-3 border-b border-[var(--card-border)] ai-glass rise-in">
-      <div className="flex flex-wrap items-center justify-between gap-2 mb-2">
-        <div>
-          <p className="text-[11px] uppercase tracking-[0.18em] text-[var(--muted)]">Search Mission</p>
-          <h2 className="text-base lg:text-lg font-semibold">Map-first property decisions</h2>
+    <section className="border-b border-[var(--card-border)] ai-glass rise-in">
+      <div className="px-4 py-4">
+        <div className="flex flex-wrap items-start justify-between gap-3">
+          <div>
+            <p className="text-[11px] uppercase tracking-[0.18em] text-[var(--muted)]">Search setup</p>
+            <h2 className="text-base lg:text-lg font-semibold">Start broad, then narrow only when needed.</h2>
+            <p className="mt-1 max-w-2xl text-xs leading-5 text-[var(--muted)]">
+              Keep the first pass simple: county, budget ceiling, and a minimum bedroom count. Open extra filters only when the shortlist is still too wide.
+            </p>
+          </div>
+          <div className="flex items-center gap-2">
+            <span className="rounded-full border border-[var(--card-border)] px-2.5 py-1 text-[11px] text-[var(--muted)]">
+              {activeFilterCount} active
+            </span>
+            <button
+              type="button"
+              onClick={resetFilters}
+              className="rounded-full border border-[var(--card-border)] px-3 py-1.5 text-xs transition-colors hover:bg-[var(--background)]"
+            >
+              Reset filters
+            </button>
+          </div>
         </div>
-        <div className="flex items-center gap-2">
-          <span className="text-[11px] text-[var(--muted)] border border-[var(--card-border)] rounded-full px-2 py-1">
-            {activeFilterCount} active
+
+        <div className="mt-4 grid gap-3 lg:grid-cols-[minmax(0,1fr)_auto]">
+          <div className="grid grid-cols-1 gap-2 sm:grid-cols-3">
+            <label className="flex flex-col gap-1 text-xs text-[var(--muted)]">
+              County
+              <select
+                value={filters.county || ''}
+                onChange={(e) => setFilter('county', e.target.value || undefined)}
+                className={controlClasses}
+              >
+                <option value="">All counties</option>
+                {COUNTIES.map((county) => (
+                  <option key={county} value={county}>{county}</option>
+                ))}
+              </select>
+            </label>
+
+            <label className="flex flex-col gap-1 text-xs text-[var(--muted)]">
+              Max budget
+              <input
+                type="number"
+                placeholder="Any budget"
+                value={filters.max_price || ''}
+                onChange={(e) => setFilter('max_price', e.target.value ? Number(e.target.value) : undefined)}
+                className={controlClasses}
+              />
+            </label>
+
+            <label className="flex flex-col gap-1 text-xs text-[var(--muted)]">
+              Minimum beds
+              <select
+                value={filters.min_beds || ''}
+                onChange={(e) => setFilter('min_beds', e.target.value ? Number(e.target.value) : undefined)}
+                className={controlClasses}
+              >
+                <option value="">Any size</option>
+                {[1, 2, 3, 4, 5].map((beds) => (
+                  <option key={beds} value={beds}>{beds}+ beds</option>
+                ))}
+              </select>
+            </label>
+          </div>
+
+          <button
+            type="button"
+            onClick={() => setAdvancedOpen((value) => !value)}
+            className="rounded-full border border-[var(--card-border)] px-4 py-2 text-xs transition-colors hover:bg-[var(--background)]"
+            aria-expanded={advancedOpen}
+          >
+            {advancedOpen ? 'Hide extra filters' : 'Show extra filters'}
+          </button>
+        </div>
+
+        <div className="mt-4 flex flex-wrap gap-2 text-xs">
+          <button
+            type="button"
+            onClick={() => applyMission(
+              { max_price: 500000, min_beds: 3, sort_by: 'created_at', sort_dir: 'desc' },
+              'hybrid',
+            )}
+            className="rounded-full border border-[var(--card-border)] bg-[var(--card-bg)] px-3 py-1.5 transition-colors hover:border-[var(--accent)]"
+          >
+            Under EUR500k
+          </button>
+          <button
+            type="button"
+            onClick={() => applyMission(
+              { min_beds: 3, property_types: 'house', sort_by: 'price', sort_dir: 'asc' },
+              'user_weighted',
+            )}
+            className="rounded-full border border-[var(--card-border)] bg-[var(--card-bg)] px-3 py-1.5 transition-colors hover:border-[var(--accent)]"
+          >
+            Family homes
+          </button>
+          <button
+            type="button"
+            onClick={() => applyMission(
+              { keywords: 'ber retrofit grant', sort_by: 'created_at', sort_dir: 'desc' },
+              'llm_only',
+            )}
+            className="rounded-full border border-[var(--card-border)] bg-[var(--card-bg)] px-3 py-1.5 transition-colors hover:border-[var(--accent)]"
+          >
+            Grant-ready
+          </button>
+          <span className="rounded-full border border-[var(--card-border)] px-3 py-1.5 text-[var(--muted)]">
+            Presets also update ranking mode
           </span>
-          <button
-            type="button"
-            onClick={() => setPresetsOpen((v) => !v)}
-            className="px-3 py-1.5 text-xs border border-[var(--card-border)] rounded-md hover:bg-[var(--background)] transition-colors lg:hidden"
-          >
-            {presetsOpen ? 'Hide presets' : 'Show presets'}
-          </button>
-          <button
-            type="button"
-            onClick={resetFilters}
-            className="px-3 py-1.5 text-xs border border-[var(--card-border)] rounded-md hover:bg-[var(--background)] transition-colors"
-          >
-            Reset
-          </button>
         </div>
-      </div>
-
-      <div className={["mb-3 flex flex-wrap gap-2 text-xs", presetsOpen ? 'flex' : 'hidden lg:flex'].join(' ')}>
-        <button
-          type="button"
-          onClick={() => applyMission(
-            { max_price: 500000, min_beds: 3, sort_by: 'created_at', sort_dir: 'desc' },
-            'hybrid',
-          )}
-          className="px-3 py-1.5 rounded-full border border-[var(--card-border)] bg-[var(--card-bg)] hover:border-[var(--accent)]"
-        >
-          Best value under EUR500k
-        </button>
-        <button
-          type="button"
-          onClick={() => applyMission(
-            { min_beds: 3, property_types: 'house', sort_by: 'price', sort_dir: 'asc' },
-            'user_weighted',
-          )}
-          className="px-3 py-1.5 rounded-full border border-[var(--card-border)] bg-[var(--card-bg)] hover:border-[var(--accent)]"
-        >
-          Family-ready homes
-        </button>
-        <button
-          type="button"
-          onClick={() => applyMission(
-            { keywords: 'ber retrofit grant', sort_by: 'created_at', sort_dir: 'desc' },
-            'llm_only',
-          )}
-          className="px-3 py-1.5 rounded-full border border-[var(--card-border)] bg-[var(--card-bg)] hover:border-[var(--accent)]"
-        >
-          Grant-optimized shortlist
-        </button>
-        <span className="px-3 py-1.5 rounded-full border border-[var(--card-border)] text-[var(--muted)]">
-          Presets update shortlist and ranking mode
-        </span>
-      </div>
-
-      <div className="grid grid-cols-1 sm:grid-cols-3 gap-2 text-sm mb-2">
-        <select
-          value={filters.county || ''}
-          onChange={(e) => setFilter('county', e.target.value || undefined)}
-          className={controlClasses}
-        >
-          <option value="">All Counties</option>
-          {COUNTIES.map((c) => (
-            <option key={c} value={c}>{c}</option>
-          ))}
-        </select>
-
-        <input
-          type="number"
-          placeholder="Max EUR"
-          value={filters.max_price || ''}
-          onChange={(e) => setFilter('max_price', e.target.value ? Number(e.target.value) : undefined)}
-          className={controlClasses}
-        />
-
-        <button
-          type="button"
-          onClick={() => setAdvancedOpen((v) => !v)}
-          className="px-3 py-2 text-xs border border-[var(--card-border)] rounded-md hover:bg-[var(--background)] transition-colors"
-          aria-expanded={advancedOpen}
-        >
-          {advancedOpen ? 'Hide advanced filters' : 'More filters'}
-        </button>
       </div>
 
       {advancedOpen && (
         <>
-          <div className="hidden lg:grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-2 text-sm">
-            {advancedControls}
+          <div className="hidden border-t border-[var(--card-border)] bg-[var(--background)]/28 px-4 py-4 lg:block">
+            <div className="mb-3 flex items-center justify-between gap-3">
+              <div>
+                <p className="text-[11px] uppercase tracking-[0.16em] text-[var(--muted)]">Extra filters</p>
+                <p className="text-sm text-[var(--muted)]">Use these only when your shortlist still needs a second pass.</p>
+              </div>
+            </div>
+            <div className="grid grid-cols-1 gap-2 text-sm sm:grid-cols-2 lg:grid-cols-3">
+              {advancedControls}
+            </div>
           </div>
 
           <div className="lg:hidden fixed inset-0 z-[700]">
@@ -222,7 +249,10 @@ export default function FilterBar() {
             />
             <div className="absolute bottom-0 left-0 right-0 rounded-t-2xl border-t border-[var(--card-border)] bg-[var(--card-bg)] p-4 shadow-2xl sheet-in">
               <div className="flex items-center justify-between mb-3">
-                <h3 className="text-base font-semibold">Advanced Filters</h3>
+                <div>
+                  <h3 className="text-base font-semibold">Extra filters</h3>
+                  <p className="text-xs text-[var(--muted)]">Refine only when the main search is still too broad.</p>
+                </div>
                 <button
                   type="button"
                   onClick={() => setAdvancedOpen(false)}
