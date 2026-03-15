@@ -19,6 +19,16 @@ from packages.ai.compare_service import (
     latest_auto_compare_payload,
     run_auto_compare,
 )
+from packages.ai.runtime_service import (
+    llm_config_payload,
+    llm_enrichment_payload,
+    llm_health_payload,
+    llm_models_payload,
+    llm_stats_payload,
+    trigger_batch_enrichment_payload,
+    trigger_enrichment_payload,
+    update_llm_config_payload,
+)
 from packages.shared.schemas import (
     AutoCompareRequest,
     CompareSetRequest,
@@ -45,16 +55,6 @@ from packages.ai.service import (
 )
 
 router = APIRouter()
-
-
-def _model_requires_inference_profile(model_id: str | None) -> bool:
-    """Return True for model families that commonly require inference profiles."""
-    if not model_id:
-        return False
-    return model_id.startswith("amazon.nova-")
-
-def _llm_queue_configured() -> bool:
-    return bool(settings.llm_queue_url or os.environ.get("LLM_QUEUE_URL", ""))
 
 
 def _get_provider_dynamic():
@@ -107,210 +107,78 @@ def _serialize_grant_citations(matches: list) -> list[dict[str, Any]]:
 @router.get("/config")
 def get_llm_config():
     """Get current LLM configuration."""
-    runtime = llm_runtime_status()
-    provider_name = _get_active_provider_name()
-    provider = get_provider(provider_name)
-    return {
-        "enabled": runtime["enabled"],
-        "provider": provider.get_provider_name(),
-        "model": provider.get_model_name(),
-        "queue_configured": runtime["queue_configured"],
-        "ready_for_enrichment": runtime["ready_for_enrichment"],
-        "reason": runtime["reason"],
-    }
+    return llm_config_payload(
+        runtime_status_fn=llm_runtime_status,
+        active_provider_name_fn=_get_active_provider_name,
+        provider_getter=get_provider,
+    )
 
 
 @router.get("/models")
 def get_llm_models():
     """Get available LLM models for provider selection UI."""
-    provider = BedrockProvider(region=settings.aws_region)
-    options = provider.get_runtime_ui_model_options()
-    option_ids = {m["id"] for m in options}
-    preferred_default = "amazon.titan-text-lite-v1"
-    if preferred_default in option_ids:
-        default_model = preferred_default
-    elif settings.bedrock_model_id in option_ids:
-        default_model = settings.bedrock_model_id
-    elif options:
-        default_model = options[0]["id"]
-    else:
-        default_model = settings.bedrock_model_id
-
-    return {
-        "provider": "bedrock",
-        "models": options,
-        "default_model": default_model,
-    }
+    return llm_models_payload(settings_obj=settings, bedrock_provider_cls=BedrockProvider)
 
 
 @router.put("/config")
 def update_llm_config(data: LLMConfigUpdate):
     """Update LLM provider configuration (stored in DynamoDB)."""
-    provider_str = data.provider or "bedrock"
-    model_str = data.bedrock_model
-    updated = set_active_provider(provider_str, model_str)
-    if not updated:
-        raise HTTPException(
-            status_code=503,
-            detail="Failed to persist LLM config to DynamoDB. Check AWS credentials and table access.",
-        )
-    warning = None
-    if (
-        provider_str == "bedrock"
-        and _model_requires_inference_profile(model_str)
-        and not settings.bedrock_inference_profile_id
-    ):
-        warning = (
-            "Selected model may require BEDROCK_INFERENCE_PROFILE_ID for invocation. "
-            "Set it in .env and restart the API."
-        )
-
-    return {
-        "provider": provider_str,
-        "model": model_str,
-        "updated": True,
-        "warning": warning,
-        "inference_profile_configured": bool(settings.bedrock_inference_profile_id),
-    }
+    return update_llm_config_payload(
+        data=data,
+        settings_obj=settings,
+        set_active_provider_fn=set_active_provider,
+    )
 
 
 @router.get("/health")
 async def llm_health():
     """Check LLM provider availability."""
-    runtime = llm_runtime_status()
-    if not runtime["enabled"]:
-        return {**runtime, "healthy": False}
-
-    provider = get_provider()
-    healthy = await provider.health_check()
-    model_listed = True
-    invoke_ready = True
-    invoke_error = None
-    if isinstance(provider, BedrockProvider):
-        model_listed = provider.is_model_listed(provider.get_model_name())
-        if not model_listed:
-            healthy = False
-
-        # Ensure status reflects real invoke readiness, not just model listing metadata.
-        try:
-            await provider.generate(
-                prompt='{"ok": true}',
-                system_prompt='Return valid JSON only.',
-                json_mode=True,
-                max_tokens=32,
-                temperature=0.0,
-            )
-        except Exception as exc:
-            invoke_ready = False
-            invoke_error = str(exc)
-            healthy = False
-
-    reason = runtime["reason"]
-    if reason == "ok" and not model_listed:
-        reason = "model_not_listed"
-    if reason == "ok" and not invoke_ready:
-        reason = "model_invoke_failed"
-
-    return {
-        "enabled": runtime["enabled"],
-        "provider": provider.get_provider_name(),
-        "model": provider.get_model_name(),
-        "queue_configured": runtime["queue_configured"],
-        "ready_for_enrichment": runtime["ready_for_enrichment"],
-        "reason": reason,
-        "healthy": healthy,
-        "model_listed": model_listed,
-        "invoke_ready": invoke_ready,
-        "invoke_error": invoke_error,
-        "inference_profile_configured": bool(settings.bedrock_inference_profile_id),
-    }
+    return await llm_health_payload(
+        runtime_status_fn=llm_runtime_status,
+        provider_getter=_get_provider_dynamic,
+        bedrock_provider_cls=BedrockProvider,
+        settings_obj=settings,
+    )
 
 
 @router.get("/enrichment/{property_id}")
 def get_enrichment(property_id: str, db: Session = Depends(get_db_session)):
     """Get LLM enrichment data for a property."""
-    repo = LLMEnrichmentRepository(db)
-    enrichment = repo.get_by_property_id(property_id)
-    if not enrichment:
-        raise HTTPException(404, "No enrichment data for this property")
-
-    return {
-        "id": str(enrichment.id),
-        "property_id": str(enrichment.property_id),
-        "summary": enrichment.summary,
-        "value_score": enrichment.value_score,
-        "value_reasoning": enrichment.value_reasoning,
-        "pros": enrichment.pros,
-        "cons": enrichment.cons,
-        "extracted_features": enrichment.extracted_features,
-        "neighbourhood_notes": enrichment.neighbourhood_notes,
-        "investment_potential": enrichment.investment_potential,
-        "llm_provider": enrichment.llm_provider,
-        "llm_model": enrichment.llm_model,
-        "processed_at": enrichment.processed_at.isoformat() if enrichment.processed_at else None,
-    }
+    return llm_enrichment_payload(
+        db=db,
+        property_id=property_id,
+        enrichment_repo_factory=LLMEnrichmentRepository,
+    )
 
 
 @router.post("/enrich/{property_id}")
 def trigger_enrichment(property_id: str, db: Session = Depends(get_db_session)):
     """Trigger LLM enrichment for a property."""
-    runtime = llm_runtime_status()
-    if not runtime["enabled"]:
-        raise HTTPException(status_code=503, detail="LLM enrichment is disabled")
-
-    repo = PropertyRepository(db)
-    prop = repo.get_by_id(property_id)
-    if not prop:
-        raise HTTPException(404, "Property not found")
-
     from apps.worker.tasks import enrich_property_llm
 
-    try:
-        return dispatch_or_inline(
-            "llm",
-            "enrich_property_llm",
-            {"property_id": property_id},
-            enrich_property_llm,
-        )
-    except QueueDispatchError as exc:
-        raise HTTPException(
-            status_code=503,
-            detail={
-                "code": "llm_dispatch_failed",
-                "task_type": "enrich_property_llm",
-                "message": "Failed to dispatch LLM enrichment task to queue.",
-                "error": str(exc)[:300],
-            },
-        ) from exc
+    return trigger_enrichment_payload(
+        db=db,
+        property_id=property_id,
+        runtime_status_fn=llm_runtime_status,
+        property_repo_factory=PropertyRepository,
+        dispatch_or_inline_fn=dispatch_or_inline,
+        queue_error_cls=QueueDispatchError,
+        inline_task_fn=enrich_property_llm,
+    )
 
 
 @router.post("/enrich-batch")
 def trigger_batch_enrichment(limit: int = 50):
     """Trigger LLM enrichment for a batch of un-enriched properties."""
-    runtime = llm_runtime_status()
-    if not runtime["enabled"]:
-        raise HTTPException(status_code=503, detail="LLM enrichment is disabled")
-
     from apps.worker.tasks import enrich_batch_llm
 
-    try:
-        dispatch_result = dispatch_or_inline(
-            "llm",
-            "enrich_batch_llm",
-            {"limit": limit},
-            enrich_batch_llm,
-        )
-        return {**dispatch_result, "limit": limit}
-    except QueueDispatchError as exc:
-        raise HTTPException(
-            status_code=503,
-            detail={
-                "code": "llm_dispatch_failed",
-                "task_type": "enrich_batch_llm",
-                "message": "Failed to dispatch LLM batch enrichment task to queue.",
-                "error": str(exc)[:300],
-            },
-        ) from exc
+    return trigger_batch_enrichment_payload(
+        limit=limit,
+        runtime_status_fn=llm_runtime_status,
+        dispatch_or_inline_fn=dispatch_or_inline,
+        queue_error_cls=QueueDispatchError,
+        inline_task_fn=enrich_batch_llm,
+    )
 
 
 @router.post("/compare")
@@ -350,11 +218,7 @@ async def compare_properties(
 @router.get("/stats")
 def get_llm_stats(db: Session = Depends(get_db_session)):
     """Get LLM enrichment statistics."""
-    repo = LLMEnrichmentRepository(db)
-    return {
-        "total_processed": repo.count_processed(),
-        "avg_processing_time_ms": repo.avg_processing_time(),
-    }
+    return llm_stats_payload(db=db, enrichment_repo_factory=LLMEnrichmentRepository)
 
 
 @router.post("/compare-set")
