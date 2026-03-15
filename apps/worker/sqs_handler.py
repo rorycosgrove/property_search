@@ -25,6 +25,7 @@ def _register_handlers():
 
     from apps.worker.tasks import (
         cleanup_old_alerts,
+        discover_all_sources,
         discover_sources,
         enrich_batch_llm,
         enrich_property_llm,
@@ -38,6 +39,7 @@ def _register_handlers():
         {
             "scrape_all_sources": scrape_all_sources,
             "discover_sources": discover_sources,
+            "discover_all_sources": discover_all_sources,
             "scrape_source": scrape_source,
             "import_ppr": import_ppr,
             "evaluate_alerts": evaluate_alerts,

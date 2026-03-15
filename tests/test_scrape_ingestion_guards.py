@@ -2,6 +2,7 @@ from datetime import date, datetime
 
 from apps.worker.tasks import _parse_ppr_sale_date
 from packages.sources.base import RawListing
+from packages.sources.daft import DaftAdapter
 from packages.sources.myhome import MyHomeAdapter
 from packages.sources.propertypal import PropertyPalAdapter
 
@@ -32,4 +33,9 @@ class TestAdapterParseGuards:
     def test_propertypal_parse_skips_missing_required_fields(self):
         adapter = PropertyPalAdapter()
         raw = RawListing(raw_data={"displayAddress": "", "path": ""}, source_url="")
+        assert adapter.parse_listing(raw) is None
+
+    def test_daft_parse_skips_missing_required_fields(self):
+        adapter = DaftAdapter()
+        raw = RawListing(raw_data={"title": "", "seoFriendlyPath": ""}, source_url="")
         assert adapter.parse_listing(raw) is None

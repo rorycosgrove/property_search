@@ -214,7 +214,16 @@ class DaftAdapter(SourceAdapter):
 
             # URL
             seo_path = data.get("seoFriendlyPath", "")
-            url = f"{self.BASE_URL}{seo_path}" if seo_path else raw.source_url
+            url = (f"{self.BASE_URL}{seo_path}" if seo_path else raw.source_url).strip()
+
+            if not title or not address or not url:
+                logger.debug(
+                    "daft_parse_skipped_missing_required",
+                    has_title=bool(title),
+                    has_address=bool(address),
+                    has_url=bool(url),
+                )
+                return None
 
             # Listing ID
             listing_id = str(data.get("id", ""))
