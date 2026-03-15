@@ -1,13 +1,85 @@
 from __future__ import annotations
 
+import subprocess
+import sys
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
 from sqlalchemy import func
 from sqlalchemy.orm import Session
 
+from packages.shared.constants import MIGRATION_STATUS_TIMEOUT_SECONDS, MIGRATION_TIMEOUT_SECONDS
 from packages.storage.models import BackendLog, Source
 from packages.storage.repositories import BackendLogRepository
+
+
+class AdminServiceError(Exception):
+    """Base exception for admin-domain service failures."""
+
+
+class MigrationCommandFailedError(AdminServiceError):
+    def __init__(self, detail: str):
+        self.detail = detail
+        super().__init__(detail)
+
+
+class MigrationCommandTimedOutError(AdminServiceError):
+    def __init__(self, detail: str):
+        self.detail = detail
+        super().__init__(detail)
+
+
+def run_database_migrations(
+    *,
+    logger: Any,
+    executable: str = sys.executable,
+    timeout: int = MIGRATION_TIMEOUT_SECONDS,
+    runner: Any = subprocess.run,
+) -> dict[str, Any]:
+    try:
+        result = runner(
+            [executable, "-m", "alembic", "upgrade", "head"],
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+        )
+        if result.returncode != 0:
+            logger.error("migration_failed", stderr=result.stderr)
+            raise MigrationCommandFailedError(result.stderr)
+        logger.info("migration_success", stdout=result.stdout)
+        return {"status": "ok", "output": result.stdout.strip()}
+    except subprocess.TimeoutExpired as exc:
+        logger.error("migration_timeout")
+        raise MigrationCommandTimedOutError("Migration timed out") from exc
+    except AdminServiceError:
+        raise
+    except Exception as exc:
+        logger.error("migration_error", error=str(exc))
+        raise MigrationCommandFailedError(str(exc)) from exc
+
+
+def get_migration_status(
+    *,
+    executable: str = sys.executable,
+    timeout: int = MIGRATION_STATUS_TIMEOUT_SECONDS,
+    runner: Any = subprocess.run,
+) -> dict[str, str]:
+    try:
+        result = runner(
+            [executable, "-m", "alembic", "current"],
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+        )
+        if result.returncode != 0:
+            raise MigrationCommandFailedError(result.stderr)
+        return {"revision": result.stdout.strip()}
+    except subprocess.TimeoutExpired as exc:
+        raise MigrationCommandTimedOutError("Status check timed out") from exc
+    except AdminServiceError:
+        raise
+    except Exception as exc:
+        raise MigrationCommandFailedError(str(exc)) from exc
 
 
 def backend_log_to_dict(row: BackendLog) -> dict[str, Any]:
