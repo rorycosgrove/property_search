@@ -731,12 +731,11 @@ class TestGrantsEndpoint:
         app.dependency_overrides[get_db_session] = lambda: mock_session
 
         try:
-            with patch("apps.api.routers.grants.GrantProgramRepository") as MockRepo:
-                instance = MockRepo.return_value
-                instance.list_programs.return_value = []
+            with patch("apps.api.routers.grants.grants_list", return_value=[]) as mock_list:
                 resp = client.get("/api/v1/grants")
                 assert resp.status_code == 200
                 assert resp.json() == []
+                mock_list.assert_called_once_with(mock_session, country=None, active_only=True)
         finally:
             app.dependency_overrides.clear()
 
@@ -775,6 +774,52 @@ class TestGrantsEndpoint:
                 assert resp.status_code == 200
                 assert resp.json() == []
                 mock_grants_property.assert_called_once_with(mock_session, "prop-1")
+        finally:
+            app.dependency_overrides.clear()
+
+    def test_discover_grant_programs(self, client):
+        with patch(
+            "apps.api.routers.grants.grants_discover",
+            return_value={"candidates_found": 3, "created": 1, "existing": 2, "dry_run": True},
+        ) as mock_discover:
+            resp = client.post("/api/v1/grants/discover?dry_run=true")
+
+            assert resp.status_code == 200
+            assert resp.json()["candidates_found"] == 3
+            mock_discover.assert_called_once_with(dry_run=True)
+
+    def test_list_discovered_grants(self, client):
+        from packages.storage.database import get_db_session
+
+        mock_session = MagicMock()
+        app.dependency_overrides[get_db_session] = lambda: mock_session
+
+        try:
+            with patch("apps.api.routers.grants.grants_list_discovered", return_value=[]) as mock_list:
+                resp = client.get("/api/v1/grants/discovered/pending")
+
+                assert resp.status_code == 200
+                assert resp.json() == []
+                mock_list.assert_called_once_with(mock_session)
+        finally:
+            app.dependency_overrides.clear()
+
+    def test_activate_discovered_grant_404(self, client):
+        from packages.grants.service import GrantNotFoundError
+        from packages.storage.database import get_db_session
+
+        mock_session = MagicMock()
+        app.dependency_overrides[get_db_session] = lambda: mock_session
+
+        try:
+            with patch(
+                "apps.api.routers.grants.grants_activate_discovered",
+                side_effect=GrantNotFoundError("g-404"),
+            ):
+                resp = client.post("/api/v1/grants/g-404/activate")
+
+                assert resp.status_code == 404
+                assert "Grant not found" in resp.text
         finally:
             app.dependency_overrides.clear()
 
