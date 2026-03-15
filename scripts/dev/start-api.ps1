@@ -33,6 +33,19 @@ function Test-PortFree([int]$Port) {
 
 Import-DotEnv (Join-Path $repoRoot '.env')
 
+# Local default: process tasks inline so Sources actions update immediately.
+# Set LOCAL_USE_SQS=1 to keep queue URLs and force dispatch mode.
+$localUseSqsRaw = ''
+if ($env:LOCAL_USE_SQS) {
+  $localUseSqsRaw = $env:LOCAL_USE_SQS
+}
+$useSqsLocal = ($localUseSqsRaw.Trim().ToLower() -in @('1', 'true', 'yes', 'on'))
+if (-not $useSqsLocal) {
+  [Environment]::SetEnvironmentVariable('SCRAPE_QUEUE_URL', $null, 'Process')
+  [Environment]::SetEnvironmentVariable('ALERT_QUEUE_URL', $null, 'Process')
+  [Environment]::SetEnvironmentVariable('LLM_QUEUE_URL', $null, 'Process')
+}
+
 if (-not $env:LLM_ENABLED) { $env:LLM_ENABLED = 'true' }
 if (-not $env:AWS_REGION) { $env:AWS_REGION = 'eu-west-1' }
 if (-not $env:BEDROCK_MODEL_ID) { $env:BEDROCK_MODEL_ID = 'anthropic.claude-3-haiku-20240307-v1:0' }
@@ -66,10 +79,22 @@ Set-Content -Path (Join-Path $runtimeDir 'api-port.txt') -Value $port -NoNewline
 
 Write-Host "Starting API on http://localhost:$port" -ForegroundColor Cyan
 Write-Host "LLM_ENABLED=$($env:LLM_ENABLED), AWS_REGION=$($env:AWS_REGION)" -ForegroundColor DarkCyan
+if ($useSqsLocal) {
+  Write-Host 'LOCAL_USE_SQS is enabled; queue dispatch mode is active.' -ForegroundColor DarkCyan
+} else {
+  Write-Host 'LOCAL_USE_SQS not set; running tasks inline for local dev.' -ForegroundColor Yellow
+}
+
+if ($env:SCRAPE_QUEUE_URL) {
+  Write-Host 'SCRAPE_QUEUE_URL is set' -ForegroundColor DarkCyan
+} else {
+  Write-Host '[INFO] SCRAPE_QUEUE_URL not set; source triggers run inline locally.' -ForegroundColor DarkCyan
+}
+
 if ($env:LLM_QUEUE_URL) {
   Write-Host 'LLM_QUEUE_URL is set' -ForegroundColor DarkCyan
 } else {
-  Write-Host '[WARN] LLM_QUEUE_URL not set; /api/v1/llm/enrich/* may return 503' -ForegroundColor Yellow
+  Write-Host '[WARN] LLM_QUEUE_URL not set; /api/v1/llm/enrich/* may return 503.' -ForegroundColor Yellow
 }
 
 python -m uvicorn apps.api.main:app --reload --port $port
