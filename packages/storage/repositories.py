@@ -36,6 +36,7 @@ from packages.storage.models import (
     GrantProgram,
     LLMEnrichment,
     Property,
+    PropertyDocument,
     PropertyGrantMatch,
     PropertyPriceHistory,
     OrganicSearchRun,
@@ -860,6 +861,49 @@ class LLMEnrichmentRepository:
             )
         )
         return float(result) if result else None
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# PropertyDocumentRepository
+# ──────────────────────────────────────────────────────────────────────────────
+
+class PropertyDocumentRepository:
+    def __init__(self, session: Session):
+        self.session = session
+
+    def get_by_document_key(self, document_key: str) -> PropertyDocument | None:
+        return self.session.scalar(
+            select(PropertyDocument).where(PropertyDocument.document_key == document_key)
+        )
+
+    def upsert_document(self, document_key: str, **kwargs) -> PropertyDocument:
+        document = self.get_by_document_key(document_key)
+        if document:
+            for key, value in kwargs.items():
+                if hasattr(document, key):
+                    setattr(document, key, value)
+            document.updated_at = utc_now()
+        else:
+            document = PropertyDocument(document_key=document_key, **kwargs)
+            self.session.add(document)
+        self.session.flush()
+        return document
+
+    def list_for_property(self, property_id: str) -> list[PropertyDocument]:
+        query = (
+            select(PropertyDocument)
+            .where(PropertyDocument.property_id == property_id)
+            .order_by(PropertyDocument.document_type.asc(), PropertyDocument.effective_at.desc().nullslast())
+        )
+        return list(self.session.scalars(query))
+
+    def list_for_scope(self, scope_type: str, scope_key: str) -> list[PropertyDocument]:
+        query = (
+            select(PropertyDocument)
+            .where(PropertyDocument.scope_type == scope_type, PropertyDocument.scope_key == scope_key)
+            .order_by(PropertyDocument.document_type.asc(), PropertyDocument.effective_at.desc().nullslast())
+        )
+        return list(self.session.scalars(query))
 
 
 # ──────────────────────────────────────────────────────────────────────────────

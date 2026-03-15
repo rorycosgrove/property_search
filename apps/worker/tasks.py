@@ -112,6 +112,22 @@ def _nested_tx_or_noop(db: Any):
     return nullcontext()
 
 
+def _materialize_property_documents_safe(db: Any, property_id: str | None) -> None:
+    if not property_id:
+        return
+
+    from packages.ai.retrieval_documents import materialize_property_documents
+
+    try:
+        materialize_property_documents(db, property_id)
+    except Exception as exc:
+        logger.warning(
+            "property_document_materialization_failed",
+            property_id=property_id,
+            error=str(exc)[:300],
+        )
+
+
 # ── Source scraping tasks ─────────────────────────────────────────────────────
 
 
@@ -372,6 +388,7 @@ def scrape_source(source_id: str, force: bool = False) -> dict[str, Any]:
                                 price_change_pct=change_pct,
                             )
                             property_repo.update(str(existing.id), price=new_price, status="price_changed")
+                            _materialize_property_documents_safe(db, str(existing.id))
                             updated_count += 1
                         else:
                             skipped_count += 1
@@ -405,7 +422,9 @@ def scrape_source(source_id: str, force: bool = False) -> dict[str, Any]:
                     record["first_listed_at"] = datetime.now(UTC)
                     try:
                         with _nested_tx_or_noop(db):
-                            property_repo.create(**record)
+                            created_property = property_repo.create(**record)
+                            created_property_id = str(created_property.id) if getattr(created_property, "id", None) else None
+                            _materialize_property_documents_safe(db, created_property_id)
                         new_count += 1
                     except IntegrityError:
                         skipped_count += 1
@@ -717,6 +736,7 @@ def enrich_property_llm(property_id: str) -> dict[str, Any]:
         try:
             result = _run_async(enrich_property(property_data, nearby_sold))
             enrichment_repo.upsert(property_id, result)
+            _materialize_property_documents_safe(db, property_id)
             db.commit()
             _record_backend_log(
                 level="INFO",
@@ -737,6 +757,24 @@ def enrich_property_llm(property_id: str) -> dict[str, Any]:
                 context={"property_id": property_id, "error": str(exc)[:300]},
             )
             raise
+
+
+def materialize_market_documents_task(county: str | None = None) -> dict[str, Any]:
+    """Materialize market snapshot retrieval documents."""
+    from packages.ai.retrieval_documents import materialize_market_documents
+    from packages.storage.database import get_session
+
+    with get_session() as db:
+        count = materialize_market_documents(db, county=county)
+        db.commit()
+
+    _record_backend_log(
+        level="INFO",
+        event_type="market_documents_materialized",
+        message="Market retrieval documents materialized",
+        context={"county": county, "documents": count},
+    )
+    return {"county": county, "documents": count}
 
 def enrich_batch_llm(limit: int = LLM_BATCH_SIZE) -> dict[str, Any]:
     """Enrich a batch of un-enriched properties."""

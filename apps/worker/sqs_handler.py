@@ -31,6 +31,7 @@ def _register_handlers():
         enrich_property_llm,
         evaluate_alerts,
         import_ppr,
+        materialize_market_documents_task,
         scrape_all_sources,
         scrape_source,
     )
@@ -45,6 +46,7 @@ def _register_handlers():
             "evaluate_alerts": evaluate_alerts,
             "enrich_property_llm": enrich_property_llm,
             "enrich_batch_llm": enrich_batch_llm,
+            "materialize_market_documents": materialize_market_documents_task,
             "cleanup_old_alerts": cleanup_old_alerts,
         }
     )
