@@ -9,6 +9,11 @@ from typing import Any
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
 
+from packages.ai.chat_service import (
+    create_conversation_payload,
+    get_conversation_payload,
+    send_message_payload,
+)
 from packages.ai.compare_service import (
     compute_compare_set,
     latest_auto_compare_payload,
@@ -409,23 +414,21 @@ def get_latest_auto_compare(
 @router.post("/chat/conversations", status_code=201)
 def create_conversation(data: ConversationCreate, db: Session = Depends(get_db_session)):
     """Create a new LLM chat conversation."""
-    repo = ConversationRepository(db)
-    convo = repo.create_conversation(
-        user_identifier=data.user_identifier,
-        title=data.title,
-        context=data.context,
+    return create_conversation_payload(
+        db=db,
+        data=data,
+        conversation_repo_factory=ConversationRepository,
     )
-    return _conversation_to_dict(convo)
 
 
 @router.get("/chat/conversations/{conversation_id}")
 def get_conversation(conversation_id: str, db: Session = Depends(get_db_session)):
     """Get a conversation and all messages."""
-    repo = ConversationRepository(db)
-    convo = repo.get_conversation(conversation_id)
-    if not convo:
-        raise HTTPException(404, "Conversation not found")
-    return _conversation_to_dict(convo)
+    return get_conversation_payload(
+        db=db,
+        conversation_id=conversation_id,
+        conversation_repo_factory=ConversationRepository,
+    )
 
 
 @router.post("/chat/conversations/{conversation_id}/messages")
@@ -435,192 +438,15 @@ async def send_message(
     db: Session = Depends(get_db_session),
 ):
     """Send a user message and receive assistant response."""
-    convo_repo = ConversationRepository(db)
-    property_repo = PropertyRepository(db)
-
-    convo = convo_repo.get_conversation(conversation_id)
-    if not convo:
-        raise HTTPException(404, "Conversation not found")
-
-    # Save user message first.
-    user_msg = convo_repo.add_message(
+    return await send_message_payload(
+        db=db,
         conversation_id=conversation_id,
-        role="user",
-        content=data.content,
+        data=data,
+        conversation_repo_factory=ConversationRepository,
+        property_repo_factory=PropertyRepository,
+        ensure_property_grants_fn=_ensure_property_grants,
+        serialize_grant_citations_fn=_serialize_grant_citations,
+        provider_getter=_get_provider_dynamic,
     )
-
-    # Build a grounded context payload for prompt assembly.
-    property_context = None
-    request_context = dict(data.retrieval_context or {})
-    if data.property_id:
-        prop = property_repo.get_by_id(data.property_id)
-        if prop:
-            grant_matches = _ensure_property_grants(db, prop)
-            property_context = {
-                "id": str(prop.id),
-                "title": prop.title,
-                "address": prop.address,
-                "county": prop.county,
-                "price": float(prop.price) if prop.price is not None else None,
-                "property_type": prop.property_type,
-                "bedrooms": prop.bedrooms,
-                "bathrooms": prop.bathrooms,
-                "ber_rating": prop.ber_rating,
-                "url": prop.url,
-                "grants": [
-                    {
-                        "code": m.grant_program.code if m.grant_program else None,
-                        "name": m.grant_program.name if m.grant_program else None,
-                        "status": m.status,
-                        "estimated_benefit": float(m.estimated_benefit) if m.estimated_benefit is not None else None,
-                    }
-                    for m in grant_matches
-                ],
-            }
-            request_context.update(
-                {
-                    "selected_property_id": str(prop.id),
-                    "selected_property_title": prop.title,
-                    "grant_count": len(grant_matches),
-                    "grants_considered": [
-                        {
-                            "code": m.grant_program.code if m.grant_program else None,
-                            "status": m.status,
-                            "estimated_benefit": float(m.estimated_benefit)
-                            if m.estimated_benefit is not None
-                            else None,
-                        }
-                        for m in grant_matches[:5]
-                    ],
-                }
-            )
-
-    from packages.ai.service import get_provider
-
-    provider = get_provider()
-    prompt = _build_chat_prompt(
-        user_content=data.content,
-        property_context=property_context,
-        retrieval_context=request_context,
-    )
-    response = await provider.generate(
-        prompt=prompt,
-        system_prompt=(
-            "You are Property Copilot for Ireland and UK/NI housing markets. "
-            "Answer with clear recommendations, and when facts are property-specific "
-            "or scheme-specific, include concise citation hints."
-        ),
-        temperature=0.3,
-        max_tokens=1200,
-    )
-
-    citations = []
-    if property_context:
-        citations.append(
-            {
-                "type": "property",
-                "property_id": property_context["id"],
-                "url": property_context.get("url"),
-                "label": property_context.get("title"),
-            }
-        )
-        citations.extend(_serialize_grant_citations(grant_matches))
-
-    assistant_msg = convo_repo.add_message(
-        conversation_id=conversation_id,
-        role="assistant",
-        content=response.content,
-        citations=citations,
-        prompt_tokens=response.prompt_tokens,
-        completion_tokens=response.completion_tokens,
-        total_tokens=response.total_tokens,
-        processing_time_ms=response.processing_time_ms,
-    )
-
-    return {
-        "conversation_id": conversation_id,
-        "user_message": _message_to_dict(user_msg),
-        "assistant_message": _message_to_dict(assistant_msg),
-        "retrieval_context": request_context,
-    }
-
-
-def _build_chat_prompt(
-    user_content: str,
-    property_context: dict | None,
-    retrieval_context: dict[str, Any] | None,
-) -> str:
-    retrieval = retrieval_context or {}
-    retrieval_lines = ""
-    if retrieval:
-        retrieval_lines = (
-            "Current retrieval context:\n"
-            f"- ranking_mode: {retrieval.get('ranking_mode')}\n"
-            f"- shortlist_size: {retrieval.get('shortlist_size')}\n"
-            f"- winner_property_id: {retrieval.get('winner_property_id')}\n"
-            f"- winner_property_title: {retrieval.get('winner_property_title')}\n"
-            "\n"
-        )
-
-    if not property_context:
-        return f"{retrieval_lines}User question:\n{user_content}" if retrieval_lines else user_content
-
-    grants = property_context.get("grants") or []
-    grant_lines = ""
-    if grants:
-        formatted = []
-        for grant in grants[:5]:
-            name = grant.get("name") or grant.get("code") or "Unknown grant"
-            status = grant.get("status") or "unknown"
-            benefit = grant.get("estimated_benefit")
-            benefit_text = f", est benefit {benefit}" if benefit is not None else ""
-            formatted.append(f"- {name}: {status}{benefit_text}")
-        grant_lines = "Potential grants:\n" + "\n".join(formatted) + "\n"
-
-    return (
-        f"{retrieval_lines}"
-        "Context property:\n"
-        f"- ID: {property_context.get('id')}\n"
-        f"- Title: {property_context.get('title')}\n"
-        f"- Address: {property_context.get('address')}\n"
-        f"- County: {property_context.get('county')}\n"
-        f"- Price: {property_context.get('price')}\n"
-        f"- Type: {property_context.get('property_type')}\n"
-        f"- Beds/Baths: {property_context.get('bedrooms')}/{property_context.get('bathrooms')}\n"
-        f"- BER: {property_context.get('ber_rating')}\n"
-        f"{grant_lines}"
-        "\n"
-        "User question:\n"
-        f"{user_content}"
-    )
-
-
-def _message_to_dict(msg) -> dict:
-    return {
-        "id": str(msg.id),
-        "conversation_id": str(msg.conversation_id),
-        "role": msg.role,
-        "content": msg.content,
-        "citations": msg.citations or [],
-        "prompt_tokens": msg.prompt_tokens,
-        "completion_tokens": msg.completion_tokens,
-        "total_tokens": msg.total_tokens,
-        "processing_time_ms": msg.processing_time_ms,
-        "created_at": msg.created_at.isoformat() if msg.created_at else None,
-    }
-
-
-def _conversation_to_dict(convo) -> dict:
-    messages = list(convo.messages or [])
-    messages.sort(key=lambda m: m.created_at)
-    return {
-        "id": str(convo.id),
-        "title": convo.title,
-        "user_identifier": convo.user_identifier,
-        "context": convo.context or {},
-        "created_at": convo.created_at.isoformat() if convo.created_at else None,
-        "updated_at": convo.updated_at.isoformat() if convo.updated_at else None,
-        "messages": [_message_to_dict(m) for m in messages],
-    }
 
 
