@@ -84,10 +84,17 @@ class TestDeduplicationId:
 
 class TestDispatchOrInline:
     def test_dispatch_or_inline_returns_dispatched(self):
-        with patch("packages.shared.queue.send_task", return_value="msg-123"):
-            result = dispatch_or_inline("llm", "enrich_property_llm", {"property_id": "p1"}, lambda **_k: {})
+        with patch.dict("os.environ", {"LOCAL_USE_SQS": "1"}, clear=False):
+            with patch("packages.shared.queue.send_task", return_value="msg-123"):
+                result = dispatch_or_inline("llm", "enrich_property_llm", {"property_id": "p1"}, lambda **_k: {})
 
         assert result == {"status": "dispatched", "task_id": "msg-123"}
+
+    def test_dispatch_or_inline_defaults_to_inline_locally(self):
+        with patch.dict("os.environ", {"LOCAL_USE_SQS": "", "FORCE_INLINE_TASKS": ""}, clear=False):
+            result = dispatch_or_inline("llm", "enrich_property_llm", {"property_id": "p1"}, lambda **_k: {})
+
+        assert result["status"] == "processed_inline"
 
     def test_dispatch_or_inline_falls_back_for_unconfigured_queue(self):
         with patch(
@@ -105,9 +112,10 @@ class TestDispatchOrInline:
         assert result["result"]["property_id"] == "p1"
 
     def test_dispatch_or_inline_raises_queue_dispatch_error_for_runtime_dispatch_failures(self):
-        with patch("packages.shared.queue.send_task", side_effect=RuntimeError("SQS unavailable")):
-            with pytest.raises(QueueDispatchError) as exc_info:
-                dispatch_or_inline("llm", "enrich_property_llm", {"property_id": "p1"}, lambda **_k: {})
+        with patch.dict("os.environ", {"LOCAL_USE_SQS": "1"}, clear=False):
+            with patch("packages.shared.queue.send_task", side_effect=RuntimeError("SQS unavailable")):
+                with pytest.raises(QueueDispatchError) as exc_info:
+                    dispatch_or_inline("llm", "enrich_property_llm", {"property_id": "p1"}, lambda **_k: {})
 
         assert exc_info.value.queue_name == "llm"
         assert exc_info.value.task_type == "enrich_property_llm"

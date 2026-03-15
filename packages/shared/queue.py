@@ -140,6 +140,32 @@ def is_queue_unconfigured_error(exc: Exception) -> bool:
     return "no queue url configured" in str(exc).lower()
 
 
+def _is_truthy(value: str | None) -> bool:
+    if value is None:
+        return False
+    return value.strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _should_inline_locally() -> bool:
+    """Return True when local/dev runtime should prefer inline task execution.
+
+    Lambda deployments always dispatch to queues. Non-Lambda runtimes default to
+    inline execution unless explicitly opted into queue mode.
+    """
+    if os.environ.get("AWS_LAMBDA_FUNCTION_NAME"):
+        return False
+
+    # Explicit override for local dev and integration environments.
+    if _is_truthy(os.environ.get("LOCAL_USE_SQS")):
+        return False
+
+    force_inline_raw = os.environ.get("FORCE_INLINE_TASKS")
+    if force_inline_raw is not None:
+        return _is_truthy(force_inline_raw)
+
+    return True
+
+
 def dispatch_or_inline(
     queue_name: str,
     task_type: str,
@@ -150,6 +176,13 @@ def dispatch_or_inline(
 
     Unexpected dispatch/runtime errors are re-raised for caller-specific handling.
     """
+    if _should_inline_locally():
+        result = inline_fn(**payload)
+        return {
+            "status": "processed_inline",
+            "result": result,
+        }
+
     try:
         task_id = send_task(queue_name, task_type, payload)
         return {
