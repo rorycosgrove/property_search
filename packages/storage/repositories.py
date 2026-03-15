@@ -184,6 +184,29 @@ class PropertyRepository:
             select(Property).where(Property.content_hash == content_hash)
         )
 
+    def get_by_external_id_and_source(self, source_id: str, external_id: str) -> Property | None:
+        return self.session.scalar(
+            select(Property).where(
+                Property.source_id == source_id,
+                Property.external_id == external_id,
+            )
+        )
+
+    def get_by_canonical_property_id(self, canonical_property_id: str) -> Property | None:
+        return self.session.scalar(
+            select(Property)
+            .where(Property.canonical_property_id == canonical_property_id)
+            .order_by(Property.created_at.desc())
+        )
+
+    def list_by_canonical_property_id(self, canonical_property_id: str) -> list[Property]:
+        query = (
+            select(Property)
+            .where(Property.canonical_property_id == canonical_property_id)
+            .order_by(Property.created_at.desc())
+        )
+        return list(self.session.scalars(query))
+
     def list_properties(self, filters: PropertyFilters) -> tuple[list[Property], int]:
         """
         List properties with filtering, sorting, and pagination.

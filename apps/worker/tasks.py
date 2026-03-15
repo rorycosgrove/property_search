@@ -351,7 +351,12 @@ def scrape_source(source_id: str, force: bool = False) -> dict[str, Any]:
                     continue
 
                 record = normalizer.normalize(parsed)
-                existing = property_repo.get_by_content_hash(record["content_hash"])
+                existing = None
+                external_id = record.get("external_id")
+                if external_id:
+                    existing = property_repo.get_by_external_id_and_source(source_id, external_id)
+                if not existing:
+                    existing = property_repo.get_by_content_hash(record["content_hash"])
 
                 if existing:
                     if record.get("price") and existing.price:

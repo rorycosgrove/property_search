@@ -13,6 +13,7 @@ from typing import Any
 
 from packages.shared.logging import get_logger
 from packages.shared.utils import (
+    canonical_property_id,
     content_hash,
     extract_county,
     extract_eircode,
@@ -174,12 +175,15 @@ class PropertyNormalizer:
         # Persist fuzzy hash in raw_data metadata so downstream merge logic can use it.
         raw_data = dict(prop.raw_data or {})
         raw_data["fuzzy_address_hash"] = fuzzy_address_hash(address)
+        canonical_id = canonical_property_id(address=address, county=county, eircode=eircode)
 
         record = {
             "title": prop.title.strip() if prop.title else "",
             "description": (prop.description or "").strip() or None,
             "url": prop.url.strip(),
+            "external_id": prop.external_id,
             "content_hash": c_hash,
+            "canonical_property_id": canonical_id,
             "address": address,
             "address_line1": prop.address_line1,
             "address_line2": prop.address_line2,
@@ -207,6 +211,7 @@ class PropertyNormalizer:
             county=county,
             price=price,
             content_hash=c_hash[:16],
+            canonical_property_id=(canonical_id[:16] if canonical_id else None),
         )
 
         return record

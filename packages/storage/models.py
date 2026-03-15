@@ -92,6 +92,7 @@ class Property(Base):
         index=True,
     )
     external_id: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    canonical_property_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
 
     # Core listing fields
     title: Mapped[str] = mapped_column(String(500), nullable=False)
@@ -178,6 +179,8 @@ class Property(Base):
     __table_args__ = (
         Index("ix_properties_county_price", "county", "price"),
         Index("ix_properties_status_created", "status", "created_at"),
+        Index("ix_properties_canonical_property_id", "canonical_property_id"),
+        Index("ix_properties_source_external_id", "source_id", "external_id"),
         {"schema": None},
     )
 
