@@ -65,11 +65,14 @@ if errorlevel 1 (
   echo [WARN] Seeding failed. Continuing startup.
 )
 
-echo [5/6] Starting API window...
+echo [5/7] Starting API window...
 start "PropertySearch API" cmd /k "cd /d %~dp0 && start-api-llm.cmd"
 
-echo [6/6] Starting Web window...
+echo [6/7] Starting Web window...
 start "PropertySearch Web" cmd /k "cd /d %~dp0web && start-dev.cmd"
+
+echo [7/7] Starting Local SQS Worker window...
+start "PropertySearch SQS Worker" cmd /k "cd /d %~dp0 && start-sqs-worker.cmd"
 
 echo.
 set "API_PORT=8000"
