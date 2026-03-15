@@ -74,19 +74,21 @@ class TestAdminLogsEndpoint:
         app.dependency_overrides[get_db_session] = lambda: mock_session
 
         try:
-            with patch("apps.api.routers.admin.BackendLogRepository") as MockRepo:
-                row = MagicMock(
-                    id="log-1",
-                    created_at=datetime(2026, 3, 9),
-                    level="INFO",
-                    event_type="scrape_source_complete",
-                    component="worker.tasks",
-                    source_id="source-1",
-                    message="done",
-                    context_json={"new": 1},
-                )
-                repo = MockRepo.return_value
-                repo.list_recent.return_value = [row]
+            with patch(
+                "apps.api.routers.admin.list_backend_logs",
+                return_value=[
+                    {
+                        "id": "log-1",
+                        "timestamp": "2026-03-09T00:00:00",
+                        "level": "INFO",
+                        "event_type": "scrape_source_complete",
+                        "component": "worker.tasks",
+                        "source_id": "source-1",
+                        "message": "done",
+                        "context": {"new": 1},
+                    }
+                ],
+            ) as mock_list:
 
                 resp = client.get("/api/v1/admin/backend-logs?hours=12&limit=5")
 
@@ -96,6 +98,13 @@ class TestAdminLogsEndpoint:
                 assert data[0]["id"] == "log-1"
                 assert data[0]["event_type"] == "scrape_source_complete"
                 assert data[0]["context"]["new"] == 1
+                mock_list.assert_called_once_with(
+                    mock_session,
+                    hours=12,
+                    limit=5,
+                    level=None,
+                    event_type=None,
+                )
         finally:
             app.dependency_overrides.clear()
 
@@ -106,9 +115,8 @@ class TestAdminLogsEndpoint:
         app.dependency_overrides[get_db_session] = lambda: mock_session
 
         try:
-            with patch("apps.api.routers.admin.BackendLogRepository") as MockRepo:
-                repo = MockRepo.return_value
-                repo.summary.return_value = {
+            with patch("apps.api.routers.admin.backend_logs_summary") as mock_summary:
+                mock_summary.return_value = {
                     "hours": 24,
                     "total": 3,
                     "by_level": [{"level": "ERROR", "count": 1}],
@@ -121,6 +129,7 @@ class TestAdminLogsEndpoint:
                 data = resp.json()
                 assert data["total"] == 3
                 assert data["by_level"][0]["level"] == "ERROR"
+                mock_summary.assert_called_once_with(mock_session, hours=24)
         finally:
             app.dependency_overrides.clear()
 
