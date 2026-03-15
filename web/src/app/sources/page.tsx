@@ -1,6 +1,6 @@
 'use client';
 
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   approveDiscoveredSource,
   getBackendLogs,
@@ -31,6 +31,10 @@ export default function SourcesPage() {
   const [sourceActivityLogs, setSourceActivityLogs] = useState<BackendLogEntry[]>([]);
   const refreshBurstTimersRef = useRef<number[]>([]);
 
+  const latestScrapeComplete = useMemo(() => {
+    return sourceActivityLogs.find((entry) => entry.event_type === 'scrape_source_complete') || null;
+  }, [sourceActivityLogs]);
+
   const clearRefreshBurstTimers = useCallback(() => {
     refreshBurstTimersRef.current.forEach((timer) => window.clearTimeout(timer));
     refreshBurstTimersRef.current = [];
@@ -46,7 +50,7 @@ export default function SourcesPage() {
         getOrganicSearchHistory(20),
         getBackendLogs({ hours: 72, limit: 40 }),
       ]);
-      const relevantEventPrefixes = ['source_', 'organic_search_', 'discovery_'];
+      const relevantEventPrefixes = ['source_', 'organic_search_', 'discovery_', 'scrape_'];
       const filteredLogs = nextLogs.filter((entry) =>
         relevantEventPrefixes.some((prefix) => entry.event_type.startsWith(prefix)),
       );
@@ -108,7 +112,11 @@ export default function SourcesPage() {
       const steps = response.steps.map((s) => s.step).join(' -> ');
       const mode = response.status === 'processed_inline' ? 'inline' : response.status;
       const createdAt = response.created_at ? new Date(response.created_at).toLocaleString() : null;
-      setToast(`Forced full organic search started (${mode})${createdAt ? ` at ${createdAt}` : ''}: ${steps}`);
+      setToast(
+        response.status === 'dispatched'
+          ? `Full organic search queued${createdAt ? ` at ${createdAt}` : ''}. Track progress in Recent Source Activity (look for scrape_source_complete).`
+          : `Forced full organic search started (${mode})${createdAt ? ` at ${createdAt}` : ''}: ${steps}`,
+      );
       await refreshSourcesView();
       scheduleRefreshBurst();
     } catch (error) {
@@ -181,6 +189,11 @@ export default function SourcesPage() {
         </div>
         <p className="mt-3 text-xs text-[var(--muted)]">
           {lastRefreshedAt ? `Last refreshed ${new Date(lastRefreshedAt).toLocaleString()}` : 'Refreshing source status...'}
+        </p>
+        <p className="mt-1 text-xs text-[var(--muted)]">
+          {latestScrapeComplete?.timestamp
+            ? `Latest scrape completion: ${new Date(latestScrapeComplete.timestamp).toLocaleString()}`
+            : 'No scrape completion events yet.'}
         </p>
       </div>
 
@@ -277,6 +290,11 @@ export default function SourcesPage() {
                       </p>
                     ))}
                   </div>
+                  {run.status === 'dispatched' ? (
+                    <p className="mt-2 text-xs text-amber-300">
+                      Queued scan: dispatch finished, waiting on worker completion. Watch Recent Source Activity for scrape_source_complete events.
+                    </p>
+                  ) : null}
                   {discovery || sourcesSummary ? (
                     <div className="mt-2 text-xs text-[var(--muted)] space-y-1">
                       {discovery ? (
