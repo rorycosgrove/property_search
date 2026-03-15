@@ -895,7 +895,8 @@ def discover_all_sources(
         Also run grant source discovery (``packages.grants.discovery``).
     """
     from packages.sources.discovery import canonicalize_source_url, load_all_discovery_candidates
-    from packages.sources.registry import get_adapter, get_adapter_names
+    from packages.sources.registry import get_adapter_names
+    from packages.sources.service import validate_discovery_candidate
     from packages.storage.database import get_session
     from packages.storage.repositories import SourceRepository
 
@@ -936,38 +937,29 @@ def discover_all_sources(
                     continue
 
                 candidate = scored_c.candidate
-                adapter_name = (candidate.get("adapter_name") or "").strip().lower()
-                url = (candidate.get("url") or "").strip()
-                canonical_url = canonicalize_source_url(str(url or ""))
-
-                if adapter_name not in adapter_names or not url or not canonical_url:
-                    property_stats["skipped_invalid"] += 1
+                validated, reason, errors = validate_discovery_candidate(
+                    candidate,
+                    adapter_names=adapter_names,
+                )
+                if not validated:
+                    if reason == "invalid_adapter_config":
+                        property_stats["skipped_invalid_config"] += 1
+                        logger.warning(
+                            "discover_all_sources_skip_invalid_config",
+                            adapter_name=candidate.get("adapter_name"),
+                            url=candidate.get("url"),
+                            errors=errors,
+                        )
+                    else:
+                        property_stats["skipped_invalid"] += 1
                     continue
 
-                config = candidate.get("config") or {}
-                try:
-                    adapter = get_adapter(adapter_name)
-                except KeyError:
-                    property_stats["skipped_invalid"] += 1
-                    continue
-
-                config_errors = adapter.validate_config(config)
-                if config_errors:
-                    property_stats["skipped_invalid_config"] += 1
-                    logger.warning(
-                        "discover_all_sources_skip_invalid_config",
-                        adapter_name=adapter_name,
-                        url=url,
-                        errors=config_errors,
-                    )
-                    continue
-
-                if canonical_url in existing_by_canonical:
+                if validated.canonical_url in existing_by_canonical:
                     property_stats["existing"] += 1
                     continue
 
                 auto_enable = scored_c.should_auto_enable
-                tags = list(candidate.get("tags") or [])
+                tags = list(validated.tags)
                 if "auto_discovered" not in tags:
                     tags.append("auto_discovered")
                 if not auto_enable and "pending_approval" not in tags:
@@ -976,16 +968,16 @@ def discover_all_sources(
                 tags.append(f"confidence:{scored_c.score:.2f}")
 
                 repo.create(
-                    name=candidate.get("name") or f"Discovered {adapter_name}",
-                    url=url,
-                    adapter_type=candidate.get("adapter_type") or "scraper",
-                    adapter_name=adapter_name,
-                    config=config,
+                    name=validated.name,
+                    url=validated.url,
+                    adapter_type=validated.adapter_type,
+                    adapter_name=validated.adapter_name,
+                    config=validated.config,
                     enabled=auto_enable,
-                    poll_interval_seconds=int(candidate.get("poll_interval_seconds") or 21600),
+                    poll_interval_seconds=validated.poll_interval_seconds,
                     tags=tags,
                 )
-                existing_by_canonical[canonical_url] = True
+                existing_by_canonical[validated.canonical_url] = True
                 created_count += 1
 
                 if auto_enable:
@@ -994,8 +986,8 @@ def discover_all_sources(
                     property_stats["pending_approval"] += 1
 
                 property_stats["created"].append({
-                    "name": candidate.get("name"),
-                    "url": url,
+                    "name": validated.name,
+                    "url": validated.url,
                     "score": scored_c.score,
                     "activation": scored_c.activation,
                 })

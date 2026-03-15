@@ -9,7 +9,8 @@ from sqlalchemy.orm import Session
 
 from packages.shared.schemas import SourceCreate, SourceUpdate
 from packages.sources.discovery import canonicalize_source_url, load_discovery_candidates
-from packages.sources.registry import get_adapter, get_adapter_names, list_adapters
+from packages.sources.registry import get_adapter_names, list_adapters
+from packages.sources.service import validate_discovery_candidate, validate_source_config
 from packages.storage.database import get_db_session
 from packages.storage.models import BackendLog
 from packages.storage.repositories import OrganicSearchRunRepository, SourceRepository
@@ -44,13 +45,10 @@ def _record_backend_event(
 
 
 def _validate_source_config(adapter_name: str, config: dict | None) -> None:
-    try:
-        adapter = get_adapter(adapter_name)
-    except KeyError as exc:
-        raise HTTPException(400, f"Unknown adapter: {adapter_name}") from exc
-
-    errors = adapter.validate_config(config or {})
+    errors = validate_source_config(adapter_name, config)
     if errors:
+        if len(errors) == 1 and errors[0] == f"unknown adapter: {adapter_name}":
+            raise HTTPException(400, f"Unknown adapter: {adapter_name}")
         raise HTTPException(
             status_code=400,
             detail={
@@ -303,47 +301,38 @@ def discover_sources_auto(
     }
 
     for candidate in load_discovery_candidates()[:limit]:
-        adapter_name = candidate.get("adapter_name")
-        url = candidate.get("url")
-        canonical_url = canonicalize_source_url(str(url or ""))
-        if adapter_name not in adapter_names or not url or not canonical_url:
-            skipped_invalid.append({"url": url, "reason": "unknown_adapter_or_missing_url", "timestamp": timestamp})
-            continue
-
-        adapter = get_adapter(adapter_name)
-        config = candidate.get("config") or {}
-        config_errors = adapter.validate_config(config)
-        if config_errors:
+        validated, reason, errors = validate_discovery_candidate(candidate, adapter_names=adapter_names)
+        if not validated:
             skipped_invalid.append(
                 {
-                    "url": url,
-                    "reason": "invalid_adapter_config",
-                    "errors": config_errors,
+                    "url": candidate.get("url"),
+                    "reason": reason,
+                    **({"errors": errors} if errors else {}),
                     "timestamp": timestamp,
                 }
             )
             continue
 
-        current = existing_by_canonical.get(canonical_url)
+        current = existing_by_canonical.get(validated.canonical_url)
         if current:
             existing.append({"id": str(current.id), "url": current.url, "name": current.name, "timestamp": timestamp})
             continue
 
         tags = _merge_tags(
-            candidate.get("tags", []),
+            validated.tags,
             ["auto_discovered"] + ([] if auto_enable else ["pending_approval"]),
         )
         source = repo.create(
-            name=candidate.get("name") or f"Discovered {adapter_name}",
-            url=url,
-            adapter_type=candidate.get("adapter_type") or "scraper",
-            adapter_name=adapter_name,
-            config=config,
+            name=validated.name,
+            url=validated.url,
+            adapter_type=validated.adapter_type,
+            adapter_name=validated.adapter_name,
+            config=validated.config,
             enabled=auto_enable,
-            poll_interval_seconds=int(candidate.get("poll_interval_seconds") or 21600),
+            poll_interval_seconds=validated.poll_interval_seconds,
             tags=tags,
         )
-        existing_by_canonical[canonical_url] = source
+        existing_by_canonical[validated.canonical_url] = source
         created.append(_to_dict(source))
 
     _record_backend_event(

@@ -96,13 +96,6 @@ def test_discover_auto_skips_candidates_with_invalid_adapter_config(client):
                 ],
             )
 
-            class _FakeAdapter:
-                def validate_config(self, config):
-                    if isinstance(config.get("areas"), list):
-                        return []
-                    return ["config.areas must be type 'array'"]
-
-            mp.setattr(sources_router, "get_adapter", lambda _name: _FakeAdapter())
             mp.setattr(sources_router, "get_adapter_names", lambda: ["daft"])
 
             response = client.post("/api/v1/sources/discover-auto")
