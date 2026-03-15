@@ -35,6 +35,22 @@ export default function SourcesPage() {
     return sourceActivityLogs.find((entry) => entry.event_type === 'scrape_source_complete') || null;
   }, [sourceActivityLogs]);
 
+  const scrapeProgress = useMemo(() => {
+    const totalEnabled = sources.filter(
+      (s) => s.enabled && !s.tags?.includes('pending_approval'),
+    ).length;
+    // Scope completions to the most recent run start so the counter resets per-run
+    const lastRunAt = runHistory[0]?.created_at ?? null;
+    const completedLogs = sourceActivityLogs.filter(
+      (entry) =>
+        entry.event_type === 'scrape_source_complete' &&
+        (!lastRunAt || new Date(entry.timestamp) >= new Date(lastRunAt)),
+    );
+    const uniqueIds = new Set(completedLogs.map((e) => e.source_id).filter(Boolean));
+    const completed = uniqueIds.size > 0 ? uniqueIds.size : completedLogs.length;
+    return { completed, total: totalEnabled };
+  }, [sources, sourceActivityLogs, runHistory]);
+
   const clearRefreshBurstTimers = useCallback(() => {
     refreshBurstTimersRef.current.forEach((timer) => window.clearTimeout(timer));
     refreshBurstTimersRef.current = [];
@@ -195,6 +211,24 @@ export default function SourcesPage() {
             ? `Latest scrape completion: ${new Date(latestScrapeComplete.timestamp).toLocaleString()}`
             : 'No scrape completion events yet.'}
         </p>
+        {scrapeProgress.completed > 0 && scrapeProgress.total > 0 ? (
+          <div className="mt-3">
+            <div className="flex items-center justify-between mb-1">
+              <p className="text-xs text-[var(--muted)]">
+                Sources scraped this run: <span className="font-semibold text-[var(--foreground)]">{scrapeProgress.completed}</span> / {scrapeProgress.total}
+              </p>
+              <p className="text-xs text-[var(--muted)]">
+                {Math.round((scrapeProgress.completed / scrapeProgress.total) * 100)}%
+              </p>
+            </div>
+            <div className="h-1.5 w-full max-w-xs rounded-full bg-[var(--card-border)] overflow-hidden">
+              <div
+                className="h-full rounded-full bg-[var(--accent)] transition-all duration-500"
+                style={{ width: `${Math.min(100, (scrapeProgress.completed / scrapeProgress.total) * 100)}%` }}
+              />
+            </div>
+          </div>
+        ) : null}
       </div>
 
       {toast ? (
