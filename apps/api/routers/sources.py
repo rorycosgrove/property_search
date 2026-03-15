@@ -8,7 +8,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
 
 from packages.shared.schemas import SourceCreate, SourceUpdate
-from packages.sources.discovery import load_discovery_candidates
+from packages.sources.discovery import load_all_discovery_candidates, load_discovery_candidates
 from packages.sources.registry import get_adapter_names, list_adapters
 from packages.sources.service import (
     SourceConfigValidationError,
@@ -19,7 +19,9 @@ from packages.sources.service import (
     discover_sources_auto as discover_sources_auto_service,
     list_pending_discovered_sources as list_pending_discovered_sources_service,
     organic_run_to_dict,
+    preview_discovery_candidates as preview_discovery_candidates_service,
     source_to_dict,
+    trigger_full_discovery as trigger_full_discovery_service,
     trigger_full_organic_search as trigger_full_organic_search_service,
     trigger_source_scrape as trigger_source_scrape_service,
     update_source as update_source_service,
@@ -27,7 +29,6 @@ from packages.sources.service import (
 from packages.storage.database import get_db_session
 from packages.storage.models import BackendLog
 from packages.storage.repositories import OrganicSearchRunRepository, SourceRepository
-from packages.shared.queue import QueueDispatchError, dispatch_or_inline
 
 router = APIRouter()
 
@@ -268,51 +269,24 @@ def discover_sources_full(
     Set ``follow_links=true`` to enable live HTTP crawling of seed pages for
     additional source discovery (takes longer).
     """
-    from apps.worker.tasks import discover_all_sources
-
-    timestamp = _now_iso()
-
     try:
-        result = dispatch_or_inline(
-            "scrape",
-            "discover_all_sources",
-            {
-                "limit": limit,
-                "dry_run": dry_run,
-                "follow_links": follow_links,
-                "include_grants": include_grants,
-            },
-            lambda: discover_all_sources(
-                limit=limit,
-                dry_run=dry_run,
-                follow_links=follow_links,
-                include_grants=include_grants,
-            ),
+        return trigger_full_discovery_service(
+            dry_run=dry_run,
+            follow_links=follow_links,
+            limit=limit,
+            include_grants=include_grants,
+            now_iso=_now_iso,
+            record_event=lambda **kwargs: _record_backend_event(db, **kwargs),
         )
-    except QueueDispatchError as exc:
+    except SourceDispatchFailedError as exc:
         raise HTTPException(
             status_code=503,
             detail={
-                "code": "discovery_dispatch_failed",
-                "message": "Failed to dispatch full discovery task to queue.",
-                "error": str(exc)[:300],
+                "code": exc.code,
+                "message": exc.message,
+                "error": exc.error,
             },
         ) from exc
-
-    _record_backend_event(
-        db,
-        event_type="unified_discovery_triggered",
-        message="Unified source + grant discovery triggered via API",
-        context={
-            "dry_run": dry_run,
-            "follow_links": follow_links,
-            "limit": limit,
-            "include_grants": include_grants,
-            "timestamp": timestamp,
-            "status": result.get("status"),
-        },
-    )
-    return result
 
 
 @router.get("/discover-full/preview")
@@ -324,25 +298,8 @@ def preview_discovery_candidates(
 
     Useful for auditing what the crawler would discover before triggering a run.
     """
-    from packages.sources.discovery import load_all_discovery_candidates
-
-    scored = load_all_discovery_candidates(use_crawler=True, follow_links=False, reject_below=0.0)
-    candidates = [
-        {
-            "name": sc.candidate.get("name"),
-            "url": sc.candidate.get("url"),
-            "adapter_name": sc.candidate.get("adapter_name"),
-            "adapter_type": sc.candidate.get("adapter_type"),
-            "score": sc.score,
-            "activation": sc.activation,
-            "reasons": sc.reasons,
-            "tags": sc.candidate.get("tags", []),
-        }
-        for sc in scored
-        if sc.score >= min_score
-    ]
-    return {
-        "total": len(candidates),
-        "shown": min(len(candidates), limit),
-        "candidates": candidates[:limit],
-    }
+    return preview_discovery_candidates_service(
+        limit=limit,
+        min_score=min_score,
+        candidate_loader=load_all_discovery_candidates,
+    )

@@ -403,3 +403,82 @@ def approve_discovered_source(
         context={"timestamp": now_iso(), "source_name": getattr(updated, "name", None)},
     )
     return source_to_dict(updated)
+
+
+def trigger_full_discovery(
+    *,
+    dry_run: bool,
+    follow_links: bool,
+    limit: int,
+    include_grants: bool,
+    now_iso: Callable[[], str],
+    record_event: Callable[..., None],
+) -> dict[str, Any]:
+    from apps.worker.tasks import discover_all_sources
+
+    timestamp = now_iso()
+    payload = {
+        "limit": limit,
+        "dry_run": dry_run,
+        "follow_links": follow_links,
+        "include_grants": include_grants,
+    }
+
+    try:
+        result = dispatch_or_inline(
+            "scrape",
+            "discover_all_sources",
+            payload,
+            lambda: discover_all_sources(
+                limit=limit,
+                dry_run=dry_run,
+                follow_links=follow_links,
+                include_grants=include_grants,
+            ),
+        )
+    except QueueDispatchError as exc:
+        raise SourceDispatchFailedError(
+            "discovery_dispatch_failed",
+            "Failed to dispatch full discovery task to queue.",
+            str(exc)[:300],
+            task_type="discover_all_sources",
+        ) from exc
+
+    record_event(
+        event_type="unified_discovery_triggered",
+        message="Unified source + grant discovery triggered via API",
+        context={
+            **payload,
+            "timestamp": timestamp,
+            "status": result.get("status"),
+        },
+    )
+    return result
+
+
+def preview_discovery_candidates(
+    *,
+    limit: int,
+    min_score: float,
+    candidate_loader: Callable[..., list[Any]],
+) -> dict[str, Any]:
+    scored = candidate_loader(use_crawler=True, follow_links=False, reject_below=0.0)
+    candidates = [
+        {
+            "name": sc.candidate.get("name"),
+            "url": sc.candidate.get("url"),
+            "adapter_name": sc.candidate.get("adapter_name"),
+            "adapter_type": sc.candidate.get("adapter_type"),
+            "score": sc.score,
+            "activation": sc.activation,
+            "reasons": sc.reasons,
+            "tags": sc.candidate.get("tags", []),
+        }
+        for sc in scored
+        if sc.score >= min_score
+    ]
+    return {
+        "total": len(candidates),
+        "shown": min(len(candidates), limit),
+        "candidates": candidates[:limit],
+    }

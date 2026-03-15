@@ -731,6 +731,49 @@ class TestSourcesEndpoint:
         finally:
             app.dependency_overrides.clear()
 
+    def test_discover_sources_full_returns_503_on_dispatch_failure(self, client):
+        from packages.storage.database import get_db_session
+
+        mock_session = MagicMock()
+        app.dependency_overrides[get_db_session] = lambda: mock_session
+
+        try:
+            with patch("packages.shared.queue.send_task", side_effect=RuntimeError("SQS down")):
+                resp = client.post("/api/v1/sources/discover-full")
+
+            assert resp.status_code == 503
+            detail = resp.json()["detail"]
+            assert detail["code"] == "discovery_dispatch_failed"
+            assert "full discovery task" in detail["message"].lower()
+        finally:
+            app.dependency_overrides.clear()
+
+    def test_preview_discovery_candidates_filters_by_score(self, client):
+        candidate_low = MagicMock(
+            candidate={"name": "Low", "url": "https://low", "adapter_name": "daft", "adapter_type": "scraper"},
+            score=0.2,
+            activation="reject",
+            reasons=["low confidence"],
+        )
+        candidate_high = MagicMock(
+            candidate={"name": "High", "url": "https://high", "adapter_name": "daft", "adapter_type": "scraper"},
+            score=0.9,
+            activation="enable",
+            reasons=["strong signal"],
+        )
+
+        with patch(
+            "apps.api.routers.sources.load_all_discovery_candidates",
+            return_value=[candidate_low, candidate_high],
+        ):
+            resp = client.get("/api/v1/sources/discover-full/preview?min_score=0.5&limit=10")
+
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["total"] == 1
+        assert data["shown"] == 1
+        assert data["candidates"][0]["name"] == "High"
+
 
 class TestGrantsEndpoint:
     def test_list_grants(self, client):
