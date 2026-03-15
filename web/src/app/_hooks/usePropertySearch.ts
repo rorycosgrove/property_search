@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 
 import { getProperties, type Property, type PropertyFilters, type PropertyListResponse } from '@/lib/api';
 
@@ -6,15 +6,40 @@ export function usePropertySearch(filters: PropertyFilters) {
   const [data, setData] = useState<PropertyListResponse | null>(null);
   const [mapProperties, setMapProperties] = useState<Property[]>([]);
   const [loading, setLoading] = useState(true);
+  const [refreshTick, setRefreshTick] = useState(0);
+
+  const stableFilters = useMemo(() => ({ ...filters }), [filters]);
+
+  useEffect(() => {
+    if (typeof window === 'undefined') {
+      return;
+    }
+
+    const tick = () => setRefreshTick((value) => value + 1);
+    const interval = window.setInterval(tick, 15000);
+
+    const onVisibility = () => {
+      if (document.visibilityState === 'visible') {
+        tick();
+      }
+    };
+
+    document.addEventListener('visibilitychange', onVisibility);
+
+    return () => {
+      window.clearInterval(interval);
+      document.removeEventListener('visibilitychange', onVisibility);
+    };
+  }, []);
 
   useEffect(() => {
     let cancelled = false;
 
     const loadSearchData = async () => {
-      const paginatedPromise = getProperties(filters);
+      const paginatedPromise = getProperties(stableFilters);
 
       const mapBaseFilters: PropertyFilters = {
-        ...filters,
+        ...stableFilters,
         page: 1,
         size: 100,
       };
@@ -56,7 +81,7 @@ export function usePropertySearch(filters: PropertyFilters) {
     return () => {
       cancelled = true;
     };
-  }, [filters]);
+  }, [stableFilters, refreshTick]);
 
   const properties: Property[] = data?.items || [];
 

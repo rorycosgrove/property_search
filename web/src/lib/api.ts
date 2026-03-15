@@ -111,8 +111,11 @@ async function fetchJSON<T>(path: string, options?: RequestInit): Promise<T> {
   let requestUrl = `${resolvedAPIBase}${path}`;
   let res = await fetch(requestUrl, {
     ...options,
+    cache: 'no-store',
     headers: {
       'Content-Type': 'application/json',
+      'Cache-Control': 'no-cache',
+      Pragma: 'no-cache',
       ...options?.headers,
     },
   });
@@ -124,8 +127,11 @@ async function fetchJSON<T>(path: string, options?: RequestInit): Promise<T> {
       requestUrl = `${resolvedAPIBase}${path}`;
       res = await fetch(requestUrl, {
         ...options,
+        cache: 'no-store',
         headers: {
           'Content-Type': 'application/json',
+          'Cache-Control': 'no-cache',
+          Pragma: 'no-cache',
           ...options?.headers,
         },
       });
