@@ -228,9 +228,7 @@ All scheduling is handled by EventBridge rules dispatching to SQS queues.
 
 ## AI Enrichment
 
-AI analysis uses **Amazon Bedrock** with free-tier models:
-- **Amazon Titan Text Express** — General property enrichment
-- **Amazon Nova Micro / Lite** — Lighter, faster alternatives
+AI analysis uses **Amazon Bedrock** models configured through environment settings and the LLM configuration endpoints.
 
 No API keys needed — Bedrock uses IAM credentials. Configure the model in **Settings** page or via the LLM config API.
 

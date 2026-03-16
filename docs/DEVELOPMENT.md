@@ -93,7 +93,7 @@ property_search/
 │   │   ├── queue.py    # SQS message publisher utility
 │   │   └── utils.py    # Irish-specific utilities
 │   ├── storage/        # Database layer
-│   │   ├── models.py   # SQLAlchemy ORM models (7 tables)
+│   │   ├── models.py   # SQLAlchemy ORM models
 │   │   ├── database.py # Engine, sessions, Lambda-aware pooling
 │   │   └── repositories.py  # Repository pattern classes
 │   ├── sources/        # Source adapters
@@ -125,7 +125,7 @@ property_search/
 │   └── worker/
 │       ├── sqs_handler.py       # SQS event Lambda handler
 │       └── tasks.py             # Task function definitions
-├── web/                # Next.js 14 frontend
+├── web/                # Next.js frontend
 │   ├── src/
 │   │   ├── app/        # App router pages
 │   │   ├── components/ # React components
