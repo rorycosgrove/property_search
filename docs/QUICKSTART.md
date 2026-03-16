@@ -122,6 +122,8 @@ start-all.cmd
 status-local.cmd
 ```
 
+`start-all.cmd` launches API, web, and the local SQS worker window.
+
 Repeat-start path after first-time setup:
 
 ```cmd
@@ -143,6 +145,13 @@ The Windows launchers are resilient:
 - They clean stale local processes before startup.
 - API auto-selects a free port from `8000, 8001, 8002` and writes `.dev-runtime/api-port.txt`.
 - Web launcher reads that file and points `NEXT_PUBLIC_API_URL` to the active API automatically.
+- Local SQS worker window is started so dispatched `scrape/llm/alert` tasks are consumed.
+
+If you are running with queue dispatch (`LOCAL_USE_SQS=1`) and need to restart only the worker:
+
+```cmd
+start-sqs-worker.cmd
+```
 
 If stale local processes are holding ports from previous runs:
 
@@ -169,6 +178,7 @@ After starting services, verify:
 2. LLM health: `http://localhost:8000/api/v1/llm/health`
 3. Frontend app: `http://localhost:3000`
 4. Optional focused reliability checks: `make test-cov-plan`
+5. Queue visibility and worker health: `status-local.cmd`
 
 If LLM is disabled (`llm_enabled=false`), `/api/v1/llm/health` reports disabled state and enrichment dispatch endpoints return `503`.
 
@@ -185,6 +195,26 @@ Notes:
 - Queue-backed enrichment dispatch (`POST /api/v1/llm/enrich/{property_id}`) requires AWS credentials.
 - If `LLM_QUEUE_URL` is not configured, enrich endpoints fall back to inline processing for queue-misconfiguration cases.
 - Unexpected queue runtime failures return `503` with structured dispatch-failure details.
+
+### Local SQS + Retrieval Document Refresh
+
+When running local SQS dispatch mode, these environment variables are recommended:
+
+- `LOCAL_USE_SQS=1`
+- `SCRAPE_QUEUE_URL`, `LLM_QUEUE_URL`, `ALERT_QUEUE_URL`
+- `REFERENCE_DOCUMENT_REFRESH_ON_SCRAPE=1` to enqueue `materialize_reference_documents` after scrape dispatch.
+
+If you see DB errors mentioning missing `property_documents`, run migrations:
+
+```bash
+python -m alembic upgrade head
+```
+
+If geospatial functions fail, ensure PostGIS is installed/enabled for your local DB:
+
+```sql
+CREATE EXTENSION IF NOT EXISTS postgis;
+```
 
 ## What Happens Automatically
 

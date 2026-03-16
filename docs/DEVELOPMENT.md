@@ -49,6 +49,31 @@ python -c "from apps.worker.tasks import scrape_all_sources; scrape_all_sources(
 python -c "from apps.worker.tasks import evaluate_alerts; evaluate_alerts()"
 ```
 
+### Run with Local SQS Dispatch
+
+Use queue dispatch mode when you want local behavior to match production task orchestration:
+
+```bash
+# .env
+LOCAL_USE_SQS=1
+SCRAPE_QUEUE_URL=<your scrape queue url>
+LLM_QUEUE_URL=<your llm queue url>
+ALERT_QUEUE_URL=<your alert queue url>
+REFERENCE_DOCUMENT_REFRESH_ON_SCRAPE=1
+```
+
+Start the worker consumer in a separate terminal:
+
+```cmd
+start-sqs-worker.cmd
+```
+
+Check queue depth and service readiness:
+
+```cmd
+status-local.cmd
+```
+
 ### All at Once (via Make)
 ```bash
 make up       # Start local PostgreSQL
@@ -207,6 +232,12 @@ make migrate
 
 # Rollback one step
 uv run alembic downgrade -1
+```
+
+For local geospatial queries, PostGIS must be enabled in the active database:
+
+```sql
+CREATE EXTENSION IF NOT EXISTS postgis;
 ```
 
 ## AWS CDK (Infrastructure)

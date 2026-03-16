@@ -18,7 +18,7 @@ This path:
 - cleans stale local API/frontend processes
 - starts local Docker services
 - runs migrations and seed step
-- launches API and Web in separate windows
+- launches API, Web, and SQS worker in separate windows
 - waits for readiness checks
 
 ### Option 2: Launch Split Windows (After Setup)
@@ -29,6 +29,12 @@ Use this when services are already prepared and you want separate API/Web window
 cd d:\_code\property_search
 start-local-services.cmd
 status-local.cmd
+```
+
+If needed, you can launch only the queue consumer window:
+
+```cmd
+start-sqs-worker.cmd
 ```
 
 ### Option 3: Manual Setup
@@ -75,6 +81,15 @@ If you see errors about npm.ps1 in PowerShell, use Command Prompt (cmd.exe) inst
 
 ### Docker Not Running
 Start Docker Desktop before running `start-all.cmd`.
+
+### PostGIS Function Errors (`ST_Geography` / `ST_DWithin`)
+If worker logs show spatial-function errors, enable PostGIS in your local DB:
+
+```cmd
+python -c "from packages.storage.database import engine; from sqlalchemy import text; c=engine.connect(); t=c.begin(); c.execute(text('CREATE EXTENSION IF NOT EXISTS postgis')); t.commit(); c.close(); print('postgis_ok')"
+```
+
+Then restart local services (`stop-local.cmd`, then `start-all.cmd`).
 
 ### `make` Command Not Found
 On Windows shells without GNU Make, use direct commands:
