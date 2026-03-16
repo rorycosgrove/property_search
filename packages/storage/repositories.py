@@ -10,9 +10,10 @@ from __future__ import annotations
 
 from datetime import datetime, timedelta
 
+from geoalchemy2 import Geography
 from geoalchemy2.elements import WKTElement
 from geoalchemy2.functions import ST_DWithin, ST_MakePoint, ST_SetSRID
-from sqlalchemy import and_, func, select
+from sqlalchemy import and_, cast, func, select
 from sqlalchemy.exc import DatabaseError
 from sqlalchemy.orm import Session, joinedload
 
@@ -255,8 +256,8 @@ class PropertyRepository:
             radius_metres = filters.radius_km * 1000
             conditions.append(
                 ST_DWithin(
-                    Property.location_point,
-                    func.ST_Geography(point),
+                    cast(Property.location_point, Geography),
+                    cast(point, Geography),
                     radius_metres,
                 )
             )
@@ -575,8 +576,8 @@ class SoldPropertyRepository:
             radius_metres = filters.radius_km * 1000
             conditions.append(
                 ST_DWithin(
-                    SoldProperty.location_point,
-                    func.ST_Geography(point),
+                    cast(SoldProperty.location_point, Geography),
+                    cast(point, Geography),
                     radius_metres,
                 )
             )
@@ -628,8 +629,8 @@ class SoldPropertyRepository:
             select(SoldProperty)
             .where(
                 ST_DWithin(
-                    SoldProperty.location_point,
-                    func.ST_Geography(point),
+                    cast(SoldProperty.location_point, Geography),
+                    cast(point, Geography),
                     radius_metres,
                 )
             )

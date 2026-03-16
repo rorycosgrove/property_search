@@ -2,10 +2,14 @@ from datetime import UTC, datetime
 from types import SimpleNamespace
 
 from packages.ai.retrieval_documents import (
+    build_grant_program_documents,
+    build_market_trend_documents,
     build_grant_match_documents,
     build_market_snapshot_document,
     build_property_history_documents,
     build_property_listing_document,
+    materialize_incentive_documents,
+    materialize_market_documents,
 )
 
 
@@ -106,3 +110,146 @@ def test_build_market_snapshot_document_captures_period_and_trends():
     assert document["document_type"] == "market_snapshot"
     assert document["document_key"] == "market_snapshot:dublin:2026-03"
     assert document["metadata_json"]["period"] == "2026-03"
+
+
+def test_build_market_trend_documents_emits_historical_period_docs():
+    trends = [
+        SimpleNamespace(period="2026-01", avg_price=390000, count=95),
+        SimpleNamespace(period="2026-02", avg_price=405000, count=120),
+    ]
+
+    documents = build_market_trend_documents("Dublin", trends)
+
+    assert len(documents) == 2
+    assert documents[0]["document_type"] == "market_trend_period"
+    assert documents[0]["document_key"] == "market_trend:dublin:2026-01"
+    assert documents[1]["metadata_json"]["count"] == 120
+
+
+def test_build_grant_program_documents_emits_incentive_scope_docs():
+    grant = SimpleNamespace(
+        id="grant-101",
+        code="RETROFIT-PLUS",
+        name="Retrofit Plus",
+        country="IE",
+        region="Dublin",
+        authority="SEAI",
+        description="Retrofit support for heat and insulation",
+        eligibility_rules={"min_ber": "C3"},
+        benefit_type="grant",
+        max_amount=45000,
+        currency="EUR",
+        active=True,
+        valid_from=None,
+        valid_to=None,
+        source_url="https://example.gov.ie/grants/retrofit-plus",
+    )
+
+    documents = build_grant_program_documents([grant])
+
+    assert len(documents) == 1
+    assert documents[0]["document_type"] == "incentive_program"
+    assert documents[0]["scope_type"] == "incentive_program"
+    assert documents[0]["metadata_json"]["grant_code"] == "RETROFIT-PLUS"
+
+
+def test_materialize_market_documents_upserts_snapshot_and_trends(monkeypatch):
+    class FakeAnalyticsEngine:
+        def __init__(self, _db):
+            pass
+
+        def get_summary(self):
+            return SimpleNamespace(
+                avg_price=410000,
+                median_price=395000,
+                total_active_listings=1200,
+                new_listings_24h=42,
+                price_changes_24h=18,
+                total_sold_ppr=30000,
+            )
+
+        def get_county_stats(self):
+            return []
+
+        def get_price_trends(self, county=None, months=12):
+            assert county == "Dublin"
+            assert months == 12
+            return [
+                SimpleNamespace(period="2026-01", avg_price=390000, count=95),
+                SimpleNamespace(period="2026-02", avg_price=405000, count=120),
+            ]
+
+    class FakePropertyDocumentRepository:
+        def __init__(self, _db):
+            self.calls = []
+
+        def upsert_document(self, document_key, **kwargs):
+            self.calls.append((document_key, kwargs))
+
+    captured = {"repo": None}
+
+    def _repo_factory(db):
+        repo = FakePropertyDocumentRepository(db)
+        captured["repo"] = repo
+        return repo
+
+    monkeypatch.setattr("packages.ai.retrieval_documents.AnalyticsEngine", FakeAnalyticsEngine)
+    monkeypatch.setattr("packages.ai.retrieval_documents.PropertyDocumentRepository", _repo_factory)
+
+    count = materialize_market_documents(object(), county="Dublin")
+
+    assert count == 3
+    keys = [k for k, _ in captured["repo"].calls]
+    assert "market_snapshot:dublin:" in keys[0]
+    assert "market_trend:dublin:2026-01" in keys
+    assert "market_trend:dublin:2026-02" in keys
+
+
+def test_materialize_incentive_documents_upserts_all_programs(monkeypatch):
+    grant = SimpleNamespace(
+        id="grant-101",
+        code="RETROFIT-PLUS",
+        name="Retrofit Plus",
+        country="IE",
+        region="Dublin",
+        authority="SEAI",
+        description="Retrofit support",
+        eligibility_rules={"min_ber": "C3"},
+        benefit_type="grant",
+        max_amount=45000,
+        currency="EUR",
+        active=True,
+        valid_from=None,
+        valid_to=None,
+        source_url="https://example.gov.ie/grants/retrofit-plus",
+    )
+
+    class FakeGrantProgramRepository:
+        def __init__(self, _db):
+            pass
+
+        def list_programs(self, active_only=True):
+            assert active_only is False
+            return [grant]
+
+    class FakePropertyDocumentRepository:
+        def __init__(self, _db):
+            self.calls = []
+
+        def upsert_document(self, document_key, **kwargs):
+            self.calls.append((document_key, kwargs))
+
+    captured = {"repo": None}
+
+    def _repo_factory(db):
+        repo = FakePropertyDocumentRepository(db)
+        captured["repo"] = repo
+        return repo
+
+    monkeypatch.setattr("packages.ai.retrieval_documents.GrantProgramRepository", FakeGrantProgramRepository)
+    monkeypatch.setattr("packages.ai.retrieval_documents.PropertyDocumentRepository", _repo_factory)
+
+    count = materialize_incentive_documents(object(), active_only=False)
+
+    assert count == 1
+    assert captured["repo"].calls[0][0] == "incentive_program:grant-101"

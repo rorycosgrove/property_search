@@ -9,6 +9,7 @@ from apps.worker.tasks import (
     evaluate_alerts,
     enrich_batch_llm,
     enrich_property_llm,
+    materialize_reference_documents_task,
     scrape_all_sources,
     scrape_source,
 )
@@ -27,6 +28,7 @@ class _SessionCtx:
 def test_scrape_all_sources_falls_back_inline_when_scrape_queue_missing(monkeypatch):
     """When SCRAPE_QUEUE_URL is absent, sources should be processed inline."""
     monkeypatch.delenv("SCRAPE_QUEUE_URL", raising=False)
+    monkeypatch.setenv("REFERENCE_DOCUMENT_REFRESH_ON_SCRAPE", "0")
 
     fake_sources = [
         SimpleNamespace(id="source-1", enabled=True, tags=[], error_count=0),
@@ -92,6 +94,7 @@ def test_scrape_all_sources_falls_back_inline_when_scrape_queue_missing(monkeypa
 def test_scrape_all_sources_uses_sqs_dispatch_when_queue_configured(monkeypatch):
     """When SCRAPE_QUEUE_URL is present, tasks should be dispatched via SQS."""
     monkeypatch.setenv("SCRAPE_QUEUE_URL", "https://example.com/sqs/scrape")
+    monkeypatch.setenv("REFERENCE_DOCUMENT_REFRESH_ON_SCRAPE", "0")
 
     fake_sources = [
         SimpleNamespace(id="source-1", enabled=True, tags=[], error_count=0),
@@ -154,6 +157,48 @@ def test_scrape_all_sources_uses_sqs_dispatch_when_queue_configured(monkeypatch)
     assert len(send_calls) == 2
     assert send_calls[0][0] == ("scrape", "scrape_source", {"source_id": "source-1"})
     assert send_calls[1][0] == ("scrape", "scrape_source", {"source_id": "source-2"})
+
+
+def test_scrape_all_sources_dispatches_reference_refresh_when_enabled(monkeypatch):
+    """When enabled, scrape dispatch should enqueue reference document refresh once."""
+    monkeypatch.setenv("SCRAPE_QUEUE_URL", "https://example.com/sqs/scrape")
+    monkeypatch.setenv("REFERENCE_DOCUMENT_REFRESH_ON_SCRAPE", "1")
+
+    fake_sources = [SimpleNamespace(id="source-1", enabled=True, tags=[], error_count=0)]
+
+    class FakeSourceRepository:
+        def __init__(self, _db):
+            pass
+
+        def get_all(self, enabled_only=True):
+            assert enabled_only is False
+            return fake_sources
+
+    send_calls: list[tuple[tuple, dict]] = []
+
+    monkeypatch.setattr("packages.storage.database.get_session", lambda: _SessionCtx())
+    monkeypatch.setattr("packages.storage.repositories.SourceRepository", FakeSourceRepository)
+    monkeypatch.setattr(
+        "apps.worker.tasks.discover_sources",
+        lambda **_kwargs: {
+            "created": 0,
+            "existing": 1,
+            "skipped_invalid": 0,
+            "auto_enable": False,
+        },
+    )
+    monkeypatch.setattr(
+        "packages.shared.queue.send_task",
+        lambda *args, **kwargs: send_calls.append((args, kwargs)) or "msg-id",
+    )
+
+    result = scrape_all_sources()
+
+    assert result["dispatched"] == 1
+    assert [c[0] for c in send_calls] == [
+        ("scrape", "scrape_source", {"source_id": "source-1"}),
+        ("scrape", "materialize_reference_documents", {}),
+    ]
 
 
 def test_scrape_source_skips_alert_enqueue_when_alert_queue_missing(monkeypatch):
@@ -344,9 +389,49 @@ def test_scrape_source_skips_when_source_lock_not_acquired(monkeypatch):
     assert result["reason"] == "source_in_flight"
 
 
+def test_materialize_reference_documents_task_materializes_and_returns_counts(monkeypatch):
+    class FakeSessionCtx:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+        def commit(self):
+            return None
+
+    calls: list[tuple] = []
+
+    def fake_materialize_reference_documents(db, *, county=None, include_incentives=True, active_grants_only=False):
+        calls.append((db, county, include_incentives, active_grants_only))
+        return {
+            "market_documents": 4,
+            "incentive_documents": 2,
+            "total_documents": 6,
+        }
+
+    monkeypatch.setattr("packages.storage.database.get_session", lambda: FakeSessionCtx())
+    monkeypatch.setattr(
+        "packages.ai.retrieval_documents.materialize_reference_documents",
+        fake_materialize_reference_documents,
+    )
+
+    result = materialize_reference_documents_task(
+        county="Dublin",
+        include_incentives=True,
+        active_grants_only=True,
+    )
+
+    assert calls[0][1:] == ("Dublin", True, True)
+    assert result["market_documents"] == 4
+    assert result["incentive_documents"] == 2
+    assert result["total_documents"] == 6
+
+
 def test_scrape_all_sources_discovers_but_only_scrapes_enabled_snapshot(monkeypatch):
     """Discovery during scrape should report created sources while scraping enabled set."""
     monkeypatch.setenv("SCRAPE_QUEUE_URL", "https://example.com/sqs/scrape")
+    monkeypatch.setenv("REFERENCE_DOCUMENT_REFRESH_ON_SCRAPE", "0")
 
     # Source snapshot from DB remains enabled-only list for this cycle.
     fake_sources = [SimpleNamespace(id="enabled-source-1", enabled=True, tags=[], error_count=0)]
@@ -390,6 +475,7 @@ def test_scrape_all_sources_can_disable_discovery_via_env(monkeypatch):
     """Discovery hook can be disabled and scrape dispatch should still run."""
     monkeypatch.setenv("SCRAPE_QUEUE_URL", "https://example.com/sqs/scrape")
     monkeypatch.setenv("DISCOVERY_DURING_SCRAPE_ENABLED", "false")
+    monkeypatch.setenv("REFERENCE_DOCUMENT_REFRESH_ON_SCRAPE", "0")
 
     fake_sources = [SimpleNamespace(id="source-1", enabled=True, tags=[], error_count=0)]
 
@@ -434,6 +520,7 @@ def test_scrape_all_sources_can_disable_discovery_via_env(monkeypatch):
 def test_scrape_all_sources_continues_when_discovery_fails(monkeypatch):
     """Discovery failure should be non-fatal and scraping should continue."""
     monkeypatch.setenv("SCRAPE_QUEUE_URL", "https://example.com/sqs/scrape")
+    monkeypatch.setenv("REFERENCE_DOCUMENT_REFRESH_ON_SCRAPE", "0")
 
     fake_sources = [
         SimpleNamespace(id="source-1", enabled=True, tags=[], error_count=0),
@@ -564,7 +651,7 @@ def test_enrich_property_llm_records_success_backend_log(monkeypatch):
         def __init__(self, _db):
             self.upsert_calls = []
 
-        def upsert(self, property_id, payload):
+        def upsert(self, property_id, **payload):
             self.upsert_calls.append((property_id, payload))
 
     events: list[dict] = []
@@ -572,7 +659,8 @@ def test_enrich_property_llm_records_success_backend_log(monkeypatch):
     monkeypatch.setattr("packages.storage.database.get_session", lambda: FakeSessionCtx())
     monkeypatch.setattr("packages.storage.repositories.PropertyRepository", FakePropertyRepo)
     monkeypatch.setattr("packages.storage.repositories.SoldPropertyRepository", FakeSoldRepo)
-    monkeypatch.setattr("packages.storage.repositories.LLMEnrichmentRepository", FakeEnrichmentRepo)
+    enrichment_repo = FakeEnrichmentRepo(None)
+    monkeypatch.setattr("packages.storage.repositories.LLMEnrichmentRepository", lambda _db: enrichment_repo)
     def _fake_run_async_success(coro):
         coro.close()
         return {"summary": "ok"}
@@ -584,6 +672,7 @@ def test_enrich_property_llm_records_success_backend_log(monkeypatch):
     result = enrich_property_llm("prop-1")
 
     assert result == {"property_id": "prop-1", "enriched": True}
+    assert enrichment_repo.upsert_calls == [("prop-1", {"summary": "ok"})]
     assert any(e["event_type"] == "llm_enrichment_complete" for e in events)
 
 
@@ -630,7 +719,7 @@ def test_enrich_property_llm_records_failure_backend_log(monkeypatch):
         def __init__(self, _db):
             pass
 
-        def upsert(self, _property_id, _payload):
+        def upsert(self, _property_id, **_payload):
             return None
 
     events: list[dict] = []

@@ -14,6 +14,7 @@ from typing import Any
 from packages.analytics.engine import AnalyticsEngine
 from packages.shared.utils import utc_now
 from packages.storage.repositories import (
+    GrantProgramRepository,
     LLMEnrichmentRepository,
     PriceHistoryRepository,
     PropertyDocumentRepository,
@@ -231,6 +232,116 @@ def build_market_snapshot_document(
     }
 
 
+def build_market_trend_documents(
+    county: str | None,
+    trends: list[Any],
+    *,
+    generated_at: datetime | None = None,
+) -> list[dict[str, Any]]:
+    scope_type = "county" if county else "national"
+    scope_key = (county or "national").lower()
+    effective_default = generated_at or datetime.now(UTC)
+
+    documents: list[dict[str, Any]] = []
+    for trend in trends:
+        period = str(getattr(trend, "period", "") or "unknown")
+        avg_price = getattr(trend, "avg_price", None)
+        sale_count = int(getattr(trend, "count", 0) or 0)
+        content = "\n".join(
+            [
+                f"Historical market trend for {county or 'Ireland'}",
+                f"Period: {period}",
+                f"Average sold price: {_money(avg_price)}",
+                f"Sales volume: {sale_count}",
+            ]
+        )
+        documents.append(
+            {
+                "document_type": "market_trend_period",
+                "scope_type": scope_type,
+                "scope_key": scope_key,
+                "document_key": f"market_trend:{scope_key}:{period}",
+                "content_hash": _stable_hash(content),
+                "property_id": None,
+                "source_id": None,
+                "canonical_property_id": None,
+                "county": county,
+                "title": f"Market trend {period}: {county or 'Ireland'}",
+                "content": content,
+                "metadata_json": {
+                    "period": period,
+                    "avg_price": avg_price,
+                    "count": sale_count,
+                },
+                "effective_at": effective_default,
+            }
+        )
+    return documents
+
+
+def build_grant_program_documents(grants: list[Any]) -> list[dict[str, Any]]:
+    documents: list[dict[str, Any]] = []
+    for grant in grants:
+        eligibility = _compact_json(getattr(grant, "eligibility_rules", {}) or {})
+        max_amount = getattr(grant, "max_amount", None)
+        currency = getattr(grant, "currency", None) or "EUR"
+        if max_amount is not None:
+            benefit_text = f"{currency} {float(max_amount):,.0f}"
+        else:
+            benefit_text = "n/a"
+
+        content = "\n".join(
+            [
+                f"Incentive program: {grant.name}",
+                f"Code: {grant.code}",
+                f"Authority: {getattr(grant, 'authority', None) or 'n/a'}",
+                f"Country: {grant.country}",
+                f"Region: {getattr(grant, 'region', None) or 'n/a'}",
+                f"Benefit type: {getattr(grant, 'benefit_type', None) or 'n/a'}",
+                f"Maximum amount: {benefit_text}",
+                f"Active: {bool(getattr(grant, 'active', False))}",
+                f"Valid from: {getattr(grant, 'valid_from', None) or 'n/a'}",
+                f"Valid to: {getattr(grant, 'valid_to', None) or 'n/a'}",
+                f"Description: {getattr(grant, 'description', None) or 'n/a'}",
+                f"Eligibility rules: {eligibility}",
+                f"Source URL: {getattr(grant, 'source_url', None) or 'n/a'}",
+            ]
+        )
+
+        documents.append(
+            {
+                "document_type": "incentive_program",
+                "scope_type": "incentive_program",
+                "scope_key": str(grant.id),
+                "document_key": f"incentive_program:{grant.id}",
+                "content_hash": _stable_hash(content),
+                "property_id": None,
+                "source_id": None,
+                "canonical_property_id": None,
+                "county": getattr(grant, "region", None),
+                "title": f"Incentive: {grant.name}",
+                "content": content,
+                "metadata_json": {
+                    "grant_program_id": str(grant.id),
+                    "grant_code": grant.code,
+                    "country": grant.country,
+                    "region": getattr(grant, "region", None),
+                    "authority": getattr(grant, "authority", None),
+                    "benefit_type": getattr(grant, "benefit_type", None),
+                    "max_amount": float(max_amount) if max_amount is not None else None,
+                    "currency": currency,
+                    "active": bool(getattr(grant, "active", False)),
+                    "valid_from": getattr(grant, "valid_from", None).isoformat() if getattr(grant, "valid_from", None) else None,
+                    "valid_to": getattr(grant, "valid_to", None).isoformat() if getattr(grant, "valid_to", None) else None,
+                    "source_url": getattr(grant, "source_url", None),
+                    "eligibility_rules": getattr(grant, "eligibility_rules", {}) or {},
+                },
+                "effective_at": utc_now(),
+            }
+        )
+    return documents
+
+
 def materialize_property_documents(db: Any, property_id: str) -> int:
     property_repo = PropertyRepository(db)
     doc_repo = PropertyDocumentRepository(db)
@@ -264,8 +375,64 @@ def materialize_market_documents(db: Any, county: str | None = None) -> int:
     now = datetime.now(UTC)
     period = now.strftime("%Y-%m")
     summary = engine.get_summary()
+    if county:
+        county_stats = next(
+            (item for item in engine.get_county_stats() if str(getattr(item, "county", "")).lower() == county.lower()),
+            None,
+        )
+        if county_stats:
+            summary = type("_CountySummary", (), {
+                "avg_price": getattr(county_stats, "avg_price", None),
+                "median_price": getattr(county_stats, "median_price", None),
+                "total_active_listings": getattr(county_stats, "count", 0),
+                "new_listings_24h": None,
+                "price_changes_24h": None,
+                "total_sold_ppr": None,
+            })()
     trends = engine.get_price_trends(county=county, months=12)
-    document = build_market_snapshot_document(county, summary, trends, period=period, effective_at=now)
-    key = document.pop("document_key")
-    doc_repo.upsert_document(key, **document)
-    return 1
+    count = 0
+
+    snapshot_document = build_market_snapshot_document(county, summary, trends, period=period, effective_at=now)
+    snapshot_key = snapshot_document.pop("document_key")
+    doc_repo.upsert_document(snapshot_key, **snapshot_document)
+    count += 1
+
+    trend_documents = build_market_trend_documents(county, trends, generated_at=now)
+    for document in trend_documents:
+        key = document.pop("document_key")
+        doc_repo.upsert_document(key, **document)
+        count += 1
+
+    return count
+
+
+def materialize_incentive_documents(db: Any, active_only: bool = False) -> int:
+    grant_repo = GrantProgramRepository(db)
+    doc_repo = PropertyDocumentRepository(db)
+
+    grants = grant_repo.list_programs(active_only=active_only)
+    documents = build_grant_program_documents(grants)
+
+    count = 0
+    for document in documents:
+        key = document.pop("document_key")
+        doc_repo.upsert_document(key, **document)
+        count += 1
+    return count
+
+
+def materialize_reference_documents(
+    db: Any,
+    *,
+    county: str | None = None,
+    include_incentives: bool = True,
+    active_grants_only: bool = False,
+) -> dict[str, int]:
+    result: dict[str, int] = {
+        "market_documents": materialize_market_documents(db, county=county),
+        "incentive_documents": 0,
+    }
+    if include_incentives:
+        result["incentive_documents"] = materialize_incentive_documents(db, active_only=active_grants_only)
+    result["total_documents"] = result["market_documents"] + result["incentive_documents"]
+    return result

@@ -144,6 +144,7 @@ def scrape_all_sources(force: bool = False) -> dict[str, Any]:
     discovery_enabled = _env_bool("DISCOVERY_DURING_SCRAPE_ENABLED", True)
     discovery_auto_enable = _env_bool("DISCOVERY_DURING_SCRAPE_AUTO_ENABLE", False)
     discovery_limit = _env_int("DISCOVERY_DURING_SCRAPE_LIMIT", 10)
+    refresh_reference_documents = _env_bool("REFERENCE_DOCUMENT_REFRESH_ON_SCRAPE", False)
 
     discovery_summary: dict[str, Any] = {
         "created": 0,
@@ -244,6 +245,19 @@ def scrape_all_sources(force: bool = False) -> dict[str, Any]:
                 scrape_source(sid)
             processed_inline += 1
         dispatched += 1
+
+    if refresh_reference_documents:
+        if use_sqs_dispatch:
+            try:
+                send_task("scrape", "materialize_reference_documents", {})
+            except Exception as exc:
+                logger.warning(
+                    "reference_documents_dispatch_failed_fallback_inline",
+                    error=str(exc),
+                )
+                materialize_reference_documents_task()
+        else:
+            materialize_reference_documents_task()
 
     result = {
         "dispatched": dispatched,
@@ -735,7 +749,7 @@ def enrich_property_llm(property_id: str) -> dict[str, Any]:
 
         try:
             result = _run_async(enrich_property(property_data, nearby_sold))
-            enrichment_repo.upsert(property_id, result)
+            enrichment_repo.upsert(property_id, **result)
             _materialize_property_documents_safe(db, property_id)
             db.commit()
             _record_backend_log(
@@ -775,6 +789,41 @@ def materialize_market_documents_task(county: str | None = None) -> dict[str, An
         context={"county": county, "documents": count},
     )
     return {"county": county, "documents": count}
+
+
+def materialize_reference_documents_task(
+    county: str | None = None,
+    include_incentives: bool = True,
+    active_grants_only: bool = False,
+) -> dict[str, Any]:
+    """Materialize non-listing retrieval documents (market + incentives)."""
+    from packages.ai.retrieval_documents import materialize_reference_documents
+    from packages.storage.database import get_session
+
+    with get_session() as db:
+        counts = materialize_reference_documents(
+            db,
+            county=county,
+            include_incentives=include_incentives,
+            active_grants_only=active_grants_only,
+        )
+        db.commit()
+
+    _record_backend_log(
+        level="INFO",
+        event_type="reference_documents_materialized",
+        message="Reference retrieval documents materialized",
+        context={
+            "county": county,
+            "include_incentives": include_incentives,
+            **counts,
+        },
+    )
+    return {
+        "county": county,
+        "include_incentives": include_incentives,
+        **counts,
+    }
 
 def enrich_batch_llm(limit: int = LLM_BATCH_SIZE) -> dict[str, Any]:
     """Enrich a batch of un-enriched properties."""
