@@ -83,6 +83,21 @@ class TestPropertyNormalizer:
         assert "fuzzy_address_hash" in result["raw_data"]
         assert len(result["raw_data"]["fuzzy_address_hash"]) == 16
 
+    def test_normalize_stores_external_and_canonical_identity(self):
+        raw = NormalizedProperty(
+            url="https://daft.ie/654",
+            title="Test",
+            price=425000,
+            address="12 Main Street, Blackrock, Co. Dublin",
+            eircode="A94 XY12",
+            external_id="listing-654",
+            raw_data={},
+        )
+        result = self.normalizer.normalize(raw)
+        assert result["external_id"] == "listing-654"
+        assert result["canonical_property_id"] is not None
+        assert len(result["canonical_property_id"]) == 36
+
 
 class TestBER:
     def test_ber_to_score_a1(self):

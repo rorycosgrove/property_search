@@ -29,6 +29,43 @@ from packages.shared.logging import get_logger
 logger = get_logger(__name__)
 
 
+def _record_backend_log(
+    *,
+    level: str,
+    event_type: str,
+    message: str,
+    component: str = "worker.tasks",
+    source_id: str | None = None,
+    context: dict[str, Any] | None = None,
+) -> None:
+    """Persist an operational event for settings diagnostics.
+
+    This is best-effort and should never break ingestion if logging persistence fails.
+    """
+    try:
+        from packages.storage.database import get_session
+        from packages.storage.models import BackendLog
+
+        retention_days = max(int(getattr(settings, "backend_log_retention_days", 7) or 7), 1)
+        cutoff = datetime.now(UTC) - timedelta(days=retention_days)
+
+        with get_session() as db:
+            # Keep the table bounded without requiring external cron.
+            db.query(BackendLog).filter(BackendLog.created_at < cutoff).delete()
+            db.add(
+                BackendLog(
+                    level=level.upper(),
+                    event_type=event_type,
+                    component=component,
+                    source_id=source_id,
+                    message=message,
+                    context_json=context or {},
+                )
+            )
+    except Exception:
+        logger.warning("backend_log_persist_failed", event_type=event_type)
+
+
 def _run_async(coro):
     """Helper to run async code in sync task functions."""
     try:
@@ -75,10 +112,54 @@ def _nested_tx_or_noop(db: Any):
     return nullcontext()
 
 
+def _materialize_property_documents_safe(db: Any, property_id: str | None) -> None:
+    if not property_id:
+        return
+
+    from packages.ai.retrieval_documents import materialize_property_documents
+
+    try:
+        materialize_property_documents(db, property_id)
+    except Exception as exc:
+        logger.warning(
+            "property_document_materialization_failed",
+            property_id=property_id,
+            error=str(exc)[:300],
+        )
+
+
+def _build_daft_cursor_payload(raw_listings: list[Any], max_recent_ids: int = 600) -> dict[str, Any]:
+    """Build a compact per-source Daft cursor from fetched raw listings."""
+    seen: set[str] = set()
+    recent_ids: list[str] = []
+    latest_publish_ts_ms: int | None = None
+
+    for raw in raw_listings:
+        data = getattr(raw, "raw_data", None) or {}
+        listing_id = str(data.get("id", "")).strip()
+        if listing_id and listing_id not in seen:
+            seen.add(listing_id)
+            recent_ids.append(listing_id)
+            if len(recent_ids) >= max_recent_ids:
+                break
+
+        publish_ts = data.get("publishDate")
+        if isinstance(publish_ts, (int, float)):
+            publish_ms = int(publish_ts)
+            if latest_publish_ts_ms is None or publish_ms > latest_publish_ts_ms:
+                latest_publish_ts_ms = publish_ms
+
+    return {
+        "recent_listing_ids": recent_ids,
+        "last_publish_ts_ms": latest_publish_ts_ms,
+        "cursor_updated_at": datetime.now(UTC).isoformat(),
+    }
+
+
 # ── Source scraping tasks ─────────────────────────────────────────────────────
 
 
-def scrape_all_sources() -> dict[str, Any]:
+def scrape_all_sources(force: bool = False) -> dict[str, Any]:
     """Scrape all enabled sources.
 
     In cloud environments this dispatches SQS scrape tasks. In local environments
@@ -89,8 +170,9 @@ def scrape_all_sources() -> dict[str, Any]:
     from packages.storage.repositories import SourceRepository
 
     discovery_enabled = _env_bool("DISCOVERY_DURING_SCRAPE_ENABLED", True)
-    discovery_auto_enable = _env_bool("DISCOVERY_DURING_SCRAPE_AUTO_ENABLE", True)
+    discovery_auto_enable = _env_bool("DISCOVERY_DURING_SCRAPE_AUTO_ENABLE", False)
     discovery_limit = _env_int("DISCOVERY_DURING_SCRAPE_LIMIT", 10)
+    refresh_reference_documents = _env_bool("REFERENCE_DOCUMENT_REFRESH_ON_SCRAPE", False)
 
     discovery_summary: dict[str, Any] = {
         "created": 0,
@@ -107,12 +189,24 @@ def scrape_all_sources() -> dict[str, Any]:
                 **discover_sources(auto_enable=discovery_auto_enable, limit=discovery_limit),
             }
             logger.info("discovery_during_scrape_complete", **discovery_summary)
+            _record_backend_log(
+                level="INFO",
+                event_type="discovery_during_scrape_complete",
+                message="Source discovery during scrape completed",
+                context=discovery_summary,
+            )
         except Exception as exc:
             discovery_summary = {
                 **discovery_summary,
                 "error": str(exc),
             }
             logger.warning("discovery_during_scrape_failed", error=str(exc))
+            _record_backend_log(
+                level="WARNING",
+                event_type="discovery_during_scrape_failed",
+                message="Source discovery during scrape failed",
+                context=discovery_summary,
+            )
 
     with get_session() as db:
         repo = SourceRepository(db)
@@ -129,6 +223,20 @@ def scrape_all_sources() -> dict[str, Any]:
         source_ids = [str(s.id) for s in enabled_sources]
 
     logger.info(f"Dispatching scrape for {len(source_ids)} sources")
+    _record_backend_log(
+        level="INFO",
+        event_type="scrape_all_sources_started",
+        message="Dispatching scrape across enabled sources",
+        context={
+            "enabled_sources": len(source_ids),
+            "source_summary": {
+                "total": len(all_sources),
+                "enabled": len(enabled_sources),
+                "pending_approval": pending_approval_count,
+                "disabled_by_errors": auto_disabled_count,
+            },
+        },
+    )
 
     dispatched = 0
     processed_inline = 0
@@ -142,13 +250,44 @@ def scrape_all_sources() -> dict[str, Any]:
 
     for sid in source_ids:
         if use_sqs_dispatch:
-            send_task("scrape", "scrape_source", {"source_id": sid})
+            payload = {"source_id": sid}
+            if force:
+                payload["force"] = True
+            try:
+                send_task("scrape", "scrape_source", payload)
+            except Exception as exc:
+                logger.warning(
+                    "scrape_queue_dispatch_failed_fallback_inline",
+                    source_id=sid,
+                    error=str(exc),
+                )
+                if force:
+                    scrape_source(sid, force=True)
+                else:
+                    scrape_source(sid)
+                processed_inline += 1
         else:
-            scrape_source(sid)
+            if force:
+                scrape_source(sid, force=True)
+            else:
+                scrape_source(sid)
             processed_inline += 1
         dispatched += 1
 
-    return {
+    if refresh_reference_documents:
+        if use_sqs_dispatch:
+            try:
+                send_task("scrape", "materialize_reference_documents", {})
+            except Exception as exc:
+                logger.warning(
+                    "reference_documents_dispatch_failed_fallback_inline",
+                    error=str(exc),
+                )
+                materialize_reference_documents_task()
+        else:
+            materialize_reference_documents_task()
+
+    result = {
         "dispatched": dispatched,
         "processed_inline": processed_inline,
         "dispatch_mode": "sqs" if use_sqs_dispatch else "inline",
@@ -160,75 +299,16 @@ def scrape_all_sources() -> dict[str, Any]:
             "disabled_by_errors": auto_disabled_count,
         },
     }
-
-
-def discover_sources(auto_enable: bool = True, limit: int = 25) -> dict[str, Any]:
-    """Discover default and configured feed candidates and add missing sources.
-
-    Sources are created disabled by default and require approval unless
-    `auto_enable=True` is passed.
-    """
-    from packages.sources.discovery import load_discovery_candidates
-    from packages.sources.registry import get_adapter_names
-    from packages.storage.database import get_session
-    from packages.storage.repositories import SourceRepository
-
-    adapter_names = set(get_adapter_names())
-    created = 0
-    created_enabled = 0
-    created_pending_approval = 0
-    existing = 0
-    skipped_invalid = 0
-
-    with get_session() as db:
-        repo = SourceRepository(db)
-        for candidate in load_discovery_candidates()[: max(limit, 1)]:
-            adapter_name = candidate.get("adapter_name")
-            url = candidate.get("url")
-
-            if adapter_name not in adapter_names or not url:
-                skipped_invalid += 1
-                continue
-
-            if repo.get_by_url(url):
-                existing += 1
-                continue
-
-            tags = list(candidate.get("tags") or [])
-            if "auto_discovered" not in tags:
-                tags.append("auto_discovered")
-            if not auto_enable and "pending_approval" not in tags:
-                tags.append("pending_approval")
-
-            repo.create(
-                name=candidate.get("name") or f"Discovered {adapter_name}",
-                url=url,
-                adapter_type=candidate.get("adapter_type") or "scraper",
-                adapter_name=adapter_name,
-                config=candidate.get("config") or {},
-                enabled=auto_enable,
-                poll_interval_seconds=int(candidate.get("poll_interval_seconds") or 21600),
-                tags=tags,
-            )
-            created += 1
-            if auto_enable:
-                created_enabled += 1
-            else:
-                created_pending_approval += 1
-
-    result = {
-        "created": created,
-        "created_enabled": created_enabled,
-        "created_pending_approval": created_pending_approval,
-        "existing": existing,
-        "skipped_invalid": skipped_invalid,
-        "auto_enable": auto_enable,
-    }
-    logger.info("source_discovery_complete", **result)
+    _record_backend_log(
+        level="INFO",
+        event_type="scrape_all_sources_dispatched",
+        message="Scrape dispatch completed",
+        context=result,
+    )
     return result
 
 
-def scrape_source(source_id: str) -> dict[str, Any]:
+def scrape_source(source_id: str, force: bool = False) -> dict[str, Any]:
     """
     Scrape a single source and run the full ingestion pipeline.
 
@@ -254,7 +334,7 @@ def scrape_source(source_id: str) -> dict[str, Any]:
         if not source.enabled:
             return {"skipped": True, "reason": "Source disabled"}
 
-        if source_repo.should_skip_poll(source):
+        if source_repo.should_skip_poll(source) and not force:
             logger.info(
                 "source_poll_interval_skip",
                 source_id=source_id,
@@ -297,25 +377,46 @@ def scrape_source(source_id: str) -> dict[str, Any]:
         normalizer = PropertyNormalizer()
 
         try:
-            # 1. Fetch raw listings
             adapter = get_adapter(source.adapter_name)
             config = source.config or {}
             raw_listings = _run_async(adapter.fetch_listings(config))
             logger.info(f"Fetched {len(raw_listings)} listings from {source.name}")
 
-            # 2. Parse + Normalize
+            if source.adapter_name == "daft":
+                cursor_payload = _build_daft_cursor_payload(raw_listings)
+                last_publish_ts_ms = cursor_payload.get("last_publish_ts_ms")
+                next_config = {
+                    **config,
+                    "recent_listing_ids": cursor_payload.get("recent_listing_ids", []),
+                    "cursor_updated_at": cursor_payload.get("cursor_updated_at"),
+                }
+                if last_publish_ts_ms is not None:
+                    next_config["last_publish_ts_ms"] = last_publish_ts_ms
+                source_repo.update(source_id, config=next_config)
+
             new_count = 0
             updated_count = 0
-            skipped_count = 0
+            parse_failed_count = 0
+            price_unchanged_count = 0
             dedup_conflict_count = 0
+            skipped_count = 0  # ppr-duplicate and misc paths only
+            geocode_attempts = 0
+            geocode_successes = 0
+            # Samples collected per run for reconciliation/diagnostics — not persisted individually.
+            _new_external_ids: list[str] = []
+            _parse_fail_sample: list[dict[str, Any]] = []
 
             for raw in raw_listings:
                 parsed = adapter.parse_listing(raw)
                 if not parsed:
-                    skipped_count += 1
+                    parse_failed_count += 1
+                    if len(_parse_fail_sample) < 5:
+                        _parse_fail_sample.append({
+                            "source_url": getattr(raw, "source_url", None),
+                            "raw_id": str((getattr(raw, "raw_data", None) or {}).get("id", ""))[:64],
+                        })
                     continue
 
-                # Check if this is a PPR record (sold property)
                 if parsed.raw_data.get("ppr_record"):
                     try:
                         with _nested_tx_or_noop(db):
@@ -329,14 +430,15 @@ def scrape_source(source_id: str) -> dict[str, Any]:
                         logger.warning("ppr_record_insert_failed", source_id=source_id, error=str(exc))
                     continue
 
-                # Normalize
                 record = normalizer.normalize(parsed)
-
-                # 3. Check for existing property (dedup by content_hash)
-                existing = property_repo.get_by_content_hash(record["content_hash"])
+                existing = None
+                external_id = record.get("external_id")
+                if external_id:
+                    existing = property_repo.get_by_external_id_and_source(source_id, external_id)
+                if not existing:
+                    existing = property_repo.get_by_content_hash(record["content_hash"])
 
                 if existing:
-                    # Check for price change
                     if record.get("price") and existing.price:
                         new_price = float(record["price"])
                         old_price = float(existing.price)
@@ -349,46 +451,60 @@ def scrape_source(source_id: str) -> dict[str, Any]:
                                 price_change=change,
                                 price_change_pct=change_pct,
                             )
-
-                            # Update property price
-                            property_repo.update(str(existing.id),
-                                price=new_price,
-                                status="price_changed",
-                            )
+                            property_repo.update(str(existing.id), price=new_price, status="price_changed")
+                            _materialize_property_documents_safe(db, str(existing.id))
                             updated_count += 1
                         else:
-                            skipped_count += 1
+                            price_unchanged_count += 1
                     else:
-                        skipped_count += 1
+                        price_unchanged_count += 1
                 else:
-                    # 4. Geocode if no lat/lng
                     if not record.get("latitude"):
+                        geocode_attempts += 1
                         geo = _run_async(
                             _geocode_safe(record.get("address", ""), record.get("county"))
                         )
                         if geo:
                             record["latitude"] = geo.latitude
                             record["longitude"] = geo.longitude
+                            geocode_successes += 1
+                        else:
+                            _record_backend_log(
+                                level="WARNING",
+                                event_type="geocode_failed",
+                                message="Geocoding returned no result for property",
+                                source_id=source_id,
+                                context={
+                                    "source_name": source.name,
+                                    "address": record.get("address"),
+                                    "county": record.get("county"),
+                                },
+                            )
 
-                    # 5. Store new property
                     record["source_id"] = source_id
                     record["status"] = "new"
                     record["first_listed_at"] = datetime.now(UTC)
                     try:
                         with _nested_tx_or_noop(db):
-                            property_repo.create(**record)
+                            created_property = property_repo.create(**record)
+                            created_property_id = str(created_property.id) if getattr(created_property, "id", None) else None
+                            _materialize_property_documents_safe(db, created_property_id)
                         new_count += 1
+                        new_ext_id = record.get("external_id")
+                        if new_ext_id and len(_new_external_ids) < 100:
+                            _new_external_ids.append(str(new_ext_id))
                     except IntegrityError:
-                        # Another concurrent scrape inserted this listing first.
-                        skipped_count += 1
                         dedup_conflict_count += 1
                         logger.info(
                             "property_dedup_conflict_skipped",
                             source_id=source_id,
+                            source_url=record.get("url"),
+                            external_id=record.get("external_id"),
+                            canonical_property_id=record.get("canonical_property_id"),
                             content_hash=record.get("content_hash"),
+                            dedup_action="skip_integrity_conflict",
                         )
 
-            # Mark source as successfully polled
             source_repo.mark_poll_success(source_id, new_count + updated_count)
 
             result = {
@@ -396,47 +512,155 @@ def scrape_source(source_id: str) -> dict[str, Any]:
                 "source_name": source.name,
                 "new": new_count,
                 "updated": updated_count,
-                "skipped": skipped_count,
+                "skipped": skipped_count + parse_failed_count + price_unchanged_count,
+                "parse_failed": parse_failed_count,
+                "price_unchanged": price_unchanged_count,
+                "dedup_conflicts": dedup_conflict_count,
                 "total_fetched": len(raw_listings),
+                "geocode_attempts": geocode_attempts,
+                "geocode_successes": geocode_successes,
+                "geocode_success_rate": (
+                    round((geocode_successes / geocode_attempts) * 100, 2)
+                    if geocode_attempts
+                    else 100.0
+                ),
+                # Sampled for reconciliation — first 100 new external IDs and first 5 parse failures.
+                "new_external_ids_sample": _new_external_ids,
+                "parse_fail_sample": _parse_fail_sample,
             }
 
             logger.info(f"Scrape complete: {result}")
+            _record_backend_log(
+                level="INFO",
+                event_type="scrape_source_complete",
+                message="Source scrape completed",
+                source_id=source_id,
+                context=result,
+            )
             logger.info(
                 "scrape_redundancy_metrics",
                 source_id=source_id,
                 source_name=source.name,
                 skip_reason="none",
-                skipped_count=skipped_count,
+                skipped_count=skipped_count + parse_failed_count + price_unchanged_count,
+                parse_failed=parse_failed_count,
+                price_unchanged=price_unchanged_count,
                 dedup_conflicts=dedup_conflict_count,
                 new_count=new_count,
                 updated_count=updated_count,
             )
 
-            # 6. Dispatch alert evaluation for new/changed properties
-            if new_count > 0 or updated_count > 0:
+            if (new_count > 0 or updated_count > 0) and _is_queue_configured("alert"):
                 from packages.shared.queue import send_task
 
-                if _is_queue_configured("alert"):
+                try:
                     send_task("alert", "evaluate_alerts", {})
-                else:
+                except Exception as exc:
                     logger.warning(
-                        "alert_queue_not_configured",
+                        "alert_queue_dispatch_failed",
                         source_id=source_id,
-                        new=new_count,
-                        updated=updated_count,
+                        error=str(exc),
                     )
 
             return result
 
         except Exception as exc:
             logger.error(f"Scrape failed for {source.name}: {exc}")
-            # Use existing session for error marking
             try:
                 source_repo.mark_poll_error(source_id, str(exc))
                 db.commit()
             except Exception as mark_err:
                 logger.warning(f"Failed to persist scrape error status: {mark_err}")
+            _record_backend_log(
+                level="ERROR",
+                event_type="scrape_source_failed",
+                message="Source scrape failed",
+                source_id=source_id,
+                context={"source_name": source.name, "error": str(exc)},
+            )
             raise
+
+
+def discover_sources(auto_enable: bool = False, limit: int = 25) -> dict[str, Any]:
+    """Discover default and configured feed candidates and add missing sources.
+
+    Sources are created disabled by default and require approval unless
+    `auto_enable=True` is passed.
+    """
+    from packages.sources.discovery import canonicalize_source_url, load_discovery_candidates
+    from packages.sources.registry import get_adapter_names
+    from packages.storage.database import get_session
+    from packages.storage.repositories import SourceRepository
+
+    adapter_names = set(get_adapter_names())
+    created = 0
+    created_enabled = 0
+    created_pending_approval = 0
+    existing = 0
+    skipped_invalid = 0
+
+    with get_session() as db:
+        repo = SourceRepository(db)
+        existing_sources = repo.get_all(enabled_only=False)
+        existing_by_canonical = {
+            canonicalize_source_url(str(getattr(s, "url", "") or "")): s
+            for s in existing_sources
+            if canonicalize_source_url(str(getattr(s, "url", "") or ""))
+        }
+
+        for candidate in load_discovery_candidates()[: max(limit, 1)]:
+            adapter_name = candidate.get("adapter_name")
+            url = candidate.get("url")
+            canonical_url = canonicalize_source_url(str(url or ""))
+
+            if adapter_name not in adapter_names or not url or not canonical_url:
+                skipped_invalid += 1
+                continue
+
+            if canonical_url in existing_by_canonical:
+                existing += 1
+                continue
+
+            tags = list(candidate.get("tags") or [])
+            if "auto_discovered" not in tags:
+                tags.append("auto_discovered")
+            if not auto_enable and "pending_approval" not in tags:
+                tags.append("pending_approval")
+
+            repo.create(
+                name=candidate.get("name") or f"Discovered {adapter_name}",
+                url=url,
+                adapter_type=candidate.get("adapter_type") or "scraper",
+                adapter_name=adapter_name,
+                config=candidate.get("config") or {},
+                enabled=auto_enable,
+                poll_interval_seconds=int(candidate.get("poll_interval_seconds") or 21600),
+                tags=tags,
+            )
+            existing_by_canonical[canonical_url] = True
+            created += 1
+            if auto_enable:
+                created_enabled += 1
+            else:
+                created_pending_approval += 1
+
+    result = {
+        "run_at": datetime.now(UTC).isoformat(),
+        "created": created,
+        "created_enabled": created_enabled,
+        "created_pending_approval": created_pending_approval,
+        "existing": existing,
+        "skipped_invalid": skipped_invalid,
+        "auto_enable": auto_enable,
+    }
+    logger.info("source_discovery_complete", **result)
+    _record_backend_log(
+        level="INFO",
+        event_type="source_discovery_complete",
+        message="Source discovery run completed",
+        context=result,
+    )
+    return result
 
 
 # ── PPR import ────────────────────────────────────────────────────────────────
@@ -506,6 +730,16 @@ def evaluate_alerts() -> dict[str, int]:
         price_alerts = engine.check_price_changes()
         db.commit()
 
+    _record_backend_log(
+        level="INFO",
+        event_type="alert_evaluation_complete",
+        message="Alert evaluation run completed",
+        context={
+            "search_alerts": int(search_alerts or 0),
+            "price_alerts": int(price_alerts or 0),
+        },
+    )
+
     return {"search_alerts": search_alerts, "price_alerts": price_alerts}
 
 
@@ -524,6 +758,12 @@ def enrich_property_llm(property_id: str) -> dict[str, Any]:
 
     if not settings.llm_enabled:
         logger.warning("llm_enrichment_skipped", reason="llm_disabled", property_id=property_id)
+        _record_backend_log(
+            level="WARNING",
+            event_type="llm_enrichment_skipped",
+            message="LLM enrichment skipped because llm is disabled",
+            context={"property_id": property_id, "reason": "llm_disabled"},
+        )
         return {"property_id": property_id, "enriched": False, "reason": "llm_disabled"}
 
     with get_session() as db:
@@ -533,9 +773,14 @@ def enrich_property_llm(property_id: str) -> dict[str, Any]:
 
         prop = prop_repo.get_by_id(property_id)
         if not prop:
+            _record_backend_log(
+                level="WARNING",
+                event_type="llm_enrichment_property_not_found",
+                message="LLM enrichment skipped because property was not found",
+                context={"property_id": property_id},
+            )
             return {"error": "Property not found"}
 
-        # Get nearby sold properties for context
         nearby_sold = []
         if prop.latitude and prop.longitude:
             sold_props = sold_repo.get_nearby_sold(
@@ -553,7 +798,6 @@ def enrich_property_llm(property_id: str) -> dict[str, Any]:
                 for s in sold_props
             ]
 
-        # Build property data dict
         property_data = {
             "title": prop.title,
             "address": prop.address,
@@ -569,13 +813,81 @@ def enrich_property_llm(property_id: str) -> dict[str, Any]:
 
         try:
             result = _run_async(enrich_property(property_data, nearby_sold))
-            enrichment_repo.upsert(property_id, result)
+            enrichment_repo.upsert(property_id, **result)
+            _materialize_property_documents_safe(db, property_id)
             db.commit()
+            _record_backend_log(
+                level="INFO",
+                event_type="llm_enrichment_complete",
+                message="LLM enrichment completed for property",
+                context={
+                    "property_id": property_id,
+                    "nearby_sold_count": len(nearby_sold),
+                },
+            )
             return {"property_id": property_id, "enriched": True}
         except Exception as exc:
             logger.error(f"LLM enrichment failed: {exc}")
+            _record_backend_log(
+                level="ERROR",
+                event_type="llm_enrichment_failed",
+                message="LLM enrichment failed for property",
+                context={"property_id": property_id, "error": str(exc)[:300]},
+            )
             raise
 
+
+def materialize_market_documents_task(county: str | None = None) -> dict[str, Any]:
+    """Materialize market snapshot retrieval documents."""
+    from packages.ai.retrieval_documents import materialize_market_documents
+    from packages.storage.database import get_session
+
+    with get_session() as db:
+        count = materialize_market_documents(db, county=county)
+        db.commit()
+
+    _record_backend_log(
+        level="INFO",
+        event_type="market_documents_materialized",
+        message="Market retrieval documents materialized",
+        context={"county": county, "documents": count},
+    )
+    return {"county": county, "documents": count}
+
+
+def materialize_reference_documents_task(
+    county: str | None = None,
+    include_incentives: bool = True,
+    active_grants_only: bool = False,
+) -> dict[str, Any]:
+    """Materialize non-listing retrieval documents (market + incentives)."""
+    from packages.ai.retrieval_documents import materialize_reference_documents
+    from packages.storage.database import get_session
+
+    with get_session() as db:
+        counts = materialize_reference_documents(
+            db,
+            county=county,
+            include_incentives=include_incentives,
+            active_grants_only=active_grants_only,
+        )
+        db.commit()
+
+    _record_backend_log(
+        level="INFO",
+        event_type="reference_documents_materialized",
+        message="Reference retrieval documents materialized",
+        context={
+            "county": county,
+            "include_incentives": include_incentives,
+            **counts,
+        },
+    )
+    return {
+        "county": county,
+        "include_incentives": include_incentives,
+        **counts,
+    }
 
 def enrich_batch_llm(limit: int = LLM_BATCH_SIZE) -> dict[str, Any]:
     """Enrich a batch of un-enriched properties."""
@@ -585,14 +897,25 @@ def enrich_batch_llm(limit: int = LLM_BATCH_SIZE) -> dict[str, Any]:
 
     if not settings.llm_enabled:
         logger.warning("llm_batch_skipped", reason="llm_disabled", limit=limit)
+        _record_backend_log(
+            level="WARNING",
+            event_type="llm_batch_skipped",
+            message="LLM batch enrichment skipped because llm is disabled",
+            context={"limit": int(limit), "reason": "llm_disabled"},
+        )
         return {"dispatched": 0, "reason": "llm_disabled"}
 
     if not _is_queue_configured("llm"):
         logger.warning("llm_batch_skipped", reason="llm_queue_unconfigured", limit=limit)
+        _record_backend_log(
+            level="WARNING",
+            event_type="llm_batch_skipped",
+            message="LLM batch enrichment skipped because llm queue is unconfigured",
+            context={"limit": int(limit), "reason": "llm_queue_unconfigured"},
+        )
         return {"dispatched": 0, "reason": "llm_queue_unconfigured"}
 
     with get_session() as db:
-        # Find properties without enrichment
         enriched_ids = db.query(LLMEnrichment.property_id).subquery()
         unenriched = (
             db.query(Property.id)
@@ -606,6 +929,13 @@ def enrich_batch_llm(limit: int = LLM_BATCH_SIZE) -> dict[str, Any]:
     for p in unenriched:
         send_task("llm", "enrich_property_llm", {"property_id": str(p.id)})
         dispatched += 1
+
+    _record_backend_log(
+        level="INFO",
+        event_type="llm_batch_dispatched",
+        message="LLM batch enrichment dispatch completed",
+        context={"requested_limit": int(limit), "dispatched": dispatched},
+    )
 
     return {"dispatched": dispatched}
 
@@ -687,3 +1017,246 @@ def _parse_ppr_sale_date(value: Any) -> date | None:
             except ValueError:
                 continue
     return None
+
+
+# ── Unified source discovery ──────────────────────────────────────────────────
+
+
+def discover_all_sources(
+    limit: int = 200,
+    dry_run: bool = False,
+    follow_links: bool = False,
+    include_grants: bool = True,
+) -> dict[str, Any]:
+    """Unified source + grant discovery with confidence-based activation.
+
+    This supersedes the simple ``discover_sources()`` task for production
+    scheduled runs.  It:
+
+    1. Runs the property crawler (static extended candidates + optional live crawl).
+    2. Scores each candidate via ``packages.sources.confidence``.
+    3. Auto-enables high-confidence sources (score >= 0.70), pends medium ones.
+    4. Optionally discovers new grant programs from Irish/NI government portals.
+
+    Parameters
+    ----------
+    limit:
+        Maximum number of new sources to create (applied after scoring).
+    dry_run:
+        When True, return all discoveries without persisting anything.
+    follow_links:
+        Pass-through to the crawler — enables live HTTP fetching of seed pages.
+        Slower but discovers more sources.  Safe to leave False on scheduled runs.
+    include_grants:
+        Also run grant source discovery (``packages.grants.discovery``).
+    """
+    from packages.sources.discovery import canonicalize_source_url, load_all_discovery_candidates
+    from packages.sources.registry import get_adapter_names
+    from packages.sources.service import validate_discovery_candidate
+    from packages.storage.database import get_session
+    from packages.storage.repositories import SourceRepository
+
+    run_at = datetime.now(UTC).isoformat()
+    adapter_names = set(get_adapter_names())
+
+    scored = load_all_discovery_candidates(
+        use_crawler=True,
+        follow_links=follow_links,
+    )
+
+    property_stats: dict[str, Any] = {
+        "candidates_scored": len(scored),
+        "auto_enabled": 0,
+        "pending_approval": 0,
+        "existing": 0,
+        "skipped_invalid": 0,
+        "skipped_invalid_config": 0,
+        "skipped_limit": 0,
+        "dry_run": dry_run,
+        "created": [],
+    }
+
+    if not dry_run:
+        with get_session() as db:
+            repo = SourceRepository(db)
+            existing_sources = repo.get_all(enabled_only=False)
+            existing_by_canonical = {
+                canonicalize_source_url(str(getattr(s, "url", "") or "")): s
+                for s in existing_sources
+                if canonicalize_source_url(str(getattr(s, "url", "") or ""))
+            }
+            created_count = 0
+
+            for scored_c in scored:
+                if created_count >= limit:
+                    property_stats["skipped_limit"] += 1
+                    continue
+
+                candidate = scored_c.candidate
+                validated, reason, errors = validate_discovery_candidate(
+                    candidate,
+                    adapter_names=adapter_names,
+                )
+                if not validated:
+                    if reason == "invalid_adapter_config":
+                        property_stats["skipped_invalid_config"] += 1
+                        logger.warning(
+                            "discover_all_sources_skip_invalid_config",
+                            adapter_name=candidate.get("adapter_name"),
+                            url=candidate.get("url"),
+                            errors=errors,
+                        )
+                    else:
+                        property_stats["skipped_invalid"] += 1
+                    continue
+
+                if validated.canonical_url in existing_by_canonical:
+                    property_stats["existing"] += 1
+                    continue
+
+                auto_enable = scored_c.should_auto_enable
+                tags = list(validated.tags)
+                if "auto_discovered" not in tags:
+                    tags.append("auto_discovered")
+                if not auto_enable and "pending_approval" not in tags:
+                    tags.append("pending_approval")
+                # Attach confidence metadata as a tag for visibility.
+                tags.append(f"confidence:{scored_c.score:.2f}")
+
+                repo.create(
+                    name=validated.name,
+                    url=validated.url,
+                    adapter_type=validated.adapter_type,
+                    adapter_name=validated.adapter_name,
+                    config=validated.config,
+                    enabled=auto_enable,
+                    poll_interval_seconds=validated.poll_interval_seconds,
+                    tags=tags,
+                )
+                existing_by_canonical[validated.canonical_url] = True
+                created_count += 1
+
+                if auto_enable:
+                    property_stats["auto_enabled"] += 1
+                else:
+                    property_stats["pending_approval"] += 1
+
+                property_stats["created"].append({
+                    "name": validated.name,
+                    "url": validated.url,
+                    "score": scored_c.score,
+                    "activation": scored_c.activation,
+                })
+
+    else:
+        # Dry-run: populate created list for preview without DB writes.
+        for sc in scored[:limit]:
+            property_stats["created"].append({
+                "name": sc.candidate.get("name"),
+                "url": sc.candidate.get("url"),
+                "score": sc.score,
+                "activation": sc.activation,
+                "reasons": sc.reasons,
+            })
+            if sc.activation == "auto_enable":
+                property_stats["auto_enabled"] += 1
+            else:
+                property_stats["pending_approval"] += 1
+
+    # ── Grant discovery ───────────────────────────────────────────────────────
+    grant_stats: dict[str, Any] = {"skipped": True}
+    if include_grants:
+        try:
+            from packages.grants.discovery import discover_grant_programs
+            grant_stats = discover_grant_programs(dry_run=dry_run)
+        except Exception as grant_exc:
+            logger.warning("discover_all_sources: grant discovery failed", error=str(grant_exc))
+            grant_stats = {"error": str(grant_exc)}
+
+    result = {
+        "run_at": run_at,
+        "property_sources": property_stats,
+        "grant_programs": grant_stats,
+        "follow_links": follow_links,
+        "limit": limit,
+    }
+
+    logger.info("discover_all_sources_complete", **{
+        k: v for k, v in result.items() if not isinstance(v, (dict, list))
+    })
+    _record_backend_log(
+        level="INFO",
+        event_type="unified_discovery_complete",
+        message="Unified source + grant discovery run completed",
+        context=result,
+    )
+    return result
+
+
+# ── Source freshness check ────────────────────────────────────────────────────
+
+
+def check_source_freshness() -> dict[str, Any]:
+    """Check all enabled sources for poll staleness and emit backend log events.
+
+    A source is *stale* when its last successful poll is more than
+    1.5× its ``poll_interval_seconds`` in the past (or it has never been polled).
+    Stale sources are a correctness risk: they represent gaps in live data.
+    """
+    from packages.storage.database import get_session
+    from packages.storage.repositories import SourceRepository
+
+    with get_session() as db:
+        repo = SourceRepository(db)
+        sources = repo.get_all(enabled_only=True)
+
+    now = datetime.now(UTC)
+    stale: list[dict[str, Any]] = []
+    never_polled: list[dict[str, Any]] = []
+    healthy: list[dict[str, Any]] = []
+
+    for source in sources:
+        interval = int(getattr(source, "poll_interval_seconds", None) or 21600)
+        last_success = getattr(source, "last_success_at", None)
+        name = getattr(source, "name", str(getattr(source, "id", "")))
+        entry = {
+            "id": str(getattr(source, "id", "")),
+            "name": name,
+            "poll_interval_seconds": interval,
+            "last_success_at": last_success.isoformat() if last_success else None,
+            "error_count": int(getattr(source, "error_count", 0) or 0),
+        }
+
+        if last_success is None:
+            never_polled.append(entry)
+        elif (now - last_success).total_seconds() > interval * 1.5:
+            age_seconds = int((now - last_success).total_seconds())
+            stale.append({**entry, "stale_seconds": age_seconds})
+        else:
+            healthy.append(entry)
+
+    result: dict[str, Any] = {
+        "checked_at": now.isoformat(),
+        "healthy_count": len(healthy),
+        "stale_count": len(stale),
+        "never_polled_count": len(never_polled),
+        "stale": stale,
+        "never_polled": never_polled,
+    }
+
+    if stale or never_polled:
+        _record_backend_log(
+            level="WARNING",
+            event_type="source_freshness_stale",
+            message=f"{len(stale)} stale source(s) and {len(never_polled)} never-polled source(s) detected",
+            context=result,
+        )
+        logger.warning(
+            "source_freshness_stale",
+            stale_count=len(stale),
+            never_polled_count=len(never_polled),
+        )
+    else:
+        logger.info("source_freshness_ok", healthy_count=len(healthy))
+
+    return result

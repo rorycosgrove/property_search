@@ -111,8 +111,11 @@ async function fetchJSON<T>(path: string, options?: RequestInit): Promise<T> {
   let requestUrl = `${resolvedAPIBase}${path}`;
   let res = await fetch(requestUrl, {
     ...options,
+    cache: 'no-store',
     headers: {
       'Content-Type': 'application/json',
+      'Cache-Control': 'no-cache',
+      Pragma: 'no-cache',
       ...options?.headers,
     },
   });
@@ -124,8 +127,11 @@ async function fetchJSON<T>(path: string, options?: RequestInit): Promise<T> {
       requestUrl = `${resolvedAPIBase}${path}`;
       res = await fetch(requestUrl, {
         ...options,
+        cache: 'no-store',
         headers: {
           'Content-Type': 'application/json',
+          'Cache-Control': 'no-cache',
+          Pragma: 'no-cache',
           ...options?.headers,
         },
       });
@@ -393,17 +399,27 @@ export async function getAdapters(): Promise<AdapterInfo[]> {
 
 export async function triggerScrape(
   sourceId: string,
-): Promise<{ task_id?: string; status: string; result?: Record<string, unknown> }> {
-  return fetchJSON<{ task_id?: string; status: string; result?: Record<string, unknown> }>(
-    `/api/v1/sources/${sourceId}/trigger`,
+  options?: { force?: boolean },
+): Promise<{ task_id?: string; status: string; result?: Record<string, unknown>; timestamp?: string; force?: boolean }> {
+  const params = new URLSearchParams();
+  if (options?.force) {
+    params.set('force', 'true');
+  }
+  const suffix = params.toString();
+  const path = suffix
+    ? `/api/v1/sources/${sourceId}/trigger?${suffix}`
+    : `/api/v1/sources/${sourceId}/trigger`;
+  return fetchJSON<{ task_id?: string; status: string; result?: Record<string, unknown>; timestamp?: string; force?: boolean }>(
+    path,
     { method: 'POST' },
   );
 }
 
 export interface SourceDiscoveryRunResult {
+  run_at?: string;
   created: Source[];
-  existing: Array<{ id: string; url: string; name: string }>;
-  skipped_invalid: Array<{ url?: string; reason: string }>;
+  existing: Array<{ id: string; url: string; name: string; timestamp?: string }>;
+  skipped_invalid: Array<{ url?: string; reason: string; timestamp?: string }>;
   auto_enable: boolean;
 }
 
@@ -427,7 +443,7 @@ export interface DiscoveryDuringScrapeSummary {
 }
 
 export async function discoverSourcesAuto(
-  autoEnable = true,
+  autoEnable = false,
   limit = 25,
 ): Promise<SourceDiscoveryRunResult> {
   return fetchJSON<SourceDiscoveryRunResult>(
@@ -447,6 +463,7 @@ export async function approveDiscoveredSource(sourceId: string): Promise<Source>
 export interface OrganicSearchStepResult {
   step: string;
   status: 'dispatched' | 'processed_inline';
+  timestamp?: string;
   task_id?: string;
   result?: Record<string, unknown>;
 }
@@ -455,6 +472,7 @@ export interface OrganicSearchRunResult {
   run_id?: string;
   status: 'dispatched' | 'processed_inline' | 'mixed';
   steps: OrganicSearchStepResult[];
+  created_at?: string;
 }
 
 export interface OrganicSearchHistoryItem {
@@ -468,9 +486,12 @@ export interface OrganicSearchHistoryItem {
 }
 
 export async function triggerFullOrganicSearch(
-  options?: { runAlerts?: boolean; runLlmBatch?: boolean; llmLimit?: number },
+  options?: { runAlerts?: boolean; runLlmBatch?: boolean; llmLimit?: number; force?: boolean },
 ): Promise<OrganicSearchRunResult> {
   const params = new URLSearchParams();
+  if (options?.force !== undefined) {
+    params.set('force', String(options.force));
+  }
   if (options?.runAlerts !== undefined) {
     params.set('run_alerts', String(options.runAlerts));
   }
@@ -488,6 +509,204 @@ export async function triggerFullOrganicSearch(
 
 export async function getOrganicSearchHistory(limit = 20): Promise<OrganicSearchHistoryItem[]> {
   return fetchJSON<OrganicSearchHistoryItem[]>(`/api/v1/sources/trigger-all/history?limit=${limit}`);
+}
+
+// ── Admin / Backend Logs ───────────────────────────────────────────────────
+
+export interface BackendFeedActivity {
+  id: string;
+  timestamp?: string;
+  source_id?: string;
+  source_name?: string;
+  new: number;
+  updated: number;
+  skipped: number;
+  total_fetched: number;
+  geocode_success_rate?: number;
+  status: string;
+}
+
+export interface BackendSourceStatus {
+  id: string;
+  name: string;
+  enabled: boolean;
+  status: 'active' | 'warning' | 'disabled' | string;
+  error_count: number;
+  last_error?: string;
+  last_polled_at?: string;
+  last_success_at?: string;
+  poll_interval_seconds: number;
+  total_listings: number;
+}
+
+export interface BackendDiscoveryActivity {
+  id: string;
+  timestamp?: string;
+  event_type: string;
+  level: string;
+  message: string;
+  context: Record<string, unknown>;
+}
+
+export interface BackendHealthSummary {
+  scrape_runs_24h: number;
+  geocode_attempts: number;
+  geocode_successes: number;
+  geocode_success_rate: number;
+  queue_config: {
+    scrape_queue_configured: boolean;
+    alert_queue_configured: boolean;
+    llm_queue_configured: boolean;
+  };
+  last_error: {
+    timestamp?: string;
+    message?: string;
+    event_type?: string;
+    level?: string;
+  };
+}
+
+export interface BackendLogEntry {
+  id: string;
+  timestamp?: string;
+  level: string;
+  event_type: string;
+  component: string;
+  source_id?: string;
+  message: string;
+  context: Record<string, unknown>;
+}
+
+export async function getBackendLogs(options?: {
+  hours?: number;
+  limit?: number;
+  level?: string;
+  eventType?: string;
+}): Promise<BackendLogEntry[]> {
+  const params = new URLSearchParams();
+  if (options?.hours !== undefined) {
+    params.set('hours', String(options.hours));
+  }
+  if (options?.limit !== undefined) {
+    params.set('limit', String(options.limit));
+  }
+  if (options?.level) {
+    params.set('level', options.level);
+  }
+  if (options?.eventType) {
+    params.set('event_type', options.eventType);
+  }
+  const suffix = params.toString();
+  const path = suffix ? `/api/v1/admin/backend-logs?${suffix}` : '/api/v1/admin/backend-logs';
+  return fetchJSON<BackendLogEntry[]>(path);
+}
+
+export async function getBackendFeedActivity(limit = 10): Promise<BackendFeedActivity[]> {
+  return fetchJSON<BackendFeedActivity[]>(`/api/v1/admin/logs/feed-activity?limit=${limit}`);
+}
+
+export async function getBackendSourceStatus(): Promise<BackendSourceStatus[]> {
+  return fetchJSON<BackendSourceStatus[]>('/api/v1/admin/logs/sources');
+}
+
+export async function getBackendDiscoveryActivity(limit = 5): Promise<BackendDiscoveryActivity[]> {
+  return fetchJSON<BackendDiscoveryActivity[]>(`/api/v1/admin/logs/discovery?limit=${limit}`);
+}
+
+export async function getBackendHealthSummary(): Promise<BackendHealthSummary> {
+  return fetchJSON<BackendHealthSummary>('/api/v1/admin/logs/health');
+}
+
+export async function getBackendRecentErrors(
+  limit = 25,
+  level?: 'ERROR' | 'WARNING',
+): Promise<BackendLogEntry[]> {
+  const params = new URLSearchParams({ limit: String(limit) });
+  if (level) {
+    params.set('level', level);
+  }
+  return fetchJSON<BackendLogEntry[]>(`/api/v1/admin/logs/recent-errors?${params.toString()}`);
+}
+
+export interface ListingDiagnoseOptions {
+  adapterName?: string;
+  hours?: number;
+  maxProbeSources?: number;
+  listingUrl?: string;
+  probeMaxPages?: number;
+  similarIds?: string[];
+}
+
+export interface ListingDiagnoseResult {
+  external_id: string;
+  adapter_name: string;
+  persisted_matches: Array<Record<string, unknown>>;
+  persisted_url_matches: Array<Record<string, unknown>>;
+  recent_logs: BackendLogEntry[];
+  probe: {
+    matched?: boolean;
+    attempted_sources?: Array<Record<string, unknown>>;
+    match_source?: Record<string, unknown>;
+    matched_identifiers?: string[];
+    listing_url?: string | null;
+    title?: string | null;
+    api_id?: string | null;
+    url_listing_id?: string | null;
+    normalized_preview?: Record<string, unknown> | null;
+  } | null;
+  diagnosis: {
+    status: string;
+    reason?: string | null;
+    recommended_action?: string | null;
+  };
+  repair: {
+    status?: string | null;
+    source_action?: string | null;
+    source?: Record<string, unknown> | null;
+    property?: Record<string, unknown> | null;
+  } | null;
+}
+
+function buildListingDiagnosticQuery(options?: ListingDiagnoseOptions): string {
+  const params = new URLSearchParams();
+  if (options?.adapterName) {
+    params.set('adapter_name', options.adapterName);
+  }
+  if (options?.hours !== undefined) {
+    params.set('hours', String(options.hours));
+  }
+  if (options?.maxProbeSources !== undefined) {
+    params.set('max_probe_sources', String(options.maxProbeSources));
+  }
+  if (options?.listingUrl) {
+    params.set('listing_url', options.listingUrl);
+  }
+  if (options?.probeMaxPages !== undefined) {
+    params.set('probe_max_pages', String(options.probeMaxPages));
+  }
+  if (options?.similarIds && options.similarIds.length > 0) {
+    params.set('similar_ids', options.similarIds.join(','));
+  }
+  const suffix = params.toString();
+  return suffix ? `?${suffix}` : '';
+}
+
+export async function diagnoseListingByExternalId(
+  externalId: string,
+  options?: ListingDiagnoseOptions,
+): Promise<ListingDiagnoseResult> {
+  const query = buildListingDiagnosticQuery(options);
+  return fetchJSON<ListingDiagnoseResult>(`/api/v1/admin/listings/${externalId}/diagnose${query}`);
+}
+
+export async function repairListingByExternalId(
+  externalId: string,
+  options?: ListingDiagnoseOptions,
+): Promise<ListingDiagnoseResult> {
+  const query = buildListingDiagnosticQuery(options);
+  return fetchJSON<ListingDiagnoseResult>(`/api/v1/admin/listings/${externalId}/repair${query}`, {
+    method: 'POST',
+  });
 }
 
 // ── LLM ─────────────────────────────────────────────────────────────────────

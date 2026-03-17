@@ -71,7 +71,8 @@ $apiPorts = @(8000, 8001, 8002)
 $webPorts = @(3000, 3001)
 $apiPatterns = @(
   '*uvicorn*apps.api.main:app*',
-  '*python*apps.api.main:app*'
+  '*python*apps.api.main:app*',
+  '*python*scripts*dev*sqs_local_worker.py*'
 )
 $webPatterns = @(
   '*next dev*',

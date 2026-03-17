@@ -72,6 +72,13 @@ def evaluate_property_grants(db, property_obj: Property | None = None, property_
             metadata=metadata,
         )
 
+    try:
+        from packages.ai.retrieval_documents import materialize_property_documents
+
+        materialize_property_documents(db, str(property_obj.id))
+    except Exception:
+        pass
+
     return match_repo.list_for_property(str(property_obj.id))
 
 

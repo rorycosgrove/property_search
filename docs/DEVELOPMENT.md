@@ -5,6 +5,7 @@
 - Python 3.12+
 - Node.js 20+
 - Docker (for local PostgreSQL)
+- uv package manager
 - AWS CLI configured with credentials (`aws configure`)
 - (Optional) AWS CDK CLI: `npm install -g aws-cdk`
 
@@ -48,6 +49,31 @@ python -c "from apps.worker.tasks import scrape_all_sources; scrape_all_sources(
 python -c "from apps.worker.tasks import evaluate_alerts; evaluate_alerts()"
 ```
 
+### Run with Local SQS Dispatch
+
+Use queue dispatch mode when you want local behavior to match production task orchestration:
+
+```bash
+# .env
+LOCAL_USE_SQS=1
+SCRAPE_QUEUE_URL=<your scrape queue url>
+LLM_QUEUE_URL=<your llm queue url>
+ALERT_QUEUE_URL=<your alert queue url>
+REFERENCE_DOCUMENT_REFRESH_ON_SCRAPE=1
+```
+
+Start the worker consumer in a separate terminal:
+
+```cmd
+start-sqs-worker.cmd
+```
+
+Check queue depth and service readiness:
+
+```cmd
+status-local.cmd
+```
+
 ### All at Once (via Make)
 ```bash
 make up       # Start local PostgreSQL
@@ -67,7 +93,7 @@ property_search/
 │   │   ├── queue.py    # SQS message publisher utility
 │   │   └── utils.py    # Irish-specific utilities
 │   ├── storage/        # Database layer
-│   │   ├── models.py   # SQLAlchemy ORM models (7 tables)
+│   │   ├── models.py   # SQLAlchemy ORM models
 │   │   ├── database.py # Engine, sessions, Lambda-aware pooling
 │   │   └── repositories.py  # Repository pattern classes
 │   ├── sources/        # Source adapters
@@ -99,7 +125,7 @@ property_search/
 │   └── worker/
 │       ├── sqs_handler.py       # SQS event Lambda handler
 │       └── tasks.py             # Task function definitions
-├── web/                # Next.js 14 frontend
+├── web/                # Next.js frontend
 │   ├── src/
 │   │   ├── app/        # App router pages
 │   │   ├── components/ # React components
@@ -149,6 +175,9 @@ make test
 # Run with coverage
 make test-cov
 
+# Focused reliability-plan coverage checks
+make test-cov-plan
+
 # Run specific test file
 uv run pytest tests/test_normalizer.py -v
 
@@ -156,7 +185,32 @@ uv run pytest tests/test_normalizer.py -v
 uv run pytest tests/test_shared_utils.py::TestExtractCounty -v
 ```
 
+If `make` is unavailable in your shell (common on Windows), use direct `uv` commands:
+
+```bash
+uv run pytest -q
+uv run pytest --cov=packages --cov-report=html --cov-report=term-missing
+uv run pytest tests/test_api.py tests/test_worker_tasks.py tests/test_worker_service.py tests/test_queue.py tests/test_backend_log_repository.py tests/test_migration_backend_logs.py --cov=apps.api.routers.sources --cov=apps.api.routers.llm --cov=apps.api.routers.admin --cov=apps.api.routers.health --cov=apps.worker.tasks --cov=packages.shared.queue --cov=packages.storage.repositories --cov-report=term-missing
+```
+
 Tests use `unittest.mock` and `moto` to mock AWS services (SQS, Bedrock, DynamoDB) — no real AWS calls needed.
+
+`make test-cov-plan` is the fastest way to validate the reliability stabilization surface area:
+- API dispatch and fallback behavior (`sources`, `llm`, `health`, `admin`)
+- Worker orchestration and observability branches (`apps.worker.tasks`)
+- Queue helper contracts (`packages.shared.queue`)
+- Backend log repository query and summary paths (`packages.storage.repositories`)
+
+Use this focused run before full-suite execution when iterating on reliability changes.
+
+## Queue Dispatch Semantics
+
+Queue dispatch behavior is centralized in `packages/shared/queue.py`:
+- Dispatch success: API returns `status=dispatched` with `task_id`.
+- Queue misconfiguration (for example missing queue URL): helper falls back to inline execution and returns `status=processed_inline`.
+- Unexpected runtime dispatch failure: helper raises `QueueDispatchError`; routers map this to structured `503` responses.
+
+This prevents inline task failures from being mislabeled as queue dispatch failures and keeps error diagnosis actionable.
 
 ## Adding a New Source Adapter
 
@@ -178,6 +232,12 @@ make migrate
 
 # Rollback one step
 uv run alembic downgrade -1
+```
+
+For local geospatial queries, PostGIS must be enabled in the active database:
+
+```sql
+CREATE EXTENSION IF NOT EXISTS postgis;
 ```
 
 ## AWS CDK (Infrastructure)

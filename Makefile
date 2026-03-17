@@ -1,4 +1,4 @@
-.PHONY: up down logs seed scrape test lint format migrate deploy synth diff destroy help
+.PHONY: up down logs seed scrape test test-cov lint format migrate deploy synth diff destroy help
 
 # ── Local PostgreSQL (dev) ────────────────────
 up:
@@ -26,6 +26,9 @@ test:
 
 test-cov:
 	uv run pytest --cov=packages --cov-report=html --cov-report=term-missing
+
+test-cov-plan:
+	uv run pytest tests/test_api.py tests/test_worker_tasks.py tests/test_worker_service.py tests/test_queue.py tests/test_backend_log_repository.py tests/test_migration_backend_logs.py --cov=apps.api.routers.sources --cov=apps.api.routers.llm --cov=apps.api.routers.admin --cov=apps.api.routers.health --cov=apps.worker.tasks --cov=packages.shared.queue --cov=packages.storage.repositories --cov-report=term-missing
 
 lint:
 	uv run ruff check packages/ apps/ tests/
@@ -80,6 +83,7 @@ help:
 	@echo "Development:"
 	@echo "  make test        - Run tests"
 	@echo "  make test-cov    - Run tests with coverage"
+	@echo "  make test-cov-plan - Run focused reliability-plan coverage checks"
 	@echo "  make lint        - Run linters"
 	@echo "  make format      - Auto-format code"
 	@echo "  make migrate     - Run database migrations"

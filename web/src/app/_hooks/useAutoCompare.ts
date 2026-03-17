@@ -80,6 +80,7 @@ export function useAutoCompare({
   const [analysisStale, setAnalysisStale] = useState(false);
   const [autoCompareTargetCount, setAutoCompareTargetCount] = useState(0);
   const lastComparedContextKeyRef = useRef<string>('');
+  const currentCompareContextKeyRef = useRef<string>('');
 
   const filterContextKey = useMemo(() => JSON.stringify({
     county: filters.county || null,
@@ -108,6 +109,10 @@ export function useAutoCompare({
   const buildCompareContextKey = useCallback((ids: string[], mode: RankingMode, contextFiltersKey: string) => {
     return `${mode}:${ids.join(',')}:${contextFiltersKey}`;
   }, []);
+
+  useEffect(() => {
+    currentCompareContextKeyRef.current = buildCompareContextKey(candidateAutoCompareIds, rankingMode, filterContextKey);
+  }, [buildCompareContextKey, candidateAutoCompareIds, filterContextKey, rankingMode]);
 
   const hydrateAutoCompareFromLatest = useCallback((latest: AutoCompareLatestResponse) => {
     if (latest.result) {
@@ -188,7 +193,14 @@ export function useAutoCompare({
         search_context: searchContext,
       });
 
+      if (currentCompareContextKeyRef.current !== contextKey) {
+        return;
+      }
+
       const latest = await getLatestAutoCompare(sessionId).catch(() => null);
+      if (currentCompareContextKeyRef.current !== contextKey) {
+        return;
+      }
       if (latest) {
         hydrateAutoCompareFromLatest(latest);
       } else {

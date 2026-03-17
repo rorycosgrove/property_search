@@ -1,206 +1,106 @@
-'use client';
+import Link from 'next/link';
 
-import { Suspense, useEffect, useMemo, useRef, useState } from 'react';
-import { useSearchParams } from 'next/navigation';
-import {
-  type RetrievalContext,
-} from '@/lib/api';
-import { useFilterStore, useMapStore, useUIStore } from '@/lib/stores';
-import WorkspaceMainLayout from '@/app/_components/WorkspaceMainLayout';
-import { useAIConversation } from '@/app/_hooks/useAIConversation';
-import { useAutoCompare } from '@/app/_hooks/useAutoCompare';
-import { usePropertySearch } from '@/app/_hooks/usePropertySearch';
-import { useWorkspaceContext } from '@/app/_hooks/useWorkspaceContext';
+const HOME_PANELS = [
+  {
+    eyebrow: 'Research',
+    title: 'Read the market before you shortlist.',
+    description: 'Start with county trends, incentive coverage, and source quality instead of opening a full control room first.',
+    href: '/research',
+    cta: 'Open research view',
+  },
+  {
+    eyebrow: 'Workspace',
+    title: 'Keep the advanced map workspace, but behind one click.',
+    description: 'The original compare-and-analyze interface now lives on its own route so the product can rebuild from a calmer starting point.',
+    href: '/workspace',
+    cta: 'Open workspace',
+  },
+  {
+    eyebrow: 'Operations',
+    title: 'Check alerts, grants, and source health separately.',
+    description: 'Administrative and monitoring tasks stay available, but no longer dominate the first screen.',
+    href: '/alerts',
+    cta: 'Review action queue',
+  },
+];
 
-function HomePageContent() {
-  const searchParams = useSearchParams();
-  const { filters } = useFilterStore();
-  const {
-    comparedPropertyIds,
-    setComparedProperties,
-    removeComparedProperty,
-    clearComparedProperties,
-  } = useMapStore();
-  const {
-    detailPanelProperty,
-    closeDetail,
-    rankingMode,
-    setRankingMode,
-  } = useUIStore();
-  const [autoCompareSessionId, setAutoCompareSessionId] = useState<string>('');
-  const [askPanelOpen, setAskPanelOpen] = useState(true);
-  const previousSearchContextKeyRef = useRef<string | null>(null);
-
-  const AUTO_COMPARE_SESSION_KEY = 'property_search_auto_compare_session_id';
-
-  const { data, loading, properties } = usePropertySearch(filters);
-
-  useEffect(() => {
-    if (typeof window === 'undefined') {
-      return;
-    }
-
-    const existing = window.localStorage.getItem(AUTO_COMPARE_SESSION_KEY);
-    if (existing) {
-      setAutoCompareSessionId(existing);
-      return;
-    }
-
-    const generated = `web-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
-    window.localStorage.setItem(AUTO_COMPARE_SESSION_KEY, generated);
-    setAutoCompareSessionId(generated);
-  }, []);
-
-  useEffect(() => {
-    if (searchParams.get('focus') !== 'ask') {
-      return;
-    }
-    const panel = document.getElementById('ask-panel');
-    if (panel) {
-      panel.scrollIntoView({ behavior: 'smooth', block: 'start' });
-    }
-  }, [searchParams]);
-
-  // Keep hook input independent of compare result to avoid init-order cycles.
-  const selectedPropertyIdForCompare = detailPanelProperty?.id || null;
-
-  const {
-    compareLoading,
-    compareResult,
-    compareError,
-    analysisStale,
-    canRunCompare,
-    autoCompareTargetCount,
-    candidateAutoCompareIds,
-    guidanceMessage,
-    runCompare,
-    resetCompareState,
-  } = useAutoCompare({
-    autoCompareSessionId,
-    filters,
-    properties,
-    comparedPropertyIds,
-    selectedPropertyId: selectedPropertyIdForCompare,
-    rankingMode,
-    setRankingMode,
-    setComparedProperties,
-  });
-
-  const {
-    comparedProperties,
-    selectedPropertyId,
-    retrievalPreview,
-    buildContextPrompt,
-  } = useWorkspaceContext({
-    properties,
-    comparedPropertyIds,
-    detailPanelProperty,
-    compareResult,
-    rankingMode,
-  });
-
-  const buildRetrievalContext = (): RetrievalContext => retrievalPreview;
-
-  const askQueryParam = searchParams.get('ask') || '';
-
-  const {
-    aiQuery,
-    setAiQuery,
-    aiReply,
-    aiCitations,
-    aiRetrievalContext,
-    aiLoading,
-    aiError,
-    setAiError,
-    askAtlas,
-  } = useAIConversation({
-    selectedPropertyId,
-    getRetrievalContext: buildRetrievalContext,
-    initialQuery: askQueryParam,
-  });
-
-  const applyContextToAIQuery = () => {
-    setAiQuery(buildContextPrompt());
-    setAiError(null);
-  };
-
-  const searchContextKey = useMemo(() => JSON.stringify({
-    county: filters.county || null,
-    min_price: filters.min_price ?? null,
-    max_price: filters.max_price ?? null,
-    min_beds: filters.min_beds ?? null,
-    max_beds: filters.max_beds ?? null,
-    property_types: filters.property_types || null,
-    sale_type: filters.sale_type || null,
-    keywords: filters.keywords || null,
-    ber_ratings: filters.ber_ratings || null,
-    lat: filters.lat ?? null,
-    lng: filters.lng ?? null,
-    radius_km: filters.radius_km ?? null,
-  }), [filters]);
-
-  useEffect(() => {
-    const previous = previousSearchContextKeyRef.current;
-    if (previous === null) {
-      previousSearchContextKeyRef.current = searchContextKey;
-      return;
-    }
-
-    if (previous !== searchContextKey) {
-      clearComparedProperties();
-      resetCompareState();
-    }
-
-    previousSearchContextKeyRef.current = searchContextKey;
-  }, [clearComparedProperties, resetCompareState, searchContextKey]);
-
-  return (
-    <div className="flex flex-col h-[calc(100dvh-64px)] lg:h-[calc(100dvh-62px)]">
-      <WorkspaceMainLayout
-        properties={properties}
-        total={data?.total || 0}
-        loading={loading}
-        comparedProperties={comparedProperties}
-        rankingMode={rankingMode}
-        compareLoading={compareLoading}
-        analysisStale={analysisStale}
-        canRunCompare={canRunCompare}
-        autoCompareTargetCount={autoCompareTargetCount}
-        compareResult={compareResult}
-        compareError={compareError}
-        canRetry={candidateAutoCompareIds.length >= 2}
-        detailPanelProperty={detailPanelProperty}
-        guidanceMessage={guidanceMessage}
-        aiQuery={aiQuery}
-        aiLoading={aiLoading}
-        aiError={aiError}
-        aiReply={aiReply}
-        aiCitations={aiCitations}
-        aiRetrievalContext={aiRetrievalContext}
-        retrievalPreview={retrievalPreview}
-        askPanelOpen={askPanelOpen}
-        onRankingModeChange={setRankingMode}
-        onRemoveCompared={removeComparedProperty}
-        onClearCompared={() => {
-          clearComparedProperties();
-          resetCompareState();
-        }}
-        onRunCompare={() => runCompare(candidateAutoCompareIds)}
-        onRetryCompare={() => runCompare(candidateAutoCompareIds)}
-        onCloseDetail={closeDetail}
-        onUseContext={applyContextToAIQuery}
-        onToggleAskPanel={() => setAskPanelOpen((v) => !v)}
-        onQueryChange={setAiQuery}
-        onAsk={askAtlas}
-      />
-    </div>
-  );
-}
+const QUICK_LINKS = [
+  { href: '/workspace?focus=ask', label: 'Ask Atlas' },
+  { href: '/analytics', label: 'Market analytics' },
+  { href: '/grants', label: 'Grant incentives' },
+  { href: '/sources', label: 'Source health' },
+  { href: '/settings', label: 'Settings' },
+];
 
 export default function HomePage() {
   return (
-    <Suspense fallback={<div className="h-[calc(100dvh-64px)] lg:h-[calc(100dvh-62px)] bg-[var(--background)]" />}>
-      <HomePageContent />
-    </Suspense>
+    <div className="mx-auto max-w-7xl px-4 py-8 lg:px-6 lg:py-10">
+      <section className="relative overflow-hidden rounded-[28px] border border-[var(--card-border)] bg-[linear-gradient(145deg,rgba(252,251,248,0.96),rgba(240,236,228,0.88))] p-6 lg:p-10 shadow-[0_24px_80px_rgba(27,36,48,0.08)] rise-in">
+        <div className="absolute inset-y-0 right-0 hidden w-[38%] bg-[radial-gradient(circle_at_top,rgba(180,35,24,0.12),transparent_55%),radial-gradient(circle_at_70%_70%,rgba(46,125,91,0.16),transparent_48%)] lg:block" />
+        <div className="relative max-w-3xl">
+          <p className="text-[11px] uppercase tracking-[0.22em] text-[var(--muted)]">Atlas reset</p>
+          <h1 className="mt-3 text-4xl leading-tight lg:text-6xl">Property research first. Complex tooling second.</h1>
+          <p className="mt-4 max-w-2xl text-sm leading-7 text-[var(--muted)] lg:text-base">
+            The product now opens on a simpler home surface so you can choose the task you actually need: market context, buyer incentives, source operations, or the full compare workspace.
+          </p>
+          <div className="mt-6 flex flex-wrap gap-3">
+            <Link
+              href="/workspace"
+              className="inline-flex items-center rounded-full border border-[var(--accent)] bg-[var(--accent)] px-5 py-2.5 text-sm font-medium text-white transition-colors hover:bg-[var(--accent-strong)]"
+            >
+              Open decision workspace
+            </Link>
+            <Link
+              href="/research"
+              className="inline-flex items-center rounded-full border border-[var(--card-border)] bg-[var(--card-bg)] px-5 py-2.5 text-sm font-medium text-[var(--foreground)] transition-colors hover:bg-white"
+            >
+              Start with research
+            </Link>
+          </div>
+        </div>
+      </section>
+
+      <section className="mt-6 grid gap-4 lg:grid-cols-3">
+        {HOME_PANELS.map((panel) => (
+          <article
+            key={panel.href}
+            className="rounded-[22px] border border-[var(--card-border)] bg-[var(--card-bg)]/92 p-5 shadow-[0_14px_40px_rgba(27,36,48,0.06)]"
+          >
+            <p className="text-[11px] uppercase tracking-[0.18em] text-[var(--muted)]">{panel.eyebrow}</p>
+            <h2 className="mt-3 text-2xl leading-snug">{panel.title}</h2>
+            <p className="mt-3 text-sm leading-6 text-[var(--muted)]">{panel.description}</p>
+            <Link
+              href={panel.href}
+              className="mt-5 inline-flex items-center text-sm font-medium text-[var(--accent-strong)] hover:underline"
+            >
+              {panel.cta}
+            </Link>
+          </article>
+        ))}
+      </section>
+
+      <section className="mt-6 rounded-[24px] border border-[var(--card-border)] bg-[var(--card-bg)]/85 p-5 lg:p-6">
+        <div className="flex flex-col gap-4 lg:flex-row lg:items-end lg:justify-between">
+          <div>
+            <p className="text-[11px] uppercase tracking-[0.18em] text-[var(--muted)]">Quick actions</p>
+            <h2 className="mt-2 text-2xl">Jump straight into one job.</h2>
+          </div>
+          <p className="max-w-2xl text-sm leading-6 text-[var(--muted)]">
+            This home page is intentionally lighter. The deeper map, compare, AI, and monitoring tools are still available, but they no longer compete for attention on first load.
+          </p>
+        </div>
+        <div className="mt-5 grid gap-3 sm:grid-cols-2 xl:grid-cols-5">
+          {QUICK_LINKS.map((item) => (
+            <Link
+              key={item.href}
+              href={item.href}
+              className="rounded-2xl border border-[var(--card-border)] bg-[var(--background)]/65 px-4 py-4 text-sm font-medium transition-colors hover:border-[var(--accent)] hover:bg-white"
+            >
+              {item.label}
+            </Link>
+          ))}
+        </div>
+      </section>
+    </div>
   );
 }

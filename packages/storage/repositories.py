@@ -10,9 +10,10 @@ from __future__ import annotations
 
 from datetime import datetime, timedelta
 
+from geoalchemy2 import Geography
 from geoalchemy2.elements import WKTElement
 from geoalchemy2.functions import ST_DWithin, ST_MakePoint, ST_SetSRID
-from sqlalchemy import and_, func, select
+from sqlalchemy import and_, cast, func, select
 from sqlalchemy.exc import DatabaseError
 from sqlalchemy.orm import Session, joinedload
 
@@ -30,11 +31,13 @@ from packages.shared.schemas import (
 from packages.shared.utils import utc_now
 from packages.storage.models import (
     Alert,
+    BackendLog,
     Conversation,
     ConversationMessage,
     GrantProgram,
     LLMEnrichment,
     Property,
+    PropertyDocument,
     PropertyGrantMatch,
     PropertyPriceHistory,
     OrganicSearchRun,
@@ -166,6 +169,9 @@ class PropertyRepository:
         self.session = session
 
     def get_by_id(self, property_id: str, include_relations: bool = True) -> Property | None:
+        if not hasattr(self.session, "scalar"):
+            return self.session.get(Property, property_id)
+
         query = select(Property).where(Property.id == property_id)
         if include_relations:
             query = query.options(
@@ -179,6 +185,48 @@ class PropertyRepository:
         return self.session.scalar(
             select(Property).where(Property.content_hash == content_hash)
         )
+
+    def get_by_external_id_and_source(self, source_id: str, external_id: str) -> Property | None:
+        return self.session.scalar(
+            select(Property).where(
+                Property.source_id == source_id,
+                Property.external_id == external_id,
+            )
+        )
+
+    def list_by_external_id(self, external_id: str) -> list[Property]:
+        query = (
+            select(Property)
+            .where(Property.external_id == external_id)
+            .options(joinedload(Property.source))
+            .order_by(Property.created_at.desc())
+        )
+        return list(self.session.scalars(query).unique())
+
+    def list_by_url_suffix(self, suffix: str, limit: int = 20) -> list[Property]:
+        query = (
+            select(Property)
+            .where(Property.url.ilike(f"%{suffix}"))
+            .options(joinedload(Property.source))
+            .order_by(Property.created_at.desc())
+            .limit(limit)
+        )
+        return list(self.session.scalars(query).unique())
+
+    def get_by_canonical_property_id(self, canonical_property_id: str) -> Property | None:
+        return self.session.scalar(
+            select(Property)
+            .where(Property.canonical_property_id == canonical_property_id)
+            .order_by(Property.created_at.desc())
+        )
+
+    def list_by_canonical_property_id(self, canonical_property_id: str) -> list[Property]:
+        query = (
+            select(Property)
+            .where(Property.canonical_property_id == canonical_property_id)
+            .order_by(Property.created_at.desc())
+        )
+        return list(self.session.scalars(query))
 
     def list_properties(self, filters: PropertyFilters) -> tuple[list[Property], int]:
         """
@@ -227,8 +275,8 @@ class PropertyRepository:
             radius_metres = filters.radius_km * 1000
             conditions.append(
                 ST_DWithin(
-                    Property.location_point,
-                    func.ST_Geography(point),
+                    cast(Property.location_point, Geography),
+                    cast(point, Geography),
                     radius_metres,
                 )
             )
@@ -268,6 +316,17 @@ class PropertyRepository:
         prop = Property(**kwargs)
         self.session.add(prop)
         self.session.flush()
+        # Record initial price history
+        if prop.price is not None:
+            from packages.storage.models import PropertyPriceHistory
+            price_history = PropertyPriceHistory(
+                property_id=prop.id,
+                price=prop.price,
+                price_change=None,
+                price_change_pct=None,
+            )
+            self.session.add(price_history)
+            self.session.flush()
         return prop
 
     def update(self, property_id: str, **kwargs) -> Property | None:
@@ -281,11 +340,27 @@ class PropertyRepository:
         if location_point is not None:
             kwargs["location_point"] = location_point
 
+        old_price = prop.price
         for key, value in kwargs.items():
             if value is not None and hasattr(prop, key):
                 setattr(prop, key, value)
         prop.updated_at = utc_now()
         self.session.flush()
+
+        # Record price history if price changed
+        new_price = prop.price
+        if new_price is not None and old_price is not None and new_price != old_price:
+            from packages.storage.models import PropertyPriceHistory
+            price_change = new_price - old_price
+            price_change_pct = (price_change / old_price) * 100 if old_price else None
+            price_history = PropertyPriceHistory(
+                property_id=prop.id,
+                price=new_price,
+                price_change=price_change,
+                price_change_pct=price_change_pct,
+            )
+            self.session.add(price_history)
+            self.session.flush()
         return prop
 
     def get_stats(
@@ -468,6 +543,9 @@ class PriceHistoryRepository:
             )
         )
 
+    def list_for_property(self, property_id: str) -> list[PropertyPriceHistory]:
+        return self.get_for_property(property_id)
+
     def get_latest_price(self, property_id: str) -> float | None:
         entry = self.session.scalar(
             select(PropertyPriceHistory)
@@ -520,8 +598,8 @@ class SoldPropertyRepository:
             radius_metres = filters.radius_km * 1000
             conditions.append(
                 ST_DWithin(
-                    SoldProperty.location_point,
-                    func.ST_Geography(point),
+                    cast(SoldProperty.location_point, Geography),
+                    cast(point, Geography),
                     radius_metres,
                 )
             )
@@ -573,8 +651,8 @@ class SoldPropertyRepository:
             select(SoldProperty)
             .where(
                 ST_DWithin(
-                    SoldProperty.location_point,
-                    func.ST_Geography(point),
+                    cast(SoldProperty.location_point, Geography),
+                    cast(point, Geography),
                     radius_metres,
                 )
             )
@@ -806,6 +884,122 @@ class LLMEnrichmentRepository:
             )
         )
         return float(result) if result else None
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# PropertyDocumentRepository
+# ──────────────────────────────────────────────────────────────────────────────
+
+class PropertyDocumentRepository:
+    def __init__(self, session: Session):
+        self.session = session
+
+    def get_by_document_key(self, document_key: str) -> PropertyDocument | None:
+        return self.session.scalar(
+            select(PropertyDocument).where(PropertyDocument.document_key == document_key)
+        )
+
+    def upsert_document(self, document_key: str, **kwargs) -> PropertyDocument:
+        document = self.get_by_document_key(document_key)
+        if document:
+            for key, value in kwargs.items():
+                if hasattr(document, key):
+                    setattr(document, key, value)
+            document.updated_at = utc_now()
+        else:
+            document = PropertyDocument(document_key=document_key, **kwargs)
+            self.session.add(document)
+        self.session.flush()
+        return document
+
+    def list_for_property(self, property_id: str) -> list[PropertyDocument]:
+        query = (
+            select(PropertyDocument)
+            .where(PropertyDocument.property_id == property_id)
+            .order_by(PropertyDocument.document_type.asc(), PropertyDocument.effective_at.desc().nullslast())
+        )
+        return list(self.session.scalars(query))
+
+    def list_for_scope(self, scope_type: str, scope_key: str) -> list[PropertyDocument]:
+        query = (
+            select(PropertyDocument)
+            .where(PropertyDocument.scope_type == scope_type, PropertyDocument.scope_key == scope_key)
+            .order_by(PropertyDocument.document_type.asc(), PropertyDocument.effective_at.desc().nullslast())
+        )
+        return list(self.session.scalars(query))
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# BackendLogRepository
+# ──────────────────────────────────────────────────────────────────────────────
+
+class BackendLogRepository:
+    def __init__(self, session: Session):
+        self.session = session
+
+    def list_recent(
+        self,
+        *,
+        hours: int = 24,
+        limit: int = 100,
+        level: str | None = None,
+        event_type: str | None = None,
+    ) -> list[BackendLog]:
+        window_start = utc_now() - timedelta(hours=max(hours, 1))
+        query = select(BackendLog).where(BackendLog.created_at >= window_start)
+
+        if level:
+            query = query.where(BackendLog.level == level.upper())
+        if event_type:
+            query = query.where(BackendLog.event_type == event_type)
+
+        query = query.order_by(BackendLog.created_at.desc()).limit(limit)
+        return list(self.session.scalars(query))
+
+    def list_recent_errors(self, *, hours: int = 24, limit: int = 100) -> list[BackendLog]:
+        window_start = utc_now() - timedelta(hours=max(hours, 1))
+        query = (
+            select(BackendLog)
+            .where(BackendLog.created_at >= window_start)
+            .where(BackendLog.level.in_(["ERROR", "WARNING"]))
+            .order_by(BackendLog.created_at.desc())
+            .limit(limit)
+        )
+        return list(self.session.scalars(query))
+
+    def count_recent_errors(self, *, hours: int = 1) -> int:
+        window_start = utc_now() - timedelta(hours=max(hours, 1))
+        count_query = (
+            select(func.count(BackendLog.id))
+            .where(BackendLog.created_at >= window_start)
+            .where(BackendLog.level.in_(["ERROR", "WARNING"]))
+        )
+        return int(self.session.scalar(count_query) or 0)
+
+    def summary(self, *, hours: int = 24) -> dict:
+        window_start = utc_now() - timedelta(hours=max(hours, 1))
+
+        by_level_rows = self.session.execute(
+            select(BackendLog.level, func.count(BackendLog.id).label("total"))
+            .where(BackendLog.created_at >= window_start)
+            .group_by(BackendLog.level)
+        ).all()
+
+        by_event_rows = self.session.execute(
+            select(BackendLog.event_type, func.count(BackendLog.id).label("total"))
+            .where(BackendLog.created_at >= window_start)
+            .group_by(BackendLog.event_type)
+        ).all()
+
+        return {
+            "hours": max(hours, 1),
+            "total": sum(int(row.total or 0) for row in by_level_rows),
+            "by_level": [{"level": row.level, "count": int(row.total or 0)} for row in by_level_rows],
+            "by_event_type": [
+                {"event_type": row.event_type, "count": int(row.total or 0)}
+                for row in by_event_rows
+            ],
+        }
 
 
 # ──────────────────────────────────────────────────────────────────────────────

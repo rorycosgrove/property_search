@@ -92,6 +92,7 @@ class Property(Base):
         index=True,
     )
     external_id: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    canonical_property_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
 
     # Core listing fields
     title: Mapped[str] = mapped_column(String(500), nullable=False)
@@ -174,10 +175,15 @@ class Property(Base):
     grant_matches: Mapped[list[PropertyGrantMatch]] = relationship(
         "PropertyGrantMatch", back_populates="property"
     )
+    documents: Mapped[list[PropertyDocument]] = relationship(
+        "PropertyDocument", back_populates="property"
+    )
 
     __table_args__ = (
         Index("ix_properties_county_price", "county", "price"),
         Index("ix_properties_status_created", "status", "created_at"),
+        Index("ix_properties_canonical_property_id", "canonical_property_id"),
+        Index("ix_properties_source_external_id", "source_id", "external_id"),
         {"schema": None},
     )
 
@@ -350,6 +356,31 @@ class OrganicSearchRun(Base):
 
 
 # ──────────────────────────────────────────────────────────────────────────────
+# BackendLog — operational events for settings diagnostics
+# ──────────────────────────────────────────────────────────────────────────────
+
+class BackendLog(Base):
+    __tablename__ = "backend_logs"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid)
+    level: Mapped[str] = mapped_column(String(16), nullable=False, index=True)
+    event_type: Mapped[str] = mapped_column(String(100), nullable=False, index=True)
+    component: Mapped[str] = mapped_column(String(100), nullable=False, default="worker", server_default="worker")
+    source_id: Mapped[str | None] = mapped_column(String(36), nullable=True, index=True)
+    message: Mapped[str] = mapped_column(Text, nullable=False)
+    # DB column is named 'context'; ORM uses context_json to avoid shadowing common names.
+    context_json: Mapped[dict] = mapped_column("context", JSONB, default=dict, server_default="{}")
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=_utcnow, server_default="now()", index=True
+    )
+
+    __table_args__ = (
+        Index("ix_backend_logs_event_created", "event_type", "created_at"),
+        Index("ix_backend_logs_level_created", "level", "created_at"),
+    )
+
+
+# ──────────────────────────────────────────────────────────────────────────────
 # LLMEnrichment — LLM analysis results for a property
 # ──────────────────────────────────────────────────────────────────────────────
 
@@ -366,7 +397,7 @@ class LLMEnrichment(Base):
     cons: Mapped[list] = mapped_column(JSONB, default=list, server_default="[]")
     extracted_features: Mapped[dict] = mapped_column(JSONB, default=dict, server_default="{}")
     neighbourhood_notes: Mapped[str | None] = mapped_column(Text, nullable=True)
-    investment_potential: Mapped[str | None] = mapped_column(String(50), nullable=True)
+    investment_potential: Mapped[str | None] = mapped_column(Text, nullable=True)
 
     llm_provider: Mapped[str | None] = mapped_column(String(50), nullable=True)
     llm_model: Mapped[str | None] = mapped_column(String(100), nullable=True)
@@ -447,6 +478,46 @@ class PropertyGrantMatch(Base):
 
 
 # ──────────────────────────────────────────────────────────────────────────────
+# PropertyDocument — unified retrieval/vector-ready corpus records
+# ──────────────────────────────────────────────────────────────────────────────
+
+class PropertyDocument(Base):
+    __tablename__ = "property_documents"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid)
+    document_type: Mapped[str] = mapped_column(String(60), nullable=False, index=True)
+    scope_type: Mapped[str] = mapped_column(String(40), nullable=False, index=True)
+    scope_key: Mapped[str] = mapped_column(String(255), nullable=False, index=True)
+    document_key: Mapped[str] = mapped_column(String(255), nullable=False, unique=True)
+    content_hash: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+
+    property_id: Mapped[str | None] = mapped_column(String(36), nullable=True, index=True)
+    source_id: Mapped[str | None] = mapped_column(String(36), nullable=True, index=True)
+    canonical_property_id: Mapped[str | None] = mapped_column(String(36), nullable=True, index=True)
+    county: Mapped[str | None] = mapped_column(String(100), nullable=True, index=True)
+
+    title: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    content: Mapped[str] = mapped_column(Text, nullable=False)
+    metadata_json: Mapped[dict] = mapped_column("metadata", JSONB, default=dict, server_default="{}")
+    effective_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True, index=True)
+    expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=_utcnow, server_default="now()"
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=_utcnow, server_default="now()", onupdate=_utcnow
+    )
+
+    property: Mapped[Property | None] = relationship("Property", back_populates="documents")
+
+    __table_args__ = (
+        Index("ix_property_documents_scope", "scope_type", "scope_key"),
+        Index("ix_property_documents_property_type", "property_id", "document_type"),
+        Index("ix_property_documents_canonical_type", "canonical_property_id", "document_type"),
+    )
+
+
+# ──────────────────────────────────────────────────────────────────────────────
 # Conversation + ConversationMessage — direct user chat with LLM
 # ──────────────────────────────────────────────────────────────────────────────
 
@@ -520,6 +591,12 @@ PropertyGrantMatch.__table__.append_constraint(
     ForeignKeyConstraint(
         ["grant_program_id"], ["grant_programs.id"], name="fk_grantmatch_program", ondelete="CASCADE"
     )
+)
+PropertyDocument.__table__.append_constraint(
+    ForeignKeyConstraint(["property_id"], ["properties.id"], name="fk_document_property", ondelete="CASCADE")
+)
+PropertyDocument.__table__.append_constraint(
+    ForeignKeyConstraint(["source_id"], ["sources.id"], name="fk_document_source", ondelete="SET NULL")
 )
 ConversationMessage.__table__.append_constraint(
     ForeignKeyConstraint(

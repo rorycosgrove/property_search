@@ -94,7 +94,15 @@ class PPRAdapter(SourceAdapter):
 
                 with zf.open(csv_names[0]) as csv_file:
                     # PPR CSV uses Latin-1 encoding
-                    df = pd.read_csv(csv_file, encoding="latin-1")
+                    df = pd.read_csv(
+                        csv_file,
+                        encoding="latin-1",
+                        low_memory=False,
+                        dtype={
+                            "Property Size Description": "string",
+                            "Cur Síos ar Mhéid na Maoine": "string",
+                        },
+                    )
 
             logger.info("ppr_csv_loaded", rows=len(df))
 

@@ -29,12 +29,12 @@ export default function ResearchPage() {
         <h1 className="text-3xl mt-2">Build confidence before you shortlist</h1>
         <p className="mt-3 text-sm text-[var(--muted)] max-w-3xl">
           Start here as a home buyer: review market context, incentives, and data source quality.
-          Then move to the Decide workspace with clearer criteria and fewer surprises.
+          Then move to the dedicated decision workspace with clearer criteria and fewer surprises.
         </p>
         <div className="mt-4">
           <Link
-            href="/"
-            className="inline-flex px-4 py-2 rounded-full border border-[var(--accent)] bg-cyan-900/10 text-[var(--accent-strong)] hover:bg-cyan-900/15 text-sm"
+            href="/workspace"
+            className="inline-flex px-4 py-2 rounded-full border border-[var(--accent)] bg-[var(--accent-soft)] text-[var(--accent-strong)] hover:bg-[var(--accent-soft-strong)] text-sm"
           >
             Continue to Decide workspace
           </Link>

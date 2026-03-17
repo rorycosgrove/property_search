@@ -97,6 +97,15 @@ class PropertyPalAdapter(SourceAdapter):
                         await asyncio.sleep(delay)
 
                     except httpx.HTTPStatusError as e:
+                        if e.response.status_code in {401, 403}:
+                            logger.warning(
+                                "propertypal_area_blocked",
+                                url=url,
+                                area=area,
+                                page=page,
+                                status=e.response.status_code,
+                            )
+                            break
                         logger.warning("propertypal_http_error", url=url, status=e.response.status_code)
                         break
                     except httpx.RequestError as e:

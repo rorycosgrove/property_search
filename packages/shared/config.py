@@ -89,6 +89,7 @@ class Settings(BaseSettings):
     # ── Observability ─────────────────────────────
     enable_metrics: bool = True
     enable_tracing: bool = False
+    backend_log_retention_days: int = 7
 
     @model_validator(mode="after")
     def _resolve_secrets(self) -> Settings:

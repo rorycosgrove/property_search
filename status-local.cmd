@@ -18,3 +18,5 @@ if not "%API_PORT%"=="unknown" (
 if not "%WEB_PORT%"=="unknown" (
   powershell -NoProfile -Command "try { $res = Invoke-WebRequest -Uri 'http://localhost:%WEB_PORT%' -UseBasicParsing -TimeoutSec 10; Write-Host ('[status] Web status_code={0}' -f $res.StatusCode) } catch { Write-Host '[status] Web health failed (check the PropertySearch Web window for npm/Next errors)' }"
 )
+
+powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0scripts\dev\status-queues.ps1"

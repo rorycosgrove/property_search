@@ -34,19 +34,46 @@ function _isFiniteLatLng(value: [number, number] | null): value is [number, numb
   return !!value && Number.isFinite(value[0]) && Number.isFinite(value[1]);
 }
 
+function _safeZoom(value: unknown, fallback = 8): number {
+  const numeric = typeof value === 'number' ? value : Number(value);
+  if (!Number.isFinite(numeric)) {
+    return fallback;
+  }
+  return Math.min(18, Math.max(2, numeric));
+}
+
+function _hasUsableViewport(map: LeafletMap): boolean {
+  if (!map.getContainer().isConnected) {
+    return false;
+  }
+
+  const size = map.getSize();
+  return Number.isFinite(size.x) && Number.isFinite(size.y) && size.x > 0 && size.y > 0;
+}
+
 function _safeFlyTo(map: LeafletMap, latLng: [number, number] | null, requestedZoom: number): void {
   if (!_isFiniteLatLng(latLng)) {
     return;
   }
 
-  const zoom = Number.isFinite(requestedZoom) ? requestedZoom : 13;
+  const zoom = _safeZoom(requestedZoom, 13);
   try {
+    map.stop();
+    if (!_hasUsableViewport(map)) {
+      map.setView(latLng, zoom, { animate: false });
+      return;
+    }
+
+    // Animation can produce NaN frames when layout is changing; keep transitions deterministic.
     map.flyTo(latLng, zoom, {
-      animate: true,
-      duration: 0.7,
+      animate: false,
     });
   } catch {
-    // Prevent map runtime crashes from malformed coordinates in incoming data.
+    try {
+      map.setView(latLng, zoom, { animate: false });
+    } catch {
+      // Prevent map runtime crashes from malformed coordinates in incoming data.
+    }
   }
 }
 
@@ -107,7 +134,7 @@ export default function PropertyMap({ properties }: Props) {
 
       const map = L.map(mapRef.current!, {
         center: safeCenter,
-        zoom: zoom,
+        zoom: _safeZoom(zoom),
         zoomControl: true,
       });
 
@@ -123,7 +150,7 @@ export default function PropertyMap({ properties }: Props) {
         if (nextLat != null && nextLng != null) {
           setCenter([nextLat, nextLng]);
         }
-        setZoom(map.getZoom());
+        setZoom(_safeZoom(map.getZoom()));
       });
 
       mapInstanceRef.current = map;
@@ -191,7 +218,7 @@ export default function PropertyMap({ properties }: Props) {
           .bindPopup(_hoverCardHtml(prop), {
             className: 'marker-hover-card marker-hover-card-popup',
             closeButton: false,
-            autoPan: true,
+            autoPan: false,
             offset: [0, -10],
           })
           .addTo(map);
@@ -214,9 +241,7 @@ export default function PropertyMap({ properties }: Props) {
         });
 
         if (isSelected) {
-          const targetZoom = Math.max(map.getZoom(), 13);
-          const ll = marker.getLatLng();
-          _safeFlyTo(map, [ll.lat, ll.lng], targetZoom);
+          // Keep popup state in sync without moving viewport on data refresh.
           marker.openPopup();
         }
 
