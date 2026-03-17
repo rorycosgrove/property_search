@@ -17,6 +17,8 @@ export default function PropertyDetail({ property: prop, onClose }: Props) {
   const [grants, setGrants] = useState<PropertyGrantMatch[]>([]);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
+  const [autoEnrichAttempted, setAutoEnrichAttempted] = useState(false);
+  const [autoEnrichPending, setAutoEnrichPending] = useState(false);
   const { comparedPropertyIds, toggleCompareProperty } = useMapStore();
   const inCompare = comparedPropertyIds.includes(prop.id);
   const quickStats = [
@@ -27,6 +29,13 @@ export default function PropertyDetail({ property: prop, onClose }: Props) {
   ].filter((item): item is { label: string; value: string; color?: string } => item !== null);
 
   useEffect(() => {
+    setAutoEnrichAttempted(false);
+    setAutoEnrichPending(false);
+    setEnrichment(null);
+    setPriceHistory([]);
+    setGrants([]);
+    setLoadError(null);
+
     let isMounted = true;
 
     const load = async () => {
@@ -44,7 +53,7 @@ export default function PropertyDetail({ property: prop, onClose }: Props) {
       if (enrichmentResult.status === 'fulfilled') {
         setEnrichment(enrichmentResult.value);
       } else {
-        errors.push('AI analysis');
+        setEnrichment(null);
       }
 
       if (historyResult.status === 'fulfilled') {
@@ -68,6 +77,52 @@ export default function PropertyDetail({ property: prop, onClose }: Props) {
       isMounted = false;
     };
   }, [prop.id]);
+
+  useEffect(() => {
+    if (enrichment || autoEnrichAttempted || autoEnrichPending) {
+      return;
+    }
+
+    let cancelled = false;
+    setAutoEnrichAttempted(true);
+    setAutoEnrichPending(true);
+
+    const runAutoEnrich = async () => {
+      try {
+        await triggerEnrichment(prop.id);
+        window.setTimeout(async () => {
+          if (cancelled) {
+            return;
+          }
+          try {
+            const data = await getEnrichment(prop.id);
+            if (!cancelled) {
+              setEnrichment(data);
+              setLoadError(null);
+            }
+          } catch {
+            if (!cancelled) {
+              setLoadError((prev) => prev || 'AI summary is queued and may take a little longer to appear.');
+            }
+          } finally {
+            if (!cancelled) {
+              setAutoEnrichPending(false);
+            }
+          }
+        }, 3500);
+      } catch {
+        if (!cancelled) {
+          setAutoEnrichPending(false);
+        }
+      }
+    };
+
+    void runAutoEnrich();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [prop.id, enrichment, autoEnrichAttempted, autoEnrichPending]);
 
   const handleEnrich = async () => {
     setLoading(true);
@@ -198,10 +253,10 @@ export default function PropertyDetail({ property: prop, onClose }: Props) {
           {!enrichment ? (
             <button
               onClick={handleEnrich}
-              disabled={loading}
+              disabled={loading || autoEnrichPending}
               className="rounded-full bg-[var(--accent)] px-3 py-1.5 text-xs text-white transition-colors hover:bg-[var(--accent-strong)] disabled:opacity-50"
             >
-              {loading ? 'Analyzing...' : 'Run AI analysis'}
+              {loading || autoEnrichPending ? 'Analyzing...' : 'Run AI analysis'}
             </button>
           ) : null}
         </div>
@@ -245,9 +300,11 @@ export default function PropertyDetail({ property: prop, onClose }: Props) {
               </div>
             ) : null}
           </div>
-        ) : !loading ? (
+        ) : !(loading || autoEnrichPending) ? (
           <p className="text-xs text-[var(--muted)]">Run analysis to generate AI summary and trade-offs.</p>
-        ) : null}
+        ) : (
+          <p className="text-xs text-[var(--muted)]">Generating AI summary...</p>
+        )}
       </section>
 
       {loadError ? <p className="mb-4 text-xs text-amber-300">{loadError}</p> : null}

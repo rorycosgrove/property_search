@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from 'react';
 import {
+  diagnoseListingByExternalId,
   getBackendDiscoveryActivity,
   getBackendFeedActivity,
   getBackendHealthSummary,
@@ -15,8 +16,10 @@ import {
   type BackendHealthSummary,
   type BackendLogEntry,
   type BackendSourceStatus,
+  type ListingDiagnoseResult,
   type LLMHealth,
   type LLMModelOption,
+  repairListingByExternalId,
   updateLLMConfig,
 } from '@/lib/api';
 
@@ -50,6 +53,15 @@ export default function SettingsPage() {
   const [backendLogsLoading, setBackendLogsLoading] = useState(true);
   const [backendLogsError, setBackendLogsError] = useState<string | null>(null);
   const [backendLogLevel, setBackendLogLevel] = useState<'ERROR' | 'WARNING' | 'ALL'>('ALL');
+  const [diagnosticExternalId, setDiagnosticExternalId] = useState('6437639');
+  const [diagnosticListingUrl, setDiagnosticListingUrl] = useState('https://www.daft.ie/for-sale/house-lighthouse-ballydesmond-co-cork/6437639');
+  const [diagnosticSimilarIds, setDiagnosticSimilarIds] = useState('6007301,6326209,6450670,5787846');
+  const [diagnosticHours, setDiagnosticHours] = useState(168);
+  const [diagnosticMaxProbeSources, setDiagnosticMaxProbeSources] = useState(25);
+  const [diagnosticProbeMaxPages, setDiagnosticProbeMaxPages] = useState(120);
+  const [diagnosticInFlight, setDiagnosticInFlight] = useState<'diagnose' | 'repair' | null>(null);
+  const [diagnosticError, setDiagnosticError] = useState<string | null>(null);
+  const [diagnosticResult, setDiagnosticResult] = useState<ListingDiagnoseResult | null>(null);
 
   useEffect(() => {
     let isMounted = true;
@@ -167,6 +179,39 @@ export default function SettingsPage() {
       setSaved(false);
     } finally {
       setIsSaving(false);
+    }
+  };
+
+  const runListingDiagnostic = async (mode: 'diagnose' | 'repair') => {
+    const externalId = diagnosticExternalId.trim();
+    if (!externalId) {
+      setDiagnosticError('External ID is required.');
+      return;
+    }
+
+    try {
+      setDiagnosticInFlight(mode);
+      setDiagnosticError(null);
+      const options = {
+        adapterName: 'daft',
+        hours: diagnosticHours,
+        maxProbeSources: diagnosticMaxProbeSources,
+        listingUrl: diagnosticListingUrl.trim() || undefined,
+        probeMaxPages: diagnosticProbeMaxPages,
+        similarIds: diagnosticSimilarIds
+          .split(',')
+          .map((value) => value.trim())
+          .filter((value) => /^\d{4,}$/.test(value)),
+      };
+      const result = mode === 'diagnose'
+        ? await diagnoseListingByExternalId(externalId, options)
+        : await repairListingByExternalId(externalId, options);
+      setDiagnosticResult(result);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Failed to run listing diagnostic.';
+      setDiagnosticError(message);
+    } finally {
+      setDiagnosticInFlight(null);
     }
   };
 
@@ -405,6 +450,130 @@ export default function SettingsPage() {
               <p className="text-sm text-[var(--muted)]">No recent warnings or errors.</p>
             ) : null}
           </div>
+        </section>
+
+        <section>
+          <h3 className="text-sm font-semibold mb-2">Missed Listing Diagnostic (Daft)</h3>
+          <p className="text-xs text-[var(--muted)] mb-3">
+            Diagnose why a listing ID was missed and optionally trigger one-click repair ingestion.
+          </p>
+
+          <div className="grid grid-cols-1 md:grid-cols-4 gap-2 mb-3">
+            <div className="md:col-span-2">
+              <label className="block text-xs text-[var(--muted)] mb-1">External ID</label>
+              <input
+                type="text"
+                value={diagnosticExternalId}
+                onChange={(e) => setDiagnosticExternalId(e.target.value)}
+                className="w-full bg-[var(--background)] border border-[var(--card-border)] rounded px-3 py-2 text-sm"
+                placeholder="e.g. 6437639"
+              />
+            </div>
+            <div className="md:col-span-2">
+              <label className="block text-xs text-[var(--muted)] mb-1">Listing URL (optional, recommended)</label>
+              <input
+                type="text"
+                value={diagnosticListingUrl}
+                onChange={(e) => setDiagnosticListingUrl(e.target.value)}
+                className="w-full bg-[var(--background)] border border-[var(--card-border)] rounded px-3 py-2 text-sm"
+                placeholder="https://www.daft.ie/for-sale/.../6437639"
+              />
+            </div>
+            <div className="md:col-span-2">
+              <label className="block text-xs text-[var(--muted)] mb-1">Similar Listing IDs (optional, comma separated)</label>
+              <input
+                type="text"
+                value={diagnosticSimilarIds}
+                onChange={(e) => setDiagnosticSimilarIds(e.target.value)}
+                className="w-full bg-[var(--background)] border border-[var(--card-border)] rounded px-3 py-2 text-sm"
+                placeholder="6007301,6326209,6450670,5787846"
+              />
+            </div>
+            <div>
+              <label className="block text-xs text-[var(--muted)] mb-1">Log Hours</label>
+              <input
+                type="number"
+                min={1}
+                max={720}
+                value={diagnosticHours}
+                onChange={(e) => setDiagnosticHours(Number(e.target.value) || 168)}
+                className="w-full bg-[var(--background)] border border-[var(--card-border)] rounded px-3 py-2 text-sm"
+              />
+            </div>
+            <div>
+              <label className="block text-xs text-[var(--muted)] mb-1">Max Probe Sources</label>
+              <input
+                type="number"
+                min={1}
+                max={60}
+                value={diagnosticMaxProbeSources}
+                onChange={(e) => setDiagnosticMaxProbeSources(Number(e.target.value) || 25)}
+                className="w-full bg-[var(--background)] border border-[var(--card-border)] rounded px-3 py-2 text-sm"
+              />
+            </div>
+            <div>
+              <label className="block text-xs text-[var(--muted)] mb-1">Probe Max Pages</label>
+              <input
+                type="number"
+                min={5}
+                max={300}
+                value={diagnosticProbeMaxPages}
+                onChange={(e) => setDiagnosticProbeMaxPages(Number(e.target.value) || 120)}
+                className="w-full bg-[var(--background)] border border-[var(--card-border)] rounded px-3 py-2 text-sm"
+              />
+            </div>
+          </div>
+
+          <div className="flex flex-wrap gap-2 mb-3">
+            <button
+              onClick={() => {
+                void runListingDiagnostic('diagnose');
+              }}
+              disabled={diagnosticInFlight !== null}
+              className="px-3 py-2 bg-[var(--accent)] text-white hover:bg-[var(--accent-strong)] disabled:opacity-60 disabled:cursor-not-allowed rounded text-sm"
+            >
+              {diagnosticInFlight === 'diagnose' ? 'Running Diagnose...' : 'Diagnose'}
+            </button>
+            <button
+              onClick={() => {
+                void runListingDiagnostic('repair');
+              }}
+              disabled={diagnosticInFlight !== null}
+              className="px-3 py-2 border border-[var(--card-border)] bg-[var(--background)] hover:bg-[var(--card-bg)] disabled:opacity-60 disabled:cursor-not-allowed rounded text-sm"
+            >
+              {diagnosticInFlight === 'repair' ? 'Running Repair...' : 'Diagnose + Repair'}
+            </button>
+          </div>
+
+          {diagnosticError ? (
+            <div className="rounded border border-[var(--danger)]/40 bg-[var(--danger)]/10 px-3 py-2 text-sm text-[var(--danger)] mb-3">
+              {diagnosticError}
+            </div>
+          ) : null}
+
+          {diagnosticResult ? (
+            <div className="space-y-3">
+              <div className="grid grid-cols-1 md:grid-cols-4 gap-2">
+                <StatusCard label="Diagnosis" value={diagnosticResult.diagnosis.status || 'unknown'} tone={diagnosticResult.diagnosis.status === 'repaired' ? 'ok' : 'warn'} />
+                <StatusCard label="Probe Match" value={diagnosticResult.probe?.matched ? 'Matched live' : 'No live match'} tone={diagnosticResult.probe?.matched ? 'ok' : 'warn'} />
+                <StatusCard label="Persisted Matches" value={String(diagnosticResult.persisted_matches?.length || 0)} tone="neutral" />
+                <StatusCard label="URL Matches" value={String(diagnosticResult.persisted_url_matches?.length || 0)} tone="neutral" />
+              </div>
+
+              <div className="rounded border border-[var(--card-border)] bg-[var(--background)] px-3 py-2 text-xs text-[var(--muted)]">
+                <p>Reason: {diagnosticResult.diagnosis.reason || 'n/a'}</p>
+                <p className="mt-1">Recommended action: {diagnosticResult.diagnosis.recommended_action || 'n/a'}</p>
+                <p className="mt-1">Repair status: {diagnosticResult.repair?.status || 'n/a'}</p>
+              </div>
+
+              <details className="rounded border border-[var(--card-border)] bg-[var(--background)]">
+                <summary className="cursor-pointer select-none px-3 py-2 text-sm font-medium">Raw diagnostic payload</summary>
+                <pre className="px-3 pb-3 text-xs whitespace-pre-wrap break-words text-[var(--muted)]">
+                  {JSON.stringify(diagnosticResult, null, 2)}
+                </pre>
+              </details>
+            </div>
+          ) : null}
         </section>
       </div>
     </div>

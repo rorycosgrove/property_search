@@ -9,7 +9,6 @@ switching via DynamoDB config and caching of results.
 from __future__ import annotations
 
 import json
-import os
 from typing import Any
 
 from packages.ai.bedrock_provider import BedrockProvider
@@ -22,8 +21,6 @@ from packages.ai.prompts import (
 from packages.ai.provider import LLMProvider, LLMResponse
 from packages.shared.config import settings
 from packages.shared.logging import get_logger
-from packages.shared.queue import _should_inline_locally
-
 logger = get_logger(__name__)
 
 _runtime_provider_override: str | None = None
@@ -36,12 +33,7 @@ def llm_runtime_status() -> dict:
     provider = _get_active_provider_name()
     model = _get_active_model()
     enabled = bool(settings.llm_enabled)
-    # When running locally without SQS, tasks execute inline — no queue URL needed.
-    queue_configured = bool(
-        settings.llm_queue_url
-        or os.environ.get("LLM_QUEUE_URL", "")
-        or _should_inline_locally()
-    )
+    queue_configured = bool(settings.llm_queue_url)
     reason = "ok"
     if not enabled:
         reason = "llm_disabled"

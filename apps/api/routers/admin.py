@@ -6,10 +6,12 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
 
 from packages.admin.service import (
+    AdminServiceError,
     MigrationCommandFailedError,
     MigrationCommandTimedOutError,
     backend_health_summary,
     backend_logs_summary,
+    diagnose_listing_by_external_id,
     get_migration_status,
     list_backend_logs,
     list_discovery_activity,
@@ -17,6 +19,7 @@ from packages.admin.service import (
     list_recent_errors,
     list_source_status,
     run_database_migrations,
+    source_freshness_report,
 )
 from packages.shared.config import settings
 from packages.shared.logging import get_logger
@@ -62,6 +65,17 @@ def get_source_status(db: Session = Depends(get_db_session)):
     return list_source_status(db)
 
 
+@router.get("/sources/freshness", summary="Source poll freshness report")
+def get_source_freshness(db: Session = Depends(get_db_session)):
+    """Return freshness status for each enabled source.
+
+    Sources that have not had a successful poll within 1.5× their
+    poll_interval_seconds are flagged as stale.  Stale or never-polled
+    sources represent live data gaps.
+    """
+    return source_freshness_report(db)
+
+
 @router.get("/logs/discovery", summary="Recent discovery activity")
 def get_discovery_activity(
     limit: int = Query(5, ge=1, le=50),
@@ -101,3 +115,57 @@ def get_recent_errors(
     db: Session = Depends(get_db_session),
 ):
     return list_recent_errors(db, level=level, limit=limit)
+
+
+@router.get("/listings/{external_id}/diagnose", summary="Diagnose why a listing was missed")
+def diagnose_listing(
+    external_id: str,
+    adapter_name: str = Query("daft", description="Source adapter name, currently supports daft"),
+    listing_url: str | None = Query(None, description="Optional listing URL for direct fallback probe"),
+    similar_ids: str | None = Query(None, description="Optional comma-separated similar listing IDs for reverse anchored probe"),
+    hours: int = Query(168, ge=1, le=720, description="Recent log lookback window in hours"),
+    max_probe_sources: int = Query(25, ge=1, le=60, description="Maximum source/candidate probes to attempt"),
+    probe_max_pages: int = Query(25, ge=5, le=300, description="Maximum pages to probe per target source"),
+    db: Session = Depends(get_db_session),
+):
+    try:
+        return diagnose_listing_by_external_id(
+            db,
+            external_id=external_id,
+            adapter_name=adapter_name,
+            listing_url=listing_url,
+            similar_ids=similar_ids,
+            repair=False,
+            hours=hours,
+            max_probe_sources=max_probe_sources,
+            probe_max_pages=probe_max_pages,
+        )
+    except AdminServiceError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@router.post("/listings/{external_id}/repair", summary="Diagnose and repair a missed listing")
+def repair_listing(
+    external_id: str,
+    adapter_name: str = Query("daft", description="Source adapter name, currently supports daft"),
+    listing_url: str | None = Query(None, description="Optional listing URL for direct fallback probe"),
+    similar_ids: str | None = Query(None, description="Optional comma-separated similar listing IDs for reverse anchored probe"),
+    hours: int = Query(168, ge=1, le=720, description="Recent log lookback window in hours"),
+    max_probe_sources: int = Query(25, ge=1, le=60, description="Maximum source/candidate probes to attempt"),
+    probe_max_pages: int = Query(25, ge=5, le=300, description="Maximum pages to probe per target source"),
+    db: Session = Depends(get_db_session),
+):
+    try:
+        return diagnose_listing_by_external_id(
+            db,
+            external_id=external_id,
+            adapter_name=adapter_name,
+            listing_url=listing_url,
+            similar_ids=similar_ids,
+            repair=True,
+            hours=hours,
+            max_probe_sources=max_probe_sources,
+            probe_max_pages=probe_max_pages,
+        )
+    except AdminServiceError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc

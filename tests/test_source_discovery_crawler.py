@@ -262,6 +262,16 @@ class TestLoadAllDiscoveryCandidates:
         assert any(r.candidate.get("adapter_name") == "daft" for r in results)
 
 
+class TestLoadDiscoveryCandidates:
+    def test_includes_static_extended_regional_candidates(self):
+        from packages.sources.discovery import load_discovery_candidates
+
+        candidates = load_discovery_candidates()
+        urls = {c.get("url") for c in candidates}
+
+        assert "https://www.daft.ie/property-for-sale/cork" in urls
+
+
 # ── Canonical URL normalization ────────────────────────────────────────────────
 
 

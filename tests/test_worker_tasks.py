@@ -5,6 +5,7 @@ from types import SimpleNamespace
 import pytest
 
 from apps.worker.tasks import (
+    _build_daft_cursor_payload,
     discover_all_sources,
     evaluate_alerts,
     enrich_batch_llm,
@@ -957,3 +958,123 @@ def test_discover_all_sources_skips_invalid_adapter_config(monkeypatch):
     assert result["property_sources"]["skipped_invalid_config"] == 1
     assert result["property_sources"]["auto_enabled"] == 0
     assert repo_holder["repo"].created == []
+
+
+def test_build_daft_cursor_payload_collects_recent_ids_and_latest_publish():
+    raw_listings = [
+        SimpleNamespace(raw_data={"id": 1001, "publishDate": 1700000000000}),
+        SimpleNamespace(raw_data={"id": 1002, "publishDate": 1700000500000}),
+        SimpleNamespace(raw_data={"id": 1001, "publishDate": 1700000100000}),
+    ]
+
+    payload = _build_daft_cursor_payload(raw_listings, max_recent_ids=10)
+
+    assert payload["recent_listing_ids"] == ["1001", "1002"]
+    assert payload["last_publish_ts_ms"] == 1700000500000
+    assert isinstance(payload["cursor_updated_at"], str)
+
+
+def test_scrape_source_persists_daft_cursor_config(monkeypatch):
+    source_obj = SimpleNamespace(
+        id="daft-source-id",
+        enabled=True,
+        adapter_name="daft",
+        name="Daft.ie Cork",
+        config={"areas": ["cork"], "max_pages": 2},
+    )
+
+    class FakeSourceRepository:
+        def __init__(self, _db):
+            self.updated_configs: list[dict] = []
+
+        def get_by_id(self, source_id):
+            assert source_id == "daft-source-id"
+            return source_obj
+
+        def mark_poll_success(self, source_id, processed_count):
+            assert source_id == "daft-source-id"
+            assert processed_count == 1
+
+        def mark_poll_error(self, source_id, _error):
+            raise AssertionError(f"mark_poll_error should not be called for {source_id}")
+
+        def should_skip_poll(self, _source):
+            return False
+
+        def try_acquire_scrape_lock(self, _source_id):
+            return True
+
+        def update(self, source_id, **kwargs):
+            assert source_id == "daft-source-id"
+            self.updated_configs.append(kwargs.get("config") or {})
+            return source_obj
+
+    class FakePropertyRepository:
+        def __init__(self, _db):
+            pass
+
+        def get_by_external_id_and_source(self, _source_id, _external_id):
+            return None
+
+        def get_by_content_hash(self, _content_hash):
+            return None
+
+        def create(self, **_kwargs):
+            return None
+
+    class FakePriceHistoryRepository:
+        def __init__(self, _db):
+            pass
+
+    class FakeNormalizer:
+        def normalize(self, _parsed):
+            return {
+                "content_hash": "hash-1",
+                "address": "1 Main Street",
+                "county": "Cork",
+                "latitude": 53.0,
+                "longitude": -8.0,
+                "price": 250000.0,
+                "external_id": "6437639",
+                "url": "https://www.daft.ie/for-sale/house-lighthouse-ballydesmond-co-cork/6437639",
+                "raw_data": {},
+            }
+
+    class FakeAdapter:
+        async def fetch_listings(self, _config):
+            return [
+                SimpleNamespace(
+                    raw_data={"id": 6437639, "publishDate": 1700000900000},
+                    source_url="https://www.daft.ie/for-sale/house-lighthouse-ballydesmond-co-cork/6437639",
+                )
+            ]
+
+        def parse_listing(self, _raw):
+            return SimpleNamespace(raw_data={})
+
+    repo_holder: dict[str, FakeSourceRepository] = {}
+
+    def _repo_factory(db):
+        repo = FakeSourceRepository(db)
+        repo_holder["repo"] = repo
+        return repo
+
+    monkeypatch.setattr("packages.storage.database.get_session", lambda: _SessionCtx())
+    monkeypatch.setattr("packages.storage.repositories.SourceRepository", _repo_factory)
+    monkeypatch.setattr("packages.storage.repositories.PropertyRepository", FakePropertyRepository)
+    monkeypatch.setattr(
+        "packages.storage.repositories.PriceHistoryRepository",
+        FakePriceHistoryRepository,
+    )
+    monkeypatch.setattr("packages.normalizer.normalizer.PropertyNormalizer", FakeNormalizer)
+    monkeypatch.setattr("packages.sources.registry.get_adapter", lambda _name: FakeAdapter())
+    monkeypatch.setattr("apps.worker.tasks._record_backend_log", lambda **_kwargs: None)
+
+    result = scrape_source("daft-source-id")
+
+    assert result["source_id"] == "daft-source-id"
+    assert result["new"] == 1
+    updated_configs = repo_holder["repo"].updated_configs
+    assert len(updated_configs) == 1
+    assert updated_configs[0]["recent_listing_ids"] == ["6437639"]
+    assert updated_configs[0]["last_publish_ts_ms"] == 1700000900000

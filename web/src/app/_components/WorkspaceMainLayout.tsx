@@ -112,6 +112,14 @@ export default function WorkspaceMainLayout({
     }
   }, [detailPanelProperty, mobilePanel, desktopPanel]);
 
+  useEffect(() => {
+    if (!detailPanelProperty) {
+      return;
+    }
+    setDesktopPanel('detail');
+    setMobilePanel('detail');
+  }, [detailPanelProperty]);
+
   const renderControls = () => (
     <div className="min-h-full">
       <FilterBar />

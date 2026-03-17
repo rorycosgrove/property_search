@@ -102,23 +102,34 @@ def load_discovery_candidates() -> list[dict[str, Any]]:
     Invalid rows are ignored.
     """
     candidates = [dict(c) for c in DEFAULT_DISCOVERY_CANDIDATES]
+    try:
+        from packages.sources.crawler import STATIC_EXTENDED_CANDIDATES
+
+        candidates.extend(dict(c) for c in STATIC_EXTENDED_CANDIDATES)
+    except Exception:
+        logger.warning("discovery.load_candidates: static extended candidates unavailable")
+
     raw = os.environ.get("AUTO_DISCOVERY_SOURCES_JSON", "").strip()
     if not raw:
-        return candidates
+        return _dedupe_candidates(candidates)
 
     try:
         parsed = json.loads(raw)
     except json.JSONDecodeError:
-        return candidates
+        return _dedupe_candidates(candidates)
 
     if not isinstance(parsed, list):
-        return candidates
+        return _dedupe_candidates(candidates)
 
     for item in parsed:
         if isinstance(item, dict) and _validate_candidate(item):
             candidates.append(item)
 
-    # Deduplicate candidates by canonical URL while preserving order.
+    return _dedupe_candidates(candidates)
+
+
+def _dedupe_candidates(candidates: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Deduplicate candidates by canonical URL while preserving order."""
     deduped: list[dict[str, Any]] = []
     seen_urls: set[str] = set()
     for candidate in candidates:

@@ -256,6 +256,74 @@ class TestAdminLogsEndpoint:
         finally:
             app.dependency_overrides.clear()
 
+    def test_diagnose_listing_endpoint(self, client):
+        from packages.storage.database import get_db_session
+
+        mock_session = MagicMock()
+        app.dependency_overrides[get_db_session] = lambda: mock_session
+
+        try:
+            with patch("apps.api.routers.admin.diagnose_listing_by_external_id") as mock_diagnose:
+                mock_diagnose.return_value = {
+                    "external_id": "6437639",
+                    "adapter_name": "daft",
+                    "diagnosis": {"status": "found_live_missing_from_store"},
+                }
+
+                resp = client.get("/api/v1/admin/listings/6437639/diagnose?adapter_name=daft&hours=72&max_probe_sources=12")
+
+                assert resp.status_code == 200
+                data = resp.json()
+                assert data["external_id"] == "6437639"
+                assert data["diagnosis"]["status"] == "found_live_missing_from_store"
+                mock_diagnose.assert_called_once_with(
+                    mock_session,
+                    external_id="6437639",
+                    adapter_name="daft",
+                    listing_url=None,
+                    similar_ids=None,
+                    repair=False,
+                    hours=72,
+                    max_probe_sources=12,
+                    probe_max_pages=25,
+                )
+        finally:
+            app.dependency_overrides.clear()
+
+    def test_repair_listing_endpoint(self, client):
+        from packages.storage.database import get_db_session
+
+        mock_session = MagicMock()
+        app.dependency_overrides[get_db_session] = lambda: mock_session
+
+        try:
+            with patch("apps.api.routers.admin.diagnose_listing_by_external_id") as mock_diagnose:
+                mock_diagnose.return_value = {
+                    "external_id": "6437639",
+                    "adapter_name": "daft",
+                    "diagnosis": {"status": "repaired"},
+                    "repair": {"status": "created_property"},
+                }
+
+                resp = client.post("/api/v1/admin/listings/6437639/repair?max_probe_sources=8")
+
+                assert resp.status_code == 200
+                data = resp.json()
+                assert data["repair"]["status"] == "created_property"
+                mock_diagnose.assert_called_once_with(
+                    mock_session,
+                    external_id="6437639",
+                    adapter_name="daft",
+                    listing_url=None,
+                    similar_ids=None,
+                    repair=True,
+                    hours=168,
+                    max_probe_sources=8,
+                    probe_max_pages=25,
+                )
+        finally:
+            app.dependency_overrides.clear()
+
 
 class TestPropertiesEndpoint:
     def test_list_properties(self, client):

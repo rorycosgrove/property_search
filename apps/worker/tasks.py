@@ -128,6 +128,34 @@ def _materialize_property_documents_safe(db: Any, property_id: str | None) -> No
         )
 
 
+def _build_daft_cursor_payload(raw_listings: list[Any], max_recent_ids: int = 600) -> dict[str, Any]:
+    """Build a compact per-source Daft cursor from fetched raw listings."""
+    seen: set[str] = set()
+    recent_ids: list[str] = []
+    latest_publish_ts_ms: int | None = None
+
+    for raw in raw_listings:
+        data = getattr(raw, "raw_data", None) or {}
+        listing_id = str(data.get("id", "")).strip()
+        if listing_id and listing_id not in seen:
+            seen.add(listing_id)
+            recent_ids.append(listing_id)
+            if len(recent_ids) >= max_recent_ids:
+                break
+
+        publish_ts = data.get("publishDate")
+        if isinstance(publish_ts, (int, float)):
+            publish_ms = int(publish_ts)
+            if latest_publish_ts_ms is None or publish_ms > latest_publish_ts_ms:
+                latest_publish_ts_ms = publish_ms
+
+    return {
+        "recent_listing_ids": recent_ids,
+        "last_publish_ts_ms": latest_publish_ts_ms,
+        "cursor_updated_at": datetime.now(UTC).isoformat(),
+    }
+
+
 # ── Source scraping tasks ─────────────────────────────────────────────────────
 
 
@@ -354,17 +382,39 @@ def scrape_source(source_id: str, force: bool = False) -> dict[str, Any]:
             raw_listings = _run_async(adapter.fetch_listings(config))
             logger.info(f"Fetched {len(raw_listings)} listings from {source.name}")
 
+            if source.adapter_name == "daft":
+                cursor_payload = _build_daft_cursor_payload(raw_listings)
+                last_publish_ts_ms = cursor_payload.get("last_publish_ts_ms")
+                next_config = {
+                    **config,
+                    "recent_listing_ids": cursor_payload.get("recent_listing_ids", []),
+                    "cursor_updated_at": cursor_payload.get("cursor_updated_at"),
+                }
+                if last_publish_ts_ms is not None:
+                    next_config["last_publish_ts_ms"] = last_publish_ts_ms
+                source_repo.update(source_id, config=next_config)
+
             new_count = 0
             updated_count = 0
-            skipped_count = 0
+            parse_failed_count = 0
+            price_unchanged_count = 0
             dedup_conflict_count = 0
+            skipped_count = 0  # ppr-duplicate and misc paths only
             geocode_attempts = 0
             geocode_successes = 0
+            # Samples collected per run for reconciliation/diagnostics — not persisted individually.
+            _new_external_ids: list[str] = []
+            _parse_fail_sample: list[dict[str, Any]] = []
 
             for raw in raw_listings:
                 parsed = adapter.parse_listing(raw)
                 if not parsed:
-                    skipped_count += 1
+                    parse_failed_count += 1
+                    if len(_parse_fail_sample) < 5:
+                        _parse_fail_sample.append({
+                            "source_url": getattr(raw, "source_url", None),
+                            "raw_id": str((getattr(raw, "raw_data", None) or {}).get("id", ""))[:64],
+                        })
                     continue
 
                 if parsed.raw_data.get("ppr_record"):
@@ -405,9 +455,9 @@ def scrape_source(source_id: str, force: bool = False) -> dict[str, Any]:
                             _materialize_property_documents_safe(db, str(existing.id))
                             updated_count += 1
                         else:
-                            skipped_count += 1
+                            price_unchanged_count += 1
                     else:
-                        skipped_count += 1
+                        price_unchanged_count += 1
                 else:
                     if not record.get("latitude"):
                         geocode_attempts += 1
@@ -440,13 +490,19 @@ def scrape_source(source_id: str, force: bool = False) -> dict[str, Any]:
                             created_property_id = str(created_property.id) if getattr(created_property, "id", None) else None
                             _materialize_property_documents_safe(db, created_property_id)
                         new_count += 1
+                        new_ext_id = record.get("external_id")
+                        if new_ext_id and len(_new_external_ids) < 100:
+                            _new_external_ids.append(str(new_ext_id))
                     except IntegrityError:
-                        skipped_count += 1
                         dedup_conflict_count += 1
                         logger.info(
                             "property_dedup_conflict_skipped",
                             source_id=source_id,
+                            source_url=record.get("url"),
+                            external_id=record.get("external_id"),
+                            canonical_property_id=record.get("canonical_property_id"),
                             content_hash=record.get("content_hash"),
+                            dedup_action="skip_integrity_conflict",
                         )
 
             source_repo.mark_poll_success(source_id, new_count + updated_count)
@@ -456,7 +512,10 @@ def scrape_source(source_id: str, force: bool = False) -> dict[str, Any]:
                 "source_name": source.name,
                 "new": new_count,
                 "updated": updated_count,
-                "skipped": skipped_count,
+                "skipped": skipped_count + parse_failed_count + price_unchanged_count,
+                "parse_failed": parse_failed_count,
+                "price_unchanged": price_unchanged_count,
+                "dedup_conflicts": dedup_conflict_count,
                 "total_fetched": len(raw_listings),
                 "geocode_attempts": geocode_attempts,
                 "geocode_successes": geocode_successes,
@@ -465,6 +524,9 @@ def scrape_source(source_id: str, force: bool = False) -> dict[str, Any]:
                     if geocode_attempts
                     else 100.0
                 ),
+                # Sampled for reconciliation — first 100 new external IDs and first 5 parse failures.
+                "new_external_ids_sample": _new_external_ids,
+                "parse_fail_sample": _parse_fail_sample,
             }
 
             logger.info(f"Scrape complete: {result}")
@@ -480,7 +542,9 @@ def scrape_source(source_id: str, force: bool = False) -> dict[str, Any]:
                 source_id=source_id,
                 source_name=source.name,
                 skip_reason="none",
-                skipped_count=skipped_count,
+                skipped_count=skipped_count + parse_failed_count + price_unchanged_count,
+                parse_failed=parse_failed_count,
+                price_unchanged=price_unchanged_count,
                 dedup_conflicts=dedup_conflict_count,
                 new_count=new_count,
                 updated_count=updated_count,
@@ -1128,3 +1192,71 @@ def discover_all_sources(
     )
     return result
 
+
+# ── Source freshness check ────────────────────────────────────────────────────
+
+
+def check_source_freshness() -> dict[str, Any]:
+    """Check all enabled sources for poll staleness and emit backend log events.
+
+    A source is *stale* when its last successful poll is more than
+    1.5× its ``poll_interval_seconds`` in the past (or it has never been polled).
+    Stale sources are a correctness risk: they represent gaps in live data.
+    """
+    from packages.storage.database import get_session
+    from packages.storage.repositories import SourceRepository
+
+    with get_session() as db:
+        repo = SourceRepository(db)
+        sources = repo.get_all(enabled_only=True)
+
+    now = datetime.now(UTC)
+    stale: list[dict[str, Any]] = []
+    never_polled: list[dict[str, Any]] = []
+    healthy: list[dict[str, Any]] = []
+
+    for source in sources:
+        interval = int(getattr(source, "poll_interval_seconds", None) or 21600)
+        last_success = getattr(source, "last_success_at", None)
+        name = getattr(source, "name", str(getattr(source, "id", "")))
+        entry = {
+            "id": str(getattr(source, "id", "")),
+            "name": name,
+            "poll_interval_seconds": interval,
+            "last_success_at": last_success.isoformat() if last_success else None,
+            "error_count": int(getattr(source, "error_count", 0) or 0),
+        }
+
+        if last_success is None:
+            never_polled.append(entry)
+        elif (now - last_success).total_seconds() > interval * 1.5:
+            age_seconds = int((now - last_success).total_seconds())
+            stale.append({**entry, "stale_seconds": age_seconds})
+        else:
+            healthy.append(entry)
+
+    result: dict[str, Any] = {
+        "checked_at": now.isoformat(),
+        "healthy_count": len(healthy),
+        "stale_count": len(stale),
+        "never_polled_count": len(never_polled),
+        "stale": stale,
+        "never_polled": never_polled,
+    }
+
+    if stale or never_polled:
+        _record_backend_log(
+            level="WARNING",
+            event_type="source_freshness_stale",
+            message=f"{len(stale)} stale source(s) and {len(never_polled)} never-polled source(s) detected",
+            context=result,
+        )
+        logger.warning(
+            "source_freshness_stale",
+            stale_count=len(stale),
+            never_polled_count=len(never_polled),
+        )
+    else:
+        logger.info("source_freshness_ok", healthy_count=len(healthy))
+
+    return result

@@ -176,7 +176,8 @@ def dispatch_or_inline(
 
     Unexpected dispatch/runtime errors are re-raised for caller-specific handling.
     """
-    if _should_inline_locally():
+    force_inline_raw = os.environ.get("FORCE_INLINE_TASKS")
+    if force_inline_raw is not None and _is_truthy(force_inline_raw):
         result = inline_fn(**payload)
         return {
             "status": "processed_inline",

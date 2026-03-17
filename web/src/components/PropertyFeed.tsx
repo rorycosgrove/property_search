@@ -14,6 +14,14 @@ export default function PropertyFeed({ properties, total, loading }: Props) {
   const { filters, setFilter } = useFilterStore();
   const { selectProperty, comparedPropertyIds, toggleCompareProperty } = useMapStore();
   const { openDetail } = useUIStore();
+
+  const openExternalListing = (url: string | null | undefined) => {
+    const raw = String(url || '').trim();
+    if (!raw) return;
+    const normalized = /^https?:\/\//i.test(raw) ? raw : `https://${raw.replace(/^\/+/, '')}`;
+    window.open(normalized, '_blank', 'noopener,noreferrer');
+  };
+
   const page = filters.page || 1;
   const size = filters.size || 20;
   const totalPages = Math.ceil(total / size);
@@ -124,9 +132,17 @@ export default function PropertyFeed({ properties, total, loading }: Props) {
                   >
                     {inCompare ? 'Added to compare' : compareFull ? 'Compare full (5/5)' : 'Add to compare'}
                   </button>
-                  <span className="rounded-full border border-[var(--card-border)] px-3 py-1.5 text-[11px] text-[var(--muted)]">
-                    Open for detail
-                  </span>
+                  <button
+                    type="button"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      openExternalListing(prop.url);
+                    }}
+                    disabled={!prop.url}
+                    className="rounded-full border border-[var(--card-border)] px-3 py-1.5 text-[11px] text-[var(--muted)] transition-colors hover:bg-[var(--background)] disabled:cursor-not-allowed disabled:opacity-60"
+                  >
+                    Open external listing
+                  </button>
                 </div>
               </div>
             </div>

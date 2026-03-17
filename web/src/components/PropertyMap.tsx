@@ -241,9 +241,7 @@ export default function PropertyMap({ properties }: Props) {
         });
 
         if (isSelected) {
-          const targetZoom = Math.max(map.getZoom(), 13);
-          const ll = marker.getLatLng();
-          _safeFlyTo(map, [ll.lat, ll.lng], targetZoom);
+          // Keep popup state in sync without moving viewport on data refresh.
           marker.openPopup();
         }
 

@@ -628,6 +628,87 @@ export async function getBackendRecentErrors(
   return fetchJSON<BackendLogEntry[]>(`/api/v1/admin/logs/recent-errors?${params.toString()}`);
 }
 
+export interface ListingDiagnoseOptions {
+  adapterName?: string;
+  hours?: number;
+  maxProbeSources?: number;
+  listingUrl?: string;
+  probeMaxPages?: number;
+  similarIds?: string[];
+}
+
+export interface ListingDiagnoseResult {
+  external_id: string;
+  adapter_name: string;
+  persisted_matches: Array<Record<string, unknown>>;
+  persisted_url_matches: Array<Record<string, unknown>>;
+  recent_logs: BackendLogEntry[];
+  probe: {
+    matched?: boolean;
+    attempted_sources?: Array<Record<string, unknown>>;
+    match_source?: Record<string, unknown>;
+    matched_identifiers?: string[];
+    listing_url?: string | null;
+    title?: string | null;
+    api_id?: string | null;
+    url_listing_id?: string | null;
+    normalized_preview?: Record<string, unknown> | null;
+  } | null;
+  diagnosis: {
+    status: string;
+    reason?: string | null;
+    recommended_action?: string | null;
+  };
+  repair: {
+    status?: string | null;
+    source_action?: string | null;
+    source?: Record<string, unknown> | null;
+    property?: Record<string, unknown> | null;
+  } | null;
+}
+
+function buildListingDiagnosticQuery(options?: ListingDiagnoseOptions): string {
+  const params = new URLSearchParams();
+  if (options?.adapterName) {
+    params.set('adapter_name', options.adapterName);
+  }
+  if (options?.hours !== undefined) {
+    params.set('hours', String(options.hours));
+  }
+  if (options?.maxProbeSources !== undefined) {
+    params.set('max_probe_sources', String(options.maxProbeSources));
+  }
+  if (options?.listingUrl) {
+    params.set('listing_url', options.listingUrl);
+  }
+  if (options?.probeMaxPages !== undefined) {
+    params.set('probe_max_pages', String(options.probeMaxPages));
+  }
+  if (options?.similarIds && options.similarIds.length > 0) {
+    params.set('similar_ids', options.similarIds.join(','));
+  }
+  const suffix = params.toString();
+  return suffix ? `?${suffix}` : '';
+}
+
+export async function diagnoseListingByExternalId(
+  externalId: string,
+  options?: ListingDiagnoseOptions,
+): Promise<ListingDiagnoseResult> {
+  const query = buildListingDiagnosticQuery(options);
+  return fetchJSON<ListingDiagnoseResult>(`/api/v1/admin/listings/${externalId}/diagnose${query}`);
+}
+
+export async function repairListingByExternalId(
+  externalId: string,
+  options?: ListingDiagnoseOptions,
+): Promise<ListingDiagnoseResult> {
+  const query = buildListingDiagnosticQuery(options);
+  return fetchJSON<ListingDiagnoseResult>(`/api/v1/admin/listings/${externalId}/repair${query}`, {
+    method: 'POST',
+  });
+}
+
 // ── LLM ─────────────────────────────────────────────────────────────────────
 
 export interface LLMConfig {

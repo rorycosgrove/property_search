@@ -429,7 +429,7 @@ def trigger_full_discovery(
             "scrape",
             "discover_all_sources",
             payload,
-            lambda: discover_all_sources(
+            lambda **_: discover_all_sources(
                 limit=limit,
                 dry_run=dry_run,
                 follow_links=follow_links,

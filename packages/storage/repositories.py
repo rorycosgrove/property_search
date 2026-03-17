@@ -194,6 +194,25 @@ class PropertyRepository:
             )
         )
 
+    def list_by_external_id(self, external_id: str) -> list[Property]:
+        query = (
+            select(Property)
+            .where(Property.external_id == external_id)
+            .options(joinedload(Property.source))
+            .order_by(Property.created_at.desc())
+        )
+        return list(self.session.scalars(query).unique())
+
+    def list_by_url_suffix(self, suffix: str, limit: int = 20) -> list[Property]:
+        query = (
+            select(Property)
+            .where(Property.url.ilike(f"%{suffix}"))
+            .options(joinedload(Property.source))
+            .order_by(Property.created_at.desc())
+            .limit(limit)
+        )
+        return list(self.session.scalars(query).unique())
+
     def get_by_canonical_property_id(self, canonical_property_id: str) -> Property | None:
         return self.session.scalar(
             select(Property)
