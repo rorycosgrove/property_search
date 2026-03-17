@@ -13,6 +13,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import re
 from urllib.parse import urlsplit, urlunsplit
 from typing import Any
 
@@ -95,6 +96,39 @@ def canonicalize_source_url(url: str) -> str:
     return urlunsplit((scheme, netloc, path, "", ""))
 
 
+def source_identity_key(adapter_name: str | None, url: str) -> str:
+    """Return a semantic identity key for duplicate-safe source matching.
+
+    This collapses known URL variants that represent the same coverage slice,
+    e.g. MyHome national pages with/without `/property-for-sale` suffix.
+    """
+    canonical_url = canonicalize_source_url(url)
+    if not canonical_url:
+        return ""
+
+    adapter = (adapter_name or "").strip().lower()
+    parts = urlsplit(canonical_url)
+    path = (parts.path or "").strip("/").lower()
+
+    if adapter == "daft":
+        match = re.search(r"property-for-sale/([^/]+)", path)
+        if match:
+            return f"daft:{match.group(1)}"
+
+    if adapter == "myhome":
+        match = re.search(r"residential/([^/]+)", path)
+        if match:
+            # Covers both /residential/{area} and /residential/{area}/property-for-sale
+            return f"myhome:{match.group(1)}"
+
+    if adapter == "propertypal":
+        match = re.search(r"property-for-sale/([^/]+)", path)
+        if match:
+            return f"propertypal:{match.group(1)}"
+
+    return f"{adapter}:{canonical_url}"
+
+
 def load_discovery_candidates() -> list[dict[str, Any]]:
     """Load discovery candidates from defaults + optional env JSON override.
 
@@ -129,14 +163,17 @@ def load_discovery_candidates() -> list[dict[str, Any]]:
 
 
 def _dedupe_candidates(candidates: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """Deduplicate candidates by canonical URL while preserving order."""
+    """Deduplicate candidates by semantic source identity while preserving order."""
     deduped: list[dict[str, Any]] = []
-    seen_urls: set[str] = set()
+    seen_keys: set[str] = set()
     for candidate in candidates:
-        key = canonicalize_source_url(str(candidate.get("url") or ""))
-        if not key or key in seen_urls:
+        key = source_identity_key(
+            str(candidate.get("adapter_name") or ""),
+            str(candidate.get("url") or ""),
+        )
+        if not key or key in seen_keys:
             continue
-        seen_urls.add(key)
+        seen_keys.add(key)
         deduped.append(candidate)
 
     return deduped

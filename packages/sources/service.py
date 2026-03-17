@@ -4,7 +4,7 @@ from dataclasses import dataclass
 from typing import Any, Callable
 
 from packages.shared.queue import QueueDispatchError, dispatch_or_inline
-from packages.sources.discovery import canonicalize_source_url
+from packages.sources.discovery import canonicalize_source_url, source_identity_key
 from packages.sources.registry import get_adapter
 
 
@@ -103,6 +103,29 @@ def merge_tags(existing: list[str] | None, additions: list[str]) -> list[str]:
     return merged
 
 
+def _find_existing_source_by_canonical_url(
+    *,
+    repo: Any,
+    adapter_name: str,
+    url: str,
+    exclude_source_id: str | None = None,
+) -> Any | None:
+    target = source_identity_key(adapter_name, url)
+    if not target:
+        return None
+
+    for source in repo.get_all(enabled_only=False):
+        if exclude_source_id and str(getattr(source, "id", "")) == exclude_source_id:
+            continue
+        existing_key = source_identity_key(
+            str(getattr(source, "adapter_name", "") or ""),
+            str(getattr(source, "url", "") or ""),
+        )
+        if existing_key and existing_key == target:
+            return source
+    return None
+
+
 def source_to_dict(source: Any) -> dict[str, Any]:
     return {
         "id": str(source.id),
@@ -142,13 +165,21 @@ def create_source(*, repo: Any, data: Any, adapter_names: set[str]) -> dict[str,
 
     ensure_source_config_valid(data.adapter_name, data.config)
 
-    existing = repo.get_by_url(data.url)
+    existing = _find_existing_source_by_canonical_url(
+        repo=repo,
+        adapter_name=data.adapter_name,
+        url=data.url,
+    )
     if existing:
-        raise ValueError("Source with this URL already exists")
+        raise ValueError("Source with this canonical URL already exists")
+
+    canonical_url = canonicalize_source_url(data.url)
+    if not canonical_url:
+        raise ValueError("Source URL is invalid")
 
     source = repo.create(
         name=data.name,
-        url=data.url,
+        url=canonical_url,
         adapter_type=data.adapter_type,
         adapter_name=data.adapter_name,
         config=data.config or {},
@@ -167,6 +198,21 @@ def update_source(*, repo: Any, source_id: str, data: Any) -> dict[str, Any]:
     updates = data.model_dump(exclude_unset=True)
     if "config" in updates:
         ensure_source_config_valid(source.adapter_name, updates.get("config") or {})
+
+    if "url" in updates:
+        canonical_url = canonicalize_source_url(str(updates.get("url") or ""))
+        if not canonical_url:
+            raise ValueError("Source URL is invalid")
+
+        existing = _find_existing_source_by_canonical_url(
+            repo=repo,
+            adapter_name=source.adapter_name,
+            url=canonical_url,
+            exclude_source_id=source_id,
+        )
+        if existing:
+            raise ValueError("Source with this canonical URL already exists")
+        updates["url"] = canonical_url
 
     updated = repo.update(source_id, **updates)
     return source_to_dict(updated)

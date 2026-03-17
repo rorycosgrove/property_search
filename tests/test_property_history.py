@@ -1,6 +1,6 @@
 import pytest
 from unittest.mock import MagicMock
-from packages.storage.repositories import PropertyRepository
+from packages.storage.repositories import PriceHistoryRepository, PropertyRepository
 from packages.storage.models import Property, PropertyPriceHistory
 
 class DummySession:
@@ -39,3 +39,15 @@ def test_update_records_price_change(repo):
     assert price_histories[-1].price == 210000.0
     assert price_histories[-1].price_change == 10000.0
     assert price_histories[-1].price_change_pct == pytest.approx(5.0)
+
+
+def test_price_history_list_for_property_delegates_to_existing_query_method():
+    session = MagicMock()
+    repo = PriceHistoryRepository(session)
+    expected = [MagicMock(spec=PropertyPriceHistory)]
+    repo.get_for_property = MagicMock(return_value=expected)
+
+    result = repo.list_for_property("p1")
+
+    assert result == expected
+    repo.get_for_property.assert_called_once_with("p1")

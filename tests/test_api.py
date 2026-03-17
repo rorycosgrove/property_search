@@ -816,6 +816,112 @@ class TestSourcesEndpoint:
         finally:
             app.dependency_overrides.clear()
 
+    def test_create_source_rejects_canonical_duplicate_url(self, client):
+        from packages.storage.database import get_db_session
+
+        mock_session = MagicMock()
+        app.dependency_overrides[get_db_session] = lambda: mock_session
+
+        existing_source = MagicMock(
+            id="existing-1",
+            name="Daft Dublin",
+            url="https://www.daft.ie/property-for-sale/dublin",
+            adapter_type="scraper",
+            adapter_name="daft",
+            config={},
+            enabled=True,
+            poll_interval_seconds=21600,
+            tags=[],
+            last_polled_at=None,
+            last_success_at=None,
+            last_error=None,
+            error_count=0,
+            total_listings=0,
+            created_at=None,
+            updated_at=None,
+        )
+
+        try:
+            with patch("apps.api.routers.sources.get_adapter_names", return_value=["daft"]):
+                with patch("apps.api.routers.sources.SourceRepository") as MockRepo:
+                    repo = MockRepo.return_value
+                    repo.get_all.return_value = [existing_source]
+
+                    payload = {
+                        "name": "Daft Dublin duplicate",
+                        "url": "https://www.daft.ie/property-for-sale/dublin/?utm=abc",
+                        "adapter_type": "scraper",
+                        "adapter_name": "daft",
+                        "config": {},
+                        "enabled": True,
+                        "poll_interval_seconds": 21600,
+                    }
+                    resp = client.post("/api/v1/sources", json=payload)
+
+            assert resp.status_code == 409
+            assert "canonical url" in resp.text.lower()
+        finally:
+            app.dependency_overrides.clear()
+
+    def test_update_source_rejects_canonical_duplicate_url(self, client):
+        from packages.storage.database import get_db_session
+
+        mock_session = MagicMock()
+        app.dependency_overrides[get_db_session] = lambda: mock_session
+
+        source_to_update = MagicMock(
+            id="source-1",
+            name="My source",
+            url="https://example.ie/path-a",
+            adapter_type="scraper",
+            adapter_name="daft",
+            config={},
+            enabled=True,
+            poll_interval_seconds=21600,
+            tags=[],
+            last_polled_at=None,
+            last_success_at=None,
+            last_error=None,
+            error_count=0,
+            total_listings=0,
+            created_at=None,
+            updated_at=None,
+        )
+        existing_other = MagicMock(
+            id="source-2",
+            name="Existing",
+            url="https://www.daft.ie/property-for-sale/dublin",
+            adapter_type="scraper",
+            adapter_name="daft",
+            config={},
+            enabled=True,
+            poll_interval_seconds=21600,
+            tags=[],
+            last_polled_at=None,
+            last_success_at=None,
+            last_error=None,
+            error_count=0,
+            total_listings=0,
+            created_at=None,
+            updated_at=None,
+        )
+
+        try:
+            with patch("apps.api.routers.sources.SourceRepository") as MockRepo:
+                repo = MockRepo.return_value
+                repo.get_by_id.return_value = source_to_update
+                repo.get_all.return_value = [source_to_update, existing_other]
+
+                resp = client.patch(
+                    "/api/v1/sources/source-1",
+                    json={"url": "https://www.daft.ie/property-for-sale/dublin/?x=1"},
+                )
+
+            assert resp.status_code == 409
+            assert "canonical url" in resp.text.lower()
+        finally:
+            app.dependency_overrides.clear()
+
     def test_preview_discovery_candidates_filters_by_score(self, client):
         candidate_low = MagicMock(
             candidate={"name": "Low", "url": "https://low", "adapter_name": "daft", "adapter_type": "scraper"},

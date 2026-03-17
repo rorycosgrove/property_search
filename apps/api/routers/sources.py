@@ -120,6 +120,8 @@ def update_source(source_id: str, data: SourceUpdate, db: Session = Depends(get_
                 "errors": exc.errors,
             },
         ) from exc
+    except ValueError as exc:
+        raise HTTPException(409, str(exc)) from exc
 
 
 @router.delete("/{source_id}", status_code=204)

@@ -60,6 +60,12 @@ AREA_SHAPE_MAP: dict[str, list[str]] = {
 }
 
 
+class _DaftBlockedError(Exception):
+    def __init__(self, status_code: int):
+        super().__init__(f"Daft access blocked with status {status_code}")
+        self.status_code = status_code
+
+
 class DaftAdapter(SourceAdapter):
     """
     Adapter for Daft.ie property listings.
@@ -190,14 +196,23 @@ class DaftAdapter(SourceAdapter):
                     offset = page * page_size
                     payload = self._build_api_payload(shape_ids, config, offset, page_size)
 
-                    data = await self._fetch_page_with_retries(
-                        client=client,
-                        payload=payload,
-                        area=area,
-                        page=page,
-                        offset=offset,
-                        max_retries=max_retries,
-                    )
+                    try:
+                        data = await self._fetch_page_with_retries(
+                            client=client,
+                            payload=payload,
+                            area=area,
+                            page=page,
+                            offset=offset,
+                            max_retries=max_retries,
+                        )
+                    except _DaftBlockedError as exc:
+                        logger.warning(
+                            "daft_area_blocked",
+                            area=area,
+                            page=page,
+                            status=exc.status_code,
+                        )
+                        break
                     if data is None:
                         page += 1
                         continue
@@ -433,6 +448,8 @@ class DaftAdapter(SourceAdapter):
                 return response.json()
             except httpx.HTTPStatusError as exc:
                 status = exc.response.status_code
+                if status in {401, 403}:
+                    raise _DaftBlockedError(status) from exc
                 transient = status == 429 or status >= 500
                 if transient and attempt < max_retries:
                     attempt += 1

@@ -41,6 +41,23 @@ class _PagedAsyncClient:
         return httpx.Response(200, request=httpx.Request("POST", DAFT_API_URL), json=payload)
 
 
+class _ForbiddenFirstPageAsyncClient:
+    def __init__(self, *args, **kwargs):
+        self.calls = 0
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, exc_type, exc, tb):
+        return False
+
+    async def post(self, _url, json):
+        self.calls += 1
+        request = httpx.Request("POST", DAFT_API_URL)
+        response = httpx.Response(403, request=request)
+        raise httpx.HTTPStatusError("forbidden", request=request, response=response)
+
+
 def _http_error(status_code: int) -> callable:
     def _build(_json):
         request = httpx.Request("POST", DAFT_API_URL)
@@ -107,6 +124,27 @@ async def test_fetch_page_with_retries_does_not_retry_404(monkeypatch):
 
     assert result is None
     assert client.calls == 1
+
+
+@pytest.mark.asyncio
+async def test_fetch_listings_stops_area_after_first_403(monkeypatch):
+    adapter = DaftAdapter()
+
+    async def _no_sleep(_seconds):
+        return None
+
+    monkeypatch.setattr("packages.sources.daft.asyncio.sleep", _no_sleep)
+    monkeypatch.setattr("packages.sources.daft.httpx.AsyncClient", _ForbiddenFirstPageAsyncClient)
+
+    listings = await adapter.fetch_listings(
+        {
+            "areas": ["dublin"],
+            "max_pages": 5,
+            "max_retries": 2,
+        }
+    )
+
+    assert listings == []
 
 
 def test_extract_listing_id_only_for_canonical_for_sale_paths():

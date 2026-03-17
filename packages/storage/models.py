@@ -397,7 +397,7 @@ class LLMEnrichment(Base):
     cons: Mapped[list] = mapped_column(JSONB, default=list, server_default="[]")
     extracted_features: Mapped[dict] = mapped_column(JSONB, default=dict, server_default="{}")
     neighbourhood_notes: Mapped[str | None] = mapped_column(Text, nullable=True)
-    investment_potential: Mapped[str | None] = mapped_column(String(50), nullable=True)
+    investment_potential: Mapped[str | None] = mapped_column(Text, nullable=True)
 
     llm_provider: Mapped[str | None] = mapped_column(String(50), nullable=True)
     llm_model: Mapped[str | None] = mapped_column(String(100), nullable=True)

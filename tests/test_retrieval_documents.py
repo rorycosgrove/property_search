@@ -8,6 +8,7 @@ from packages.ai.retrieval_documents import (
     build_market_snapshot_document,
     build_property_history_documents,
     build_property_listing_document,
+    materialize_property_documents,
     materialize_incentive_documents,
     materialize_market_documents,
 )
@@ -253,3 +254,102 @@ def test_materialize_incentive_documents_upserts_all_programs(monkeypatch):
 
     assert count == 1
     assert captured["repo"].calls[0][0] == "incentive_program:grant-101"
+
+
+def test_materialize_property_documents_upserts_listing_history_and_grant_docs(monkeypatch):
+    prop = _property()
+    enrichment = SimpleNamespace(
+        summary="Solid value opportunity.",
+        neighbourhood_notes="Close to schools.",
+        pros=["garden"],
+        cons=["dated kitchen"],
+    )
+    price_history = [
+        SimpleNamespace(
+            price=440000,
+            price_change=-10000,
+            price_change_pct=-2.22,
+            recorded_at=datetime(2026, 3, 10, tzinfo=UTC),
+        )
+    ]
+    grant_program = SimpleNamespace(
+        id="grant-1",
+        code="SEAI-1",
+        name="Home Energy Grant",
+        country="IE",
+        region="Dublin",
+        description="Upgrade support",
+        eligibility_rules={"min_ber": "C3"},
+        max_amount=30000,
+        valid_from=None,
+        valid_to=None,
+    )
+    grant_matches = [
+        SimpleNamespace(
+            status="eligible",
+            estimated_benefit=25000,
+            reason="County and BER passed",
+            created_at=datetime(2026, 3, 15, tzinfo=UTC),
+            grant_program=grant_program,
+        )
+    ]
+
+    class FakePropertyRepository:
+        def __init__(self, _db):
+            pass
+
+        def get_by_id(self, property_id):
+            assert property_id == "prop-1"
+            return prop
+
+    class FakePropertyDocumentRepository:
+        def __init__(self, _db):
+            self.calls = []
+
+        def upsert_document(self, document_key, **kwargs):
+            self.calls.append((document_key, kwargs))
+
+    class FakePriceHistoryRepository:
+        def __init__(self, _db):
+            pass
+
+        def list_for_property(self, property_id):
+            assert property_id == "prop-1"
+            return price_history
+
+    class FakeGrantMatchRepository:
+        def __init__(self, _db):
+            pass
+
+        def list_for_property(self, property_id):
+            assert property_id == "prop-1"
+            return grant_matches
+
+    class FakeLLMEnrichmentRepository:
+        def __init__(self, _db):
+            pass
+
+        def get_by_property_id(self, property_id):
+            assert property_id == "prop-1"
+            return enrichment
+
+    captured = {"repo": None}
+
+    def _doc_repo_factory(db):
+        repo = FakePropertyDocumentRepository(db)
+        captured["repo"] = repo
+        return repo
+
+    monkeypatch.setattr("packages.ai.retrieval_documents.PropertyRepository", FakePropertyRepository)
+    monkeypatch.setattr("packages.ai.retrieval_documents.PropertyDocumentRepository", _doc_repo_factory)
+    monkeypatch.setattr("packages.ai.retrieval_documents.PriceHistoryRepository", FakePriceHistoryRepository)
+    monkeypatch.setattr("packages.ai.retrieval_documents.PropertyGrantMatchRepository", FakeGrantMatchRepository)
+    monkeypatch.setattr("packages.ai.retrieval_documents.LLMEnrichmentRepository", FakeLLMEnrichmentRepository)
+
+    count = materialize_property_documents(object(), "prop-1")
+
+    assert count == 3
+    keys = [key for key, _kwargs in captured["repo"].calls]
+    assert "listing_snapshot:prop-1" in keys
+    assert any(key.startswith("price_history_event:prop-1:") for key in keys)
+    assert any(key.startswith("grant_match:prop-1:") for key in keys)

@@ -543,6 +543,9 @@ class PriceHistoryRepository:
             )
         )
 
+    def list_for_property(self, property_id: str) -> list[PropertyPriceHistory]:
+        return self.get_for_property(property_id)
+
     def get_latest_price(self, property_id: str) -> float | None:
         entry = self.session.scalar(
             select(PropertyPriceHistory)
