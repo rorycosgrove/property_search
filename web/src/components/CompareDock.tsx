@@ -20,12 +20,14 @@ const MODE_LABELS: Record<RankingMode, string> = {
   llm_only: 'LLM signal first',
   hybrid: 'Balanced evidence',
   user_weighted: 'Your priorities',
+  net_price: 'Cheapest after grants',
 };
 
 const MODE_HINTS: Record<RankingMode, string> = {
   llm_only: 'Best when you want AI-led interpretation of hidden trade-offs.',
   hybrid: 'Blends AI insight with BER and structured metrics.',
   user_weighted: 'Use when your personal criteria should dominate.',
+  net_price: 'Prioritizes homes with the lowest net price after eligible grants.',
 };
 
 export default function CompareDock({
@@ -119,6 +121,16 @@ export default function CompareDock({
                 <p className="text-[11px] text-[var(--muted)] mb-1">{property.county || 'Unknown county'}</p>
                 <p className="text-sm font-semibold leading-tight line-clamp-2 min-h-[2.4rem]">{property.title}</p>
                 <p className="text-base text-[var(--accent)] font-bold mt-1">{formatEur(property.price)}</p>
+                {property.net_price != null ? (
+                  <p className="mt-0.5 text-xs text-emerald-300">
+                    Net after grants: {formatEur(property.net_price)}
+                  </p>
+                ) : null}
+                {property.eligible_grants_total != null && property.eligible_grants_total > 0 ? (
+                  <p className="mt-0.5 text-[11px] text-[var(--muted)]">
+                    Eligible grants: {formatEur(property.eligible_grants_total)}
+                  </p>
+                ) : null}
                 <button
                   onClick={() => onRemove(property.id)}
                   className="mt-2 rounded-full border border-[var(--card-border)] px-2.5 py-1 text-[11px] text-[var(--danger)] hover:bg-[var(--card-bg)]"

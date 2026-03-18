@@ -2,7 +2,7 @@
 
 import { useEffect, useState } from 'react';
 
-import type { CompareSetResponse, Property } from '@/lib/api';
+import type { CompareSetResponse, Property, RankingMode } from '@/lib/api';
 import type { Citation, RetrievalContext } from '@/lib/api';
 import WorkspaceAskPanel from '@/app/_components/WorkspaceAskPanel';
 import WorkspaceStatusStrip from '@/app/_components/WorkspaceStatusStrip';
@@ -25,7 +25,7 @@ interface Props {
   total: number;
   loading: boolean;
   comparedProperties: Property[];
-  rankingMode: 'llm_only' | 'hybrid' | 'user_weighted';
+  rankingMode: RankingMode;
   compareLoading: boolean;
   analysisStale: boolean;
   canRunCompare: boolean;
@@ -43,7 +43,7 @@ interface Props {
   aiRetrievalContext: RetrievalContext | null;
   retrievalPreview: RetrievalContext;
   askPanelOpen: boolean;
-  onRankingModeChange: (mode: 'llm_only' | 'hybrid' | 'user_weighted') => void;
+  onRankingModeChange: (mode: RankingMode) => void;
   onRemoveCompared: (propertyId: string) => void;
   onClearCompared: () => void;
   onRunCompare: () => void;

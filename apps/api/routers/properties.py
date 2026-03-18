@@ -34,7 +34,9 @@ def list_properties(
     sale_type: str | None = None,
     keywords: str | None = Query(None, max_length=500),
     ber_ratings: str | None = Query(None, description="Comma-separated BER ratings"),
-    sort_by: str = Query("created_at", pattern="^(price|created_at|date|beds|bedrooms)$"),
+    eligible_only: bool = Query(False, description="Only include properties with confirmed eligible grants"),
+    min_eligible_grants_total: float | None = Query(None, ge=0, description="Minimum confirmed eligible grant total"),
+    sort_by: str = Query("created_at", pattern="^(price|net_price|created_at|date|beds|bedrooms)$"),
     sort_dir: str = Query("desc", pattern="^(asc|desc)$"),
     lat: float | None = Query(None, ge=-90, le=90),
     lng: float | None = Query(None, ge=-180, le=180),
@@ -60,6 +62,8 @@ def list_properties(
             lat=lat,
             lng=lng,
             radius_km=radius_km,
+            eligible_only=eligible_only,
+            min_eligible_grants_total=min_eligible_grants_total,
         )
     except PropertyValidationError as exc:
         raise HTTPException(status_code=400, detail=exc.message) from exc

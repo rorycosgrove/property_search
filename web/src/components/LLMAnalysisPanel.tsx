@@ -51,6 +51,11 @@ export default function LLMAnalysisPanel({ result, loading, error, analysisIsSta
     ? 'w-full bg-[var(--card-bg)] p-4 overflow-y-auto'
     : 'w-full xl:w-[390px] xl:shrink-0 border-t xl:border-t-0 xl:border-l border-[var(--card-border)] bg-[var(--card-bg)]/90 p-4 overflow-y-auto rise-in';
 
+  const citations = result?.analysis.citations || [];
+  const propertyCitationCount = citations.filter((citation) => citation.type === 'property').length;
+  const hasMissingRetrievalEvidence = Boolean(result) && propertyCitationCount === 0;
+  const hasThinRetrievalEvidence = Boolean(result) && propertyCitationCount > 0 && propertyCitationCount < 2;
+
   const panelHeader = (
     <div className="mb-4 flex items-start justify-between gap-3">
       <div>
@@ -129,6 +134,22 @@ export default function LLMAnalysisPanel({ result, loading, error, analysisIsSta
         </div>
       ) : null}
 
+      {hasMissingRetrievalEvidence ? (
+        <div className="mb-4 rounded-xl border border-amber-700/35 bg-amber-900/10 p-2.5">
+          <p className="text-xs text-amber-200">
+            Retrieval evidence is missing for this run. Ranking may rely more on model priors than property-document grounding.
+          </p>
+        </div>
+      ) : null}
+
+      {hasThinRetrievalEvidence ? (
+        <div className="mb-4 rounded-xl border border-amber-700/35 bg-amber-900/10 p-2.5">
+          <p className="text-xs text-amber-200">
+            Retrieval evidence is limited. Confirm important claims in the property detail and source listing before deciding.
+          </p>
+        </div>
+      ) : null}
+
       <div className="mb-4 rounded-xl border border-[var(--card-border)] bg-[var(--background)] p-3">
         <p className="text-xs text-[var(--muted)] mb-1">Recommendation</p>
         <p className="font-semibold text-sm">{result.analysis.headline}</p>
@@ -152,6 +173,12 @@ export default function LLMAnalysisPanel({ result, loading, error, analysisIsSta
                 <span>LLM {property.llm_value_score?.toFixed(1) ?? 'n/a'}</span>
                 <span>Hybrid {property.hybrid_score?.toFixed(1) ?? 'n/a'}</span>
               </div>
+              {property.net_price != null ? (
+                <p className="mt-1 text-xs text-emerald-300">Net after grants: {formatEur(property.net_price)}</p>
+              ) : null}
+              {property.eligible_grants_total != null && property.eligible_grants_total > 0 ? (
+                <p className="text-[11px] text-[var(--muted)]">Eligible grants: {formatEur(property.eligible_grants_total)}</p>
+              ) : null}
             </div>
           ))}
         </div>

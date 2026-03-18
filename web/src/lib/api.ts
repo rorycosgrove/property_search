@@ -172,6 +172,8 @@ export interface Property {
   first_listed_at?: string;
   created_at?: string;
   llm_value_score?: number;
+  eligible_grants_total?: number;
+  net_price?: number;
 }
 
 export interface PropertyListResponse {
@@ -197,6 +199,8 @@ export interface PropertyFilters {
   lat?: number;
   lng?: number;
   radius_km?: number;
+  eligible_only?: boolean;
+  min_eligible_grants_total?: number;
   page?: number;
   size?: number;
 }
@@ -862,7 +866,7 @@ export interface ChatTurnResponse {
   retrieval_context?: RetrievalContext;
 }
 
-export type RankingMode = 'llm_only' | 'hybrid' | 'user_weighted';
+export type RankingMode = 'llm_only' | 'hybrid' | 'user_weighted' | 'net_price';
 
 export interface ComparePropertyMetric {
   property_id: string;
@@ -882,6 +886,8 @@ export interface ComparePropertyMetric {
   weighted_score?: number;
   grants_estimated_total?: number;
   grants_count?: number;
+  eligible_grants_total?: number;
+  net_price?: number;
 }
 
 export interface CompareSetResponse {

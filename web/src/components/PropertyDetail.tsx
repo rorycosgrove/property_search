@@ -151,6 +151,12 @@ export default function PropertyDetail({ property: prop, onClose }: Props) {
           <div className="flex-1">
             <p className="text-[11px] uppercase tracking-[0.16em] text-[var(--muted)]">Property detail</p>
             <div className="mt-1 text-2xl font-bold text-[var(--accent)]">{formatEur(prop.price)}</div>
+            {prop.net_price != null ? (
+              <p className="mt-1 text-sm font-medium text-emerald-300">Net after grants: {formatEur(prop.net_price)}</p>
+            ) : null}
+            {prop.eligible_grants_total != null && prop.eligible_grants_total > 0 ? (
+              <p className="mt-0.5 text-xs text-[var(--muted)]">Eligible grants total: {formatEur(prop.eligible_grants_total)}</p>
+            ) : null}
             <h2 className="mt-1 text-base font-semibold leading-tight">{prop.title}</h2>
             <p className="mt-0.5 text-sm text-[var(--muted)]">{prop.address}</p>
           </div>

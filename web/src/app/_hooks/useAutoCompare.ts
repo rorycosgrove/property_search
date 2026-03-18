@@ -17,7 +17,7 @@ export interface CompareErrorState {
 }
 
 const isRankingMode = (value: unknown): value is RankingMode => {
-  return value === 'llm_only' || value === 'hybrid' || value === 'user_weighted';
+  return value === 'llm_only' || value === 'hybrid' || value === 'user_weighted' || value === 'net_price';
 };
 
 function parseCompareError(err: unknown): CompareErrorState {
