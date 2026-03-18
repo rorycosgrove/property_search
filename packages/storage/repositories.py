@@ -13,7 +13,7 @@ from datetime import datetime, timedelta
 from geoalchemy2 import Geography
 from geoalchemy2.elements import WKTElement
 from geoalchemy2.functions import ST_DWithin, ST_MakePoint, ST_SetSRID
-from sqlalchemy import and_, cast, func, select
+from sqlalchemy import and_, case, cast, func, select
 from sqlalchemy.exc import DatabaseError
 from sqlalchemy.orm import Session, joinedload
 
@@ -308,6 +308,111 @@ class PropertyRepository:
 
         items = list(self.session.scalars(query).unique())
         return items, total
+
+    def list_properties_with_eligible_grants(
+        self,
+        filters: PropertyFilters,
+    ) -> tuple[list[Property], int, dict[str, dict[str, float]]]:
+        """List properties sorted by net price (price - eligible grants)."""
+        eligible_grants_expr = func.coalesce(
+            func.sum(
+                case(
+                    (
+                        and_(
+                            PropertyGrantMatch.status == "eligible",
+                            PropertyGrantMatch.estimated_benefit.is_not(None),
+                        ),
+                        PropertyGrantMatch.estimated_benefit,
+                    ),
+                    else_=0.0,
+                )
+            ),
+            0.0,
+        )
+        net_price_expr = (func.coalesce(Property.price, 0.0) - eligible_grants_expr)
+
+        query = (
+            select(
+                Property,
+                eligible_grants_expr.label("eligible_grants_total"),
+                net_price_expr.label("net_price"),
+            )
+            .outerjoin(PropertyGrantMatch, PropertyGrantMatch.property_id == Property.id)
+            .group_by(Property.id)
+        )
+        conditions = []
+
+        if filters.counties:
+            conditions.append(Property.county.in_(filters.counties))
+
+        if filters.min_price is not None:
+            conditions.append(Property.price >= filters.min_price)
+
+        if filters.max_price is not None:
+            conditions.append(Property.price <= filters.max_price)
+
+        if filters.min_bedrooms is not None:
+            conditions.append(Property.bedrooms >= filters.min_bedrooms)
+
+        if filters.max_bedrooms is not None:
+            conditions.append(Property.bedrooms <= filters.max_bedrooms)
+
+        if filters.property_types:
+            conditions.append(Property.property_type.in_([pt.value for pt in filters.property_types]))
+
+        if filters.ber_ratings:
+            conditions.append(Property.ber_rating.in_(filters.ber_ratings))
+
+        if filters.statuses:
+            conditions.append(Property.status.in_([s.value for s in filters.statuses]))
+
+        if filters.source_id:
+            conditions.append(Property.source_id == filters.source_id)
+
+        if filters.lat is not None and filters.lng is not None and filters.radius_km is not None:
+            point = ST_SetSRID(ST_MakePoint(filters.lng, filters.lat), 4326)
+            radius_metres = filters.radius_km * 1000
+            conditions.append(
+                ST_DWithin(
+                    cast(Property.location_point, Geography),
+                    cast(point, Geography),
+                    radius_metres,
+                )
+            )
+
+        if conditions:
+            query = query.where(and_(*conditions))
+
+        having_conditions = []
+        if filters.eligible_only:
+            having_conditions.append(eligible_grants_expr > 0)
+        if filters.min_eligible_grants_total is not None:
+            having_conditions.append(eligible_grants_expr >= filters.min_eligible_grants_total)
+        if having_conditions:
+            query = query.having(and_(*having_conditions))
+
+        if filters.sort_order == "desc":
+            query = query.order_by(net_price_expr.desc(), Property.created_at.desc(), Property.id.asc())
+        else:
+            query = query.order_by(net_price_expr.asc(), Property.created_at.desc(), Property.id.asc())
+
+        total = self.session.scalar(
+            select(func.count()).select_from(query.order_by(None).subquery())
+        ) or 0
+
+        offset = (filters.page - 1) * filters.per_page
+        query = query.offset(offset).limit(filters.per_page)
+
+        rows = list(self.session.execute(query))
+        items = [row[0] for row in rows]
+        metrics = {
+            str(row[0].id): {
+                "eligible_grants_total": float(row[1] or 0.0),
+                "net_price": float(row[2] or 0.0),
+            }
+            for row in rows
+        }
+        return items, total, metrics
 
     def create(self, **kwargs) -> Property:
         location_point = _build_location_point(kwargs.get("latitude"), kwargs.get("longitude"))

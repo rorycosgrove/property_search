@@ -40,11 +40,13 @@ async def compute_compare_set(
     property_repo_factory: Callable[[Session], Any],
     enrichment_repo_factory: Callable[[Session], Any],
     ensure_property_grants: Callable[[Session, Any], list[Any]],
+    property_document_repo_factory: Callable[[Session], Any] | None,
     provider_getter: Callable[[], Any],
 ) -> dict[str, Any]:
     """Compute compare-set output used by manual and automatic comparison flows."""
     property_repo = property_repo_factory(db)
     enrichment_repo = enrichment_repo_factory(db)
+    document_repo = property_document_repo_factory(db) if property_document_repo_factory else None
 
     properties = []
     for property_id in property_ids:
@@ -71,6 +73,12 @@ async def compute_compare_set(
         grants_estimated_total = sum(
             float(match.estimated_benefit) for match in grant_matches if match.estimated_benefit is not None
         )
+        eligible_grants_total = sum(
+            float(match.estimated_benefit)
+            for match in grant_matches
+            if getattr(match, "status", None) == "eligible" and match.estimated_benefit is not None
+        )
+        net_price = (price_val - eligible_grants_total) if price_val is not None else None
 
         price_per_sqm = None
         if price_val and area_val and area_val > 0:
@@ -96,6 +104,14 @@ async def compute_compare_set(
             if isinstance(maybe_url, str):
                 image_url = maybe_url
 
+        rag_evidence = []
+        if document_repo:
+            try:
+                docs = document_repo.list_for_property(str(prop.id))
+                rag_evidence = _select_rag_evidence(docs)
+            except Exception:
+                rag_evidence = []
+
         metrics.append(
             {
                 "property_id": str(prop.id),
@@ -114,7 +130,10 @@ async def compute_compare_set(
                 "hybrid_score": hybrid_score,
                 "weighted_score": weighted_score,
                 "grants_estimated_total": grants_estimated_total,
+                "eligible_grants_total": eligible_grants_total,
+                "net_price": net_price,
                 "grants_count": len(grant_matches),
+                "rag_evidence": rag_evidence,
             }
         )
 
@@ -122,9 +141,19 @@ async def compute_compare_set(
         "llm_only": "llm_value_score",
         "hybrid": "hybrid_score",
         "user_weighted": "weighted_score",
+        "net_price": "net_price",
     }
     score_key = mode_to_key.get(ranking_mode, "hybrid_score")
-    metrics.sort(key=lambda metric: float(metric.get(score_key) or 0.0), reverse=True)
+    if ranking_mode == "net_price":
+        metrics.sort(
+            key=lambda metric: (
+                metric.get("net_price") is None,
+                float(metric.get("net_price") or 0.0),
+                -float(metric.get("llm_value_score") or 0.0),
+            )
+        )
+    else:
+        metrics.sort(key=lambda metric: float(metric.get(score_key) or 0.0), reverse=True)
     winner = metrics[0]["property_id"] if metrics else None
 
     try:
@@ -296,6 +325,32 @@ def _location_score(county: str | None) -> float:
         return 5.0
     # Lightweight baseline until county-level market scoring is added.
     return 6.5 if county.lower() in {"dublin", "cork", "galway"} else 5.5
+
+
+def _select_rag_evidence(docs: list[Any], max_items: int = 4, max_chars: int = 220) -> list[dict[str, str]]:
+    evidence: list[dict[str, str]] = []
+    preferred_types = ["listing_snapshot", "grant_match", "price_history_event", "market_snapshot"]
+    selected = []
+    for doc_type in preferred_types:
+        match = next((doc for doc in docs if getattr(doc, "document_type", None) == doc_type), None)
+        if match:
+            selected.append(match)
+    if len(selected) < max_items:
+        for doc in docs:
+            if doc not in selected:
+                selected.append(doc)
+            if len(selected) >= max_items:
+                break
+
+    for doc in selected[:max_items]:
+        content = str(getattr(doc, "content", "") or "").strip().replace("\n", " ")
+        evidence.append(
+            {
+                "document_type": str(getattr(doc, "document_type", "unknown")),
+                "snippet": content[:max_chars],
+            }
+        )
+    return evidence
 
 
 async def _generate_compare_set_analysis(

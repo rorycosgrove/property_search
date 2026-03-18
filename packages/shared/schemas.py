@@ -144,6 +144,8 @@ class PropertyResponse(PropertyBase):
     content_hash: str
     created_at: datetime
     updated_at: datetime
+    eligible_grants_total: float | None = None
+    net_price: float | None = None
     enrichment: LLMEnrichmentResponse | None = None
     price_history: list[PriceHistoryResponse] = Field(default_factory=list)
 
@@ -172,6 +174,8 @@ class PropertyFilters(BaseModel):
     lat: float | None = None
     lng: float | None = None
     radius_km: float | None = None
+    eligible_only: bool = False
+    min_eligible_grants_total: float | None = None
     sort_by: str = "created_at"
     sort_order: str = "desc"
     page: int = 1
@@ -522,13 +526,13 @@ class CompareWeights(BaseModel):
 
 class CompareSetRequest(BaseModel):
     property_ids: list[str] = Field(..., min_length=2, max_length=5)
-    ranking_mode: str = Field(default="hybrid", pattern="^(llm_only|hybrid|user_weighted)$")
+    ranking_mode: str = Field(default="hybrid", pattern="^(llm_only|hybrid|user_weighted|net_price)$")
     weights: CompareWeights | None = None
 
 
 class AutoCompareRequest(BaseModel):
     session_id: str = Field(..., min_length=1, max_length=120)
     property_ids: list[str] = Field(..., min_length=2, max_length=5)
-    ranking_mode: str = Field(default="hybrid", pattern="^(llm_only|hybrid|user_weighted)$")
+    ranking_mode: str = Field(default="hybrid", pattern="^(llm_only|hybrid|user_weighted|net_price)$")
     search_context: dict[str, Any] = Field(default_factory=dict)
     weights: CompareWeights | None = None

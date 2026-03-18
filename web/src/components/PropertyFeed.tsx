@@ -91,6 +91,12 @@ export default function PropertyFeed({ properties, total, loading }: Props) {
                 <div className="mb-2 flex items-start justify-between gap-3">
                   <div>
                     <span className="text-base font-bold text-[var(--accent)]">{formatEur(prop.price)}</span>
+                    {prop.net_price != null ? (
+                      <p className="mt-0.5 text-[11px] text-emerald-300">Net after grants: {formatEur(prop.net_price)}</p>
+                    ) : null}
+                    {prop.eligible_grants_total != null && prop.eligible_grants_total > 0 ? (
+                      <p className="mt-0.5 text-[11px] text-[var(--muted)]">Eligible grants: {formatEur(prop.eligible_grants_total)}</p>
+                    ) : null}
                     <p className="mt-1 text-xs text-[var(--muted)]">
                       {prop.county && `${prop.county} · `}
                       {truncate(prop.address, 54)}

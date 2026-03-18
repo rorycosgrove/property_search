@@ -44,6 +44,8 @@ def build_property_filters(
     lat: float | None,
     lng: float | None,
     radius_km: float | None,
+    eligible_only: bool,
+    min_eligible_grants_total: float | None,
 ) -> PropertyFilters:
     if min_price is not None and max_price is not None and min_price > max_price:
         raise PropertyValidationError("min_price cannot be greater than max_price")
@@ -66,6 +68,8 @@ def build_property_filters(
         lat=lat,
         lng=lng,
         radius_km=radius_km,
+        eligible_only=eligible_only,
+        min_eligible_grants_total=min_eligible_grants_total,
         sort_by=sort_by,
         sort_order=sort_dir,
         page=page,
@@ -73,7 +77,12 @@ def build_property_filters(
     )
 
 
-def property_to_dict(prop: Any) -> dict[str, Any]:
+def property_to_dict(
+    prop: Any,
+    *,
+    eligible_grants_total: float | None = None,
+    net_price: float | None = None,
+) -> dict[str, Any]:
     enrichment = None
     if prop.enrichment:
         enrichment = {
@@ -129,6 +138,8 @@ def property_to_dict(prop: Any) -> dict[str, Any]:
         "first_listed_at": prop.first_listed_at.isoformat() if prop.first_listed_at else None,
         "created_at": prop.created_at.isoformat() if prop.created_at else None,
         "updated_at": prop.updated_at.isoformat() if prop.updated_at else None,
+        "eligible_grants_total": eligible_grants_total,
+        "net_price": net_price,
         "enrichment": enrichment,
         "price_history": price_history,
     }
@@ -151,6 +162,8 @@ def list_properties_payload(
     lat: float | None,
     lng: float | None,
     radius_km: float | None,
+    eligible_only: bool,
+    min_eligible_grants_total: float | None,
 ) -> dict[str, Any]:
     filters = build_property_filters(
         page=page,
@@ -167,10 +180,33 @@ def list_properties_payload(
         lat=lat,
         lng=lng,
         radius_km=radius_km,
+        eligible_only=eligible_only,
+        min_eligible_grants_total=min_eligible_grants_total,
     )
-    items, total = repo.list_properties(filters)
+    metrics_by_property_id: dict[str, dict[str, float]] = {}
+    use_grant_aware_query = (
+        sort_by == "net_price"
+        or bool(eligible_only)
+        or min_eligible_grants_total is not None
+    )
+    if use_grant_aware_query:
+        items, total, metrics_by_property_id = repo.list_properties_with_eligible_grants(filters)
+    else:
+        items, total = repo.list_properties(filters)
+
+    serialized_items = []
+    for prop in items:
+        metrics = metrics_by_property_id.get(str(prop.id), {})
+        serialized_items.append(
+            property_to_dict(
+                prop,
+                eligible_grants_total=metrics.get("eligible_grants_total"),
+                net_price=metrics.get("net_price"),
+            )
+        )
+
     return {
-        "items": [property_to_dict(p) for p in items],
+        "items": serialized_items,
         "total": total,
         "page": page,
         "per_page": size,

@@ -344,6 +344,60 @@ class TestPropertiesEndpoint:
         finally:
             app.dependency_overrides.clear()
 
+    def test_list_properties_net_price_sort_uses_grant_aware_path(self, client):
+        from packages.storage.database import get_db_session
+
+        mock_session = MagicMock()
+        app.dependency_overrides[get_db_session] = lambda: mock_session
+
+        try:
+            with patch("apps.api.routers.properties.PropertyRepository") as MockRepo:
+                instance = MockRepo.return_value
+                instance.list_properties_with_eligible_grants.return_value = ([], 0, {})
+
+                resp = client.get("/api/v1/properties?sort_by=net_price&sort_dir=asc")
+
+                assert resp.status_code == 200
+                instance.list_properties_with_eligible_grants.assert_called_once()
+        finally:
+            app.dependency_overrides.clear()
+
+    def test_list_properties_eligible_only_uses_grant_aware_path(self, client):
+        from packages.storage.database import get_db_session
+
+        mock_session = MagicMock()
+        app.dependency_overrides[get_db_session] = lambda: mock_session
+
+        try:
+            with patch("apps.api.routers.properties.PropertyRepository") as MockRepo:
+                instance = MockRepo.return_value
+                instance.list_properties_with_eligible_grants.return_value = ([], 0, {})
+
+                resp = client.get("/api/v1/properties?eligible_only=true")
+
+                assert resp.status_code == 200
+                instance.list_properties_with_eligible_grants.assert_called_once()
+        finally:
+            app.dependency_overrides.clear()
+
+    def test_list_properties_min_eligible_grants_total_uses_grant_aware_path(self, client):
+        from packages.storage.database import get_db_session
+
+        mock_session = MagicMock()
+        app.dependency_overrides[get_db_session] = lambda: mock_session
+
+        try:
+            with patch("apps.api.routers.properties.PropertyRepository") as MockRepo:
+                instance = MockRepo.return_value
+                instance.list_properties_with_eligible_grants.return_value = ([], 0, {})
+
+                resp = client.get("/api/v1/properties?min_eligible_grants_total=10000")
+
+                assert resp.status_code == 200
+                instance.list_properties_with_eligible_grants.assert_called_once()
+        finally:
+            app.dependency_overrides.clear()
+
     def test_health_reports_backend_error_count_through_real_repository(self, client):
         from packages.storage.database import get_db_session
 
@@ -1197,6 +1251,83 @@ class TestLLMCompareSetEndpoint:
                             assert data["ranking_mode"] == "hybrid"
                             assert len(data["properties"]) == 2
                             assert data["analysis"]["headline"] == "Value result"
+        finally:
+            app.dependency_overrides.clear()
+
+    def test_compare_set_net_price_mode_prefers_lower_net_price(self, client):
+        from packages.storage.database import get_db_session
+
+        mock_session = MagicMock()
+        app.dependency_overrides[get_db_session] = lambda: mock_session
+
+        try:
+            with patch("apps.api.routers.llm.PropertyRepository") as MockPropRepo:
+                with patch("apps.api.routers.llm.LLMEnrichmentRepository") as MockEnrichRepo:
+                    with patch("apps.api.routers.llm.PropertyGrantMatchRepository") as MockGrantRepo:
+                        with patch("apps.api.routers.llm.PropertyDocumentRepository") as MockDocRepo:
+                            with patch("packages.ai.service.get_provider") as mock_get_provider:
+                                prop_repo = MockPropRepo.return_value
+                                enrich_repo = MockEnrichRepo.return_value
+                                grant_repo = MockGrantRepo.return_value
+                                doc_repo = MockDocRepo.return_value
+
+                                prop_repo.get_by_id.side_effect = [
+                                    MagicMock(
+                                        id="p1",
+                                        title="Home 1",
+                                        address="Addr 1",
+                                        county="Dublin",
+                                        url="https://example.com/1",
+                                        price=450000,
+                                        floor_area_sqm=100,
+                                        bedrooms=3,
+                                        bathrooms=2,
+                                        ber_rating="B2",
+                                        images=[],
+                                    ),
+                                    MagicMock(
+                                        id="p2",
+                                        title="Home 2",
+                                        address="Addr 2",
+                                        county="Cork",
+                                        url="https://example.com/2",
+                                        price=430000,
+                                        floor_area_sqm=95,
+                                        bedrooms=3,
+                                        bathrooms=2,
+                                        ber_rating="C1",
+                                        images=[],
+                                    ),
+                                ]
+
+                                enrich_repo.get_by_property_id.side_effect = [
+                                    MagicMock(value_score=6.5),
+                                    MagicMock(value_score=6.0),
+                                ]
+                                grant_repo.list_for_property.side_effect = [
+                                    [MagicMock(status="eligible", estimated_benefit=10000)],
+                                    [MagicMock(status="eligible", estimated_benefit=5000)],
+                                ]
+                                doc_repo.list_for_property.return_value = []
+
+                                mock_provider = MagicMock()
+                                mock_provider.generate = AsyncMock(return_value=MagicMock(
+                                    content='{"headline":"Net price","recommendation":"p1","key_tradeoffs":[],"confidence":"medium"}'
+                                ))
+                                mock_get_provider.return_value = mock_provider
+
+                                resp = client.post(
+                                    "/api/v1/llm/compare-set",
+                                    json={
+                                        "property_ids": ["p1", "p2"],
+                                        "ranking_mode": "net_price",
+                                    },
+                                )
+
+                                assert resp.status_code == 200
+                                data = resp.json()
+                                assert data["ranking_mode"] == "net_price"
+                                assert data["winner_property_id"] == "p2"
         finally:
             app.dependency_overrides.clear()
 

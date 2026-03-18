@@ -41,6 +41,7 @@ from packages.storage.repositories import (
     ConversationRepository,
     LLMEnrichmentRepository,
     OrganicSearchRunRepository,
+    PropertyDocumentRepository,
     PropertyGrantMatchRepository,
     PropertyRepository,
 )
@@ -232,6 +233,7 @@ async def compare_property_set(data: CompareSetRequest, db: Session = Depends(ge
         property_repo_factory=PropertyRepository,
         enrichment_repo_factory=LLMEnrichmentRepository,
         ensure_property_grants=_ensure_property_grants,
+        property_document_repo_factory=PropertyDocumentRepository,
         provider_getter=_get_provider_dynamic,
     )
     return result
@@ -257,6 +259,7 @@ async def auto_compare(
             property_repo_factory=PropertyRepository,
             enrichment_repo_factory=LLMEnrichmentRepository,
             ensure_property_grants=_ensure_property_grants,
+            property_document_repo_factory=PropertyDocumentRepository,
             provider_getter=_get_provider_dynamic,
         ),
     )

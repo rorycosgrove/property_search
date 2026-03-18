@@ -3,6 +3,7 @@
 import { useMemo, useState } from 'react';
 import { useFilterStore } from '@/lib/stores';
 import { useUIStore } from '@/lib/stores';
+import type { RankingMode } from '@/lib/api';
 import { COUNTIES } from '@/lib/utils';
 
 export default function FilterBar() {
@@ -58,6 +59,23 @@ export default function FilterBar() {
         className={controlClasses}
       />
 
+      <label className="flex items-center gap-2 text-xs text-[var(--muted)] border border-[var(--card-border)] rounded-xl px-3 py-2.5 bg-[var(--background)]">
+        <input
+          type="checkbox"
+          checked={Boolean(filters.eligible_only)}
+          onChange={(e) => setFilter('eligible_only', e.target.checked ? true : undefined)}
+        />
+        Eligible grants only
+      </label>
+
+      <input
+        type="number"
+        placeholder="Min eligible grants EUR"
+        value={filters.min_eligible_grants_total || ''}
+        onChange={(e) => setFilter('min_eligible_grants_total', e.target.value ? Number(e.target.value) : undefined)}
+        className={controlClasses}
+      />
+
       <select
         value={`${filters.sort_by || 'created_at'}_${filters.sort_dir || 'desc'}`}
         onChange={(e) => {
@@ -71,6 +89,8 @@ export default function FilterBar() {
         <option value="created_at_asc">Oldest</option>
         <option value="price_asc">Price Low-High</option>
         <option value="price_desc">Price High-Low</option>
+        <option value="net_price_asc">Net Price Low-High</option>
+        <option value="net_price_desc">Net Price High-Low</option>
       </select>
 
       <div className="flex items-center justify-center text-xs text-[var(--muted)] border border-dashed border-[var(--card-border)] rounded-xl px-3 py-2.5 bg-[var(--card-bg)]/80">
@@ -81,7 +101,7 @@ export default function FilterBar() {
 
   const applyMission = (
     missionFilters: Parameters<typeof setFilters>[0],
-    ranking: 'llm_only' | 'hybrid' | 'user_weighted',
+    ranking: RankingMode,
   ) => {
     setFilters(missionFilters);
     setRankingMode(ranking);
@@ -96,6 +116,8 @@ export default function FilterBar() {
       'min_beds',
       'property_types',
       'keywords',
+      'eligible_only',
+      'min_eligible_grants_total',
       'sort_by',
       'sort_dir',
     ];
