@@ -92,3 +92,35 @@ def get_price_trends_by_type(
     engine = AnalyticsEngine(db)
     trends = engine.get_price_trends_by_type(county=county, months=months)
     return {prop_type: [t.model_dump() for t in trends_list] for prop_type, trends_list in trends.items()}
+
+
+@router.get("/price-changes-by-budget")
+def get_price_changes_by_budget(
+    max_budget: float | None = None,
+    county: str | None = None,
+    days: int = Query(30, ge=1, le=365),
+    limit: int = Query(100, ge=1, le=500),
+    db: Session = Depends(get_db_session),
+):
+    """Get recent price changes filtered by max budget with drilldown details.
+    
+    Returns properties with price changes within your budget, ranked by most recent.
+    Useful for finding opportunities: recent price drops in affordable properties.
+    """
+    engine = AnalyticsEngine(db)
+    return engine.get_price_changes_by_budget(max_budget=max_budget, county=county, days=days, limit=limit)
+
+
+@router.get("/price-changes-timeline")
+def get_price_changes_timeline(
+    max_budget: float | None = None,
+    county: str | None = None,
+    days: int = Query(30, ge=1, le=365),
+    db: Session = Depends(get_db_session),
+):
+    """Get price changes aggregated by day for timeline/graph visualization.
+    
+    Shows volume of price increases vs decreases over time within your budget.
+    """
+    engine = AnalyticsEngine(db)
+    return engine.get_price_changes_timeline(max_budget=max_budget, county=county, days=days)

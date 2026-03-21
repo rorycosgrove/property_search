@@ -364,6 +364,58 @@ export async function getPriceTrendsByType(county?: string, months = 12): Promis
   return fetchJSON<Record<string, PriceTrend[]>>(`/api/v1/analytics/price-trends-by-type?${params}`);
 }
 
+export interface PriceChange {
+  property_id: string;
+  title: string;
+  address: string;
+  county: string;
+  current_price: number;
+  property_type?: string;
+  bedrooms?: number;
+  bathrooms?: number;
+  price_change: number;
+  price_change_pct: number;
+  recorded_at: string;
+}
+
+export interface PriceChangesTimeline {
+  increases: Array<{
+    date: string;
+    count: number;
+    avg_change: number;
+    avg_change_pct: number;
+  }>;
+  decreases: Array<{
+    date: string;
+    count: number;
+    avg_change: number;
+    avg_change_pct: number;
+  }>;
+}
+
+export async function getPriceChangesByBudget(
+  maxBudget?: number,
+  county?: string,
+  days = 30,
+  limit = 100
+): Promise<PriceChange[]> {
+  const params = new URLSearchParams({ days: String(days), limit: String(limit) });
+  if (maxBudget) params.set('max_budget', String(maxBudget));
+  if (county) params.set('county', county);
+  return fetchJSON<PriceChange[]>(`/api/v1/analytics/price-changes-by-budget?${params}`);
+}
+
+export async function getPriceChangesTimeline(
+  maxBudget?: number,
+  county?: string,
+  days = 30
+): Promise<PriceChangesTimeline> {
+  const params = new URLSearchParams({ days: String(days) });
+  if (maxBudget) params.set('max_budget', String(maxBudget));
+  if (county) params.set('county', county);
+  return fetchJSON<PriceChangesTimeline>(`/api/v1/analytics/price-changes-timeline?${params}`);
+}
+
 // ── Alerts ──────────────────────────────────────────────────────────────────
 
 export interface Alert {

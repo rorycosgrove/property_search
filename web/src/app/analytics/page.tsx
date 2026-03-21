@@ -9,11 +9,15 @@ import {
   getCountyStats,
   getPriceTrends,
   getPriceTrendsByType,
+  getPriceChangesByBudget,
+  getPriceChangesTimeline,
   getTypeDistribution,
   type AnalyticsSummary,
   type BestValueProperty,
   type CountyStat,
   type PriceTrend,
+  type PriceChange,
+  type PriceChangesTimeline,
   type PropertyTypeDistribution,
 } from '@/lib/api';
 import { formatEur, COUNTIES } from '@/lib/utils';
@@ -26,8 +30,12 @@ export default function AnalyticsPage() {
   const [berDistribution, setBERDistribution] = useState<BERDistribution[]>([]);
   const [bestValueProperties, setBestValueProperties] = useState<BestValueProperty[]>([]);
   const [priceTrendsByType, setPriceTrendsByType] = useState<Record<string, PriceTrend[]>>({});
+  const [priceChanges, setPriceChanges] = useState<PriceChange[]>([]);
+  const [priceChangesTimeline, setPriceChangesTimeline] = useState<PriceChangesTimeline>({increases: [], decreases: []});
   const [selectedCounty, setSelectedCounty] = useState<string>('');
   const [selectedPropertyType, setSelectedPropertyType] = useState<string>('');
+  const [maxBudget, setMaxBudget] = useState<number | undefined>(undefined);
+  const [budgetInput, setBudgetInput] = useState<string>('');
 
   useEffect(() => {
     getAnalyticsSummary().then(setSummary).catch(console.error);
@@ -37,7 +45,9 @@ export default function AnalyticsPage() {
     getBERDistribution(selectedCounty || undefined).then(setBERDistribution).catch(console.error);
     getBestValueProperties(selectedCounty || undefined, selectedPropertyType || undefined).then(setBestValueProperties).catch(console.error);
     getPriceTrendsByType(selectedCounty || undefined).then(setPriceTrendsByType).catch(console.error);
-  }, [selectedCounty, selectedPropertyType]);
+    getPriceChangesByBudget(maxBudget, selectedCounty || undefined).then(setPriceChanges).catch(console.error);
+    getPriceChangesTimeline(maxBudget, selectedCounty || undefined).then(setPriceChangesTimeline).catch(console.error);
+  }, [selectedCounty, selectedPropertyType, maxBudget]);
 
   return (
     <div className="p-6 max-w-7xl mx-auto rise-in">
@@ -47,6 +57,17 @@ export default function AnalyticsPage() {
           <h1 className="text-2xl font-bold">AI-guided market pulse</h1>
         </div>
         <div className="flex gap-2">
+          <input
+            type="number"
+            placeholder="Max budget (€)"
+            value={budgetInput}
+            onChange={(e) => {
+              setBudgetInput(e.target.value);
+              const val = e.target.value ? parseFloat(e.target.value) : undefined;
+              setMaxBudget(val);
+            }}
+            className="bg-[var(--background)] border border-[var(--card-border)] rounded px-3 py-1.5 text-sm w-32"
+          />
           <select
             value={selectedCounty}
             onChange={(e) => setSelectedCounty(e.target.value)}
@@ -178,6 +199,105 @@ export default function AnalyticsPage() {
               </div>
             ))}
           </div>
+        </div>
+      </div>
+
+      {/* Price changes timeline and drilldown */}
+      <div className="mt-8 mb-8">
+        <h2 className="text-xl font-semibold mb-4">Price Changes Timeline {maxBudget && <span className="text-sm font-normal text-[var(--muted)]">(up to {formatEur(maxBudget)})</span>}</h2>
+        <div className="grid grid-cols-1 lg:grid-cols-2 gap-6 mb-6">
+          {/* Price changes by activity */}
+          <div className="bg-[var(--card-bg)] border border-[var(--card-border)] rounded-lg p-4">
+            <h3 className="font-semibold mb-3">Price Increases</h3>
+            {priceChangesTimeline.increases.length > 0 ? (
+              <div className="space-y-2">
+                {priceChangesTimeline.increases.map((p) => (
+                  <div key={p.date} className="flex justify-between items-center text-sm p-2 bg-[var(--background)] rounded">
+                    <div>
+                      <span className="text-[var(--muted)]">{p.date}</span>
+                      <span className="ml-2">{p.count} properties</span>
+                    </div>
+                    <span className="text-red-500">
+                      +{formatEur(p.avg_change)} ({p.avg_change_pct > 0 ? '+' : ''}{p.avg_change_pct}%)
+                    </span>
+                  </div>
+                ))}
+              </div>
+            ) : (
+              <p className="text-[var(--muted)] text-sm">No price increases</p>
+            )}
+          </div>
+
+          <div className="bg-[var(--card-bg)] border border-[var(--card-border)] rounded-lg p-4">
+            <h3 className="font-semibold mb-3">Price Decreases</h3>
+            {priceChangesTimeline.decreases.length > 0 ? (
+              <div className="space-y-2">
+                {priceChangesTimeline.decreases.map((p) => (
+                  <div key={p.date} className="flex justify-between items-center text-sm p-2 bg-[var(--background)] rounded">
+                    <div>
+                      <span className="text-[var(--muted)]">{p.date}</span>
+                      <span className="ml-2">{p.count} properties</span>
+                    </div>
+                    <span className="text-green-500">
+                      {formatEur(p.avg_change)} ({p.avg_change_pct}%)
+                    </span>
+                  </div>
+                ))}
+              </div>
+            ) : (
+              <p className="text-[var(--muted)] text-sm">No price decreases</p>
+            )}
+          </div>
+        </div>
+
+        {/* Recent price changes drilldown */}
+        <div className="bg-[var(--card-bg)] border border-[var(--card-border)] rounded-lg p-4">
+          <h3 className="font-semibold mb-3">Recent Price Changes (Drilldown)</h3>
+          {priceChanges.length > 0 ? (
+            <div className="overflow-x-auto">
+              <table className="w-full text-xs">
+                <thead className="text-[var(--muted)] border-b border-[var(--card-border)]">
+                  <tr>
+                    <th className="text-left py-2 px-2">Property</th>
+                    <th className="text-right py-2 px-2">Price</th>
+                    <th className="text-right py-2 px-2">Change</th>
+                    <th className="text-right py-2 px-2">%</th>
+                    <th className="text-right py-2 px-2">Beds/Baths</th>
+                    <th className="text-right py-2 px-2">Type</th>
+                    <th className="text-right py-2 px-2">County</th>
+                    <th className="text-right py-2 px-2">Date</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {priceChanges.slice(0, 20).map((change) => (
+                    <tr key={`${change.property_id}-${change.recorded_at}`} className="border-b border-[var(--card-border)] hover:bg-[var(--background)]">
+                      <td className="py-2 px-2 font-medium">{change.title}</td>
+                      <td className="text-right py-2 px-2">{formatEur(change.current_price)}</td>
+                      <td className={`text-right py-2 px-2 ${change.price_change > 0 ? 'text-red-500' : 'text-green-500'}`}>
+                        {change.price_change > 0 ? '+' : ''}{formatEur(change.price_change)}
+                      </td>
+                      <td className={`text-right py-2 px-2 ${change.price_change_pct > 0 ? 'text-red-500' : 'text-green-500'}`}>
+                        {change.price_change_pct > 0 ? '+' : ''}{change.price_change_pct.toFixed(2)}%
+                      </td>
+                      <td className="text-right py-2 px-2">
+                        {change.bedrooms || '-'} / {change.bathrooms || '-'}
+                      </td>
+                      <td className="text-right py-2 px-2 capitalize">{change.property_type || '-'}</td>
+                      <td className="text-right py-2 px-2">{change.county}</td>
+                      <td className="text-right py-2 px-2 text-[var(--muted)]">
+                        {new Date(change.recorded_at).toLocaleDateString()}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+              {priceChanges.length > 20 && (
+                <p className="text-xs text-[var(--muted)] mt-2">Showing 20 of {priceChanges.length} recent price changes</p>
+              )}
+            </div>
+          ) : (
+            <p className="text-[var(--muted)] text-sm">No price changes in the selected period</p>
+          )}
         </div>
       </div>
 
