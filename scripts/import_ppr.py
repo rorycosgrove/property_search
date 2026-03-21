@@ -29,9 +29,14 @@ async def _import_ppr(years: int = 2) -> int:
             if row[0]
         }
 
+
         for raw in raw_listings:
             normalized = adapter.parse_listing(raw)
             if not normalized:
+                continue
+            # Skip if price is missing or invalid
+            if normalized.price is None:
+                logger.debug("ppr_import_skipped_missing_price", address=normalized.address)
                 continue
             c_hash = normalized.raw_data.get("content_hash", "")
             if c_hash in existing_hashes:

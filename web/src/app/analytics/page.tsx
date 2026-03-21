@@ -5,10 +5,13 @@ import {
   type BERDistribution,
   getAnalyticsSummary,
   getBERDistribution,
+  getBestValueProperties,
   getCountyStats,
   getPriceTrends,
+  getPriceTrendsByType,
   getTypeDistribution,
   type AnalyticsSummary,
+  type BestValueProperty,
   type CountyStat,
   type PriceTrend,
   type PropertyTypeDistribution,
@@ -21,7 +24,10 @@ export default function AnalyticsPage() {
   const [priceTrends, setPriceTrends] = useState<PriceTrend[]>([]);
   const [typeDistribution, setTypeDistribution] = useState<PropertyTypeDistribution[]>([]);
   const [berDistribution, setBERDistribution] = useState<BERDistribution[]>([]);
+  const [bestValueProperties, setBestValueProperties] = useState<BestValueProperty[]>([]);
+  const [priceTrendsByType, setPriceTrendsByType] = useState<Record<string, PriceTrend[]>>({});
   const [selectedCounty, setSelectedCounty] = useState<string>('');
+  const [selectedPropertyType, setSelectedPropertyType] = useState<string>('');
 
   useEffect(() => {
     getAnalyticsSummary().then(setSummary).catch(console.error);
@@ -29,7 +35,9 @@ export default function AnalyticsPage() {
     getPriceTrends(selectedCounty || undefined).then(setPriceTrends).catch(console.error);
     getTypeDistribution(selectedCounty || undefined).then(setTypeDistribution).catch(console.error);
     getBERDistribution(selectedCounty || undefined).then(setBERDistribution).catch(console.error);
-  }, [selectedCounty]);
+    getBestValueProperties(selectedCounty || undefined, selectedPropertyType || undefined).then(setBestValueProperties).catch(console.error);
+    getPriceTrendsByType(selectedCounty || undefined).then(setPriceTrendsByType).catch(console.error);
+  }, [selectedCounty, selectedPropertyType]);
 
   return (
     <div className="p-6 max-w-7xl mx-auto rise-in">
@@ -38,20 +46,32 @@ export default function AnalyticsPage() {
           <p className="text-[11px] uppercase tracking-[0.16em] text-[var(--muted)]">Market Intelligence</p>
           <h1 className="text-2xl font-bold">AI-guided market pulse</h1>
         </div>
-        <select
-          value={selectedCounty}
-          onChange={(e) => setSelectedCounty(e.target.value)}
-          className="bg-[var(--background)] border border-[var(--card-border)] rounded px-3 py-1.5 text-sm"
-        >
-          <option value="">All of Ireland</option>
-          {COUNTIES.map((c) => (
-            <option key={c} value={c}>{c}</option>
-          ))}
-        </select>
+        <div className="flex gap-2">
+          <select
+            value={selectedCounty}
+            onChange={(e) => setSelectedCounty(e.target.value)}
+            className="bg-[var(--background)] border border-[var(--card-border)] rounded px-3 py-1.5 text-sm"
+          >
+            <option value="">All of Ireland</option>
+            {COUNTIES.map((c) => (
+              <option key={c} value={c}>{c}</option>
+            ))}
+          </select>
+          <select
+            value={selectedPropertyType}
+            onChange={(e) => setSelectedPropertyType(e.target.value)}
+            className="bg-[var(--background)] border border-[var(--card-border)] rounded px-3 py-1.5 text-sm"
+          >
+            <option value="">All Types</option>
+            {typeDistribution.map((d) => (
+              <option key={d.property_type} value={d.property_type}>{d.property_type}</option>
+            ))}
+          </select>
+        </div>
       </div>
 
       <div className="rounded-lg border border-[var(--card-border)] ai-glass p-4 mb-6">
-        <p className="text-sm">Atlas Insight: use this panel to identify pricing pressure, inventory mix, and BER opportunity before running compare analysis in the workspace.</p>
+        <p className="text-sm">Atlas Insight: use this panel to identify pricing pressure, inventory mix, and BER opportunity before running compare analysis in the workspace. Drilldown by county and property type to see value ranking and market trends.</p>
       </div>
 
       {/* Summary cards */}
@@ -160,6 +180,78 @@ export default function AnalyticsPage() {
           </div>
         </div>
       </div>
+
+      {/* Best value properties */}
+      <div className="mt-8">
+        <h2 className="text-xl font-semibold mb-4">Best Value Properties (AI-Ranked)</h2>
+        {bestValueProperties.length > 0 ? (
+          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+            {bestValueProperties.map((prop) => (
+              <div key={prop.id} className="bg-[var(--card-bg)] border border-[var(--card-border)] rounded-lg p-4">
+                <div className="flex justify-between items-start mb-2">
+                  <h3 className="font-semibold text-sm">{prop.title}</h3>
+                  {prop.value_score && (
+                    <div className="bg-[var(--accent)] text-white text-xs rounded-full px-2 py-1">
+                      {prop.value_score.toFixed(1)}/10
+                    </div>
+                  )}
+                </div>
+                <p className="text-xs text-[var(--muted)] mb-3">{prop.address}</p>
+                <div className="space-y-1 text-xs mb-3">
+                  <div className="flex justify-between">
+                    <span>Price:</span>
+                    <span className="font-semibold">{formatEur(prop.price)}</span>
+                  </div>
+                  {prop.price_per_sqm && (
+                    <div className="flex justify-between">
+                      <span>€/m²:</span>
+                      <span>{formatEur(prop.price_per_sqm)}</span>
+                    </div>
+                  )}
+                  {prop.price_per_bed && prop.bedrooms && (
+                    <div className="flex justify-between">
+                      <span>€/bed:</span>
+                      <span>{formatEur(prop.price_per_bed)}</span>
+                    </div>
+                  )}
+                </div>
+                <div className="text-[10px] text-[var(--muted)]">
+                  {prop.bedrooms && <span>{prop.bedrooms} bed  </span>}
+                  {prop.floor_area_sqm && <span>{prop.floor_area_sqm}m²</span>}
+                </div>
+              </div>
+            ))}
+          </div>
+        ) : (
+          <p className="text-[var(--muted)] text-sm">No enriched properties available for value ranking.</p>
+        )}
+      </div>
+
+      {/* Price trends by type */}
+      {Object.keys(priceTrendsByType).length > 0 && (
+        <div className="mt-8">
+          <h2 className="text-xl font-semibold mb-4">Price Trends by Property Type</h2>
+          <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+            {Object.entries(priceTrendsByType).map(([propType, trends]) => (
+              <div key={propType} className="bg-[var(--card-bg)] border border-[var(--card-border)] rounded-lg p-4">
+                <h3 className="font-semibold mb-3 capitalize">{propType}</h3>
+                {trends.length > 0 ? (
+                  <div className="space-y-2">
+                    {trends.map((t) => (
+                      <div key={t.period} className="flex justify-between text-sm">
+                        <span className="text-[var(--muted)]">{t.period}</span>
+                        <span>{formatEur(t.avg_price)} ({t.sale_count} sales)</span>
+                      </div>
+                    ))}
+                  </div>
+                ) : (
+                  <p className="text-[var(--muted)] text-sm">No data available</p>
+                )}
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
     </div>
   );
 }

@@ -333,6 +333,37 @@ export async function getHeatmapData(): Promise<HeatmapPoint[]> {
   return fetchJSON<HeatmapPoint[]>('/api/v1/analytics/heatmap');
 }
 
+export interface BestValueProperty {
+  id: string;
+  title: string;
+  address: string;
+  county: string;
+  property_type?: string;
+  price: number;
+  bedrooms?: number;
+  floor_area_sqm?: number;
+  value_score?: number;
+  price_per_sqm?: number;
+  price_per_bed?: number;
+}
+
+export async function getBestValueProperties(
+  county?: string,
+  propertyType?: string,
+  limit = 10
+): Promise<BestValueProperty[]> {
+  const params = new URLSearchParams({ limit: String(limit) });
+  if (county) params.set('county', county);
+  if (propertyType) params.set('property_type', propertyType);
+  return fetchJSON<BestValueProperty[]>(`/api/v1/analytics/best-value-properties?${params}`);
+}
+
+export async function getPriceTrendsByType(county?: string, months = 12): Promise<Record<string, PriceTrend[]>> {
+  const params = new URLSearchParams({ months: String(months) });
+  if (county) params.set('county', county);
+  return fetchJSON<Record<string, PriceTrend[]>>(`/api/v1/analytics/price-trends-by-type?${params}`);
+}
+
 // ── Alerts ──────────────────────────────────────────────────────────────────
 
 export interface Alert {

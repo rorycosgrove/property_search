@@ -247,6 +247,133 @@ class AnalyticsEngine:
             if row.lat and row.lng
         ]
 
+    # ── Value ranking and drilldown ────────────────────────────────────────────
+
+    def get_best_value_properties(
+        self, county: str | None = None, property_type: str | None = None, limit: int = 10
+    ) -> list[dict]:
+        """Get properties ranked by LLM value score (best value first).
+        
+        Supports drilldown by county and property type.
+        Returns properties with value_score, price/sqm, price/bed metrics.
+        """
+        try:
+            from packages.storage.models import LLMEnrichment
+            
+            query = self.db.query(
+                Property.id,
+                Property.title,
+                Property.address,
+                Property.county,
+                Property.property_type,
+                Property.price,
+                Property.bedrooms,
+                Property.floor_area_sqm,
+                LLMEnrichment.value_score,
+            ).outerjoin(LLMEnrichment, Property.id == LLMEnrichment.property_id)
+            
+            query = query.filter(
+                Property.price.isnot(None),
+                Property.price > 0,
+                LLMEnrichment.value_score.isnot(None),
+            )
+            
+            if county:
+                query = query.filter(Property.county == county)
+            if property_type:
+                query = query.filter(Property.property_type == property_type)
+            
+            rows = (
+                query
+                .order_by(LLMEnrichment.value_score.desc())
+                .limit(limit)
+                .all()
+            )
+            
+            results = []
+            for row in rows:
+                price_per_sqm = None
+                if row.floor_area_sqm and row.floor_area_sqm > 0:
+                    price_per_sqm = round(float(row.price) / float(row.floor_area_sqm), 2)
+                
+                price_per_bed = None
+                if row.bedrooms and row.bedrooms > 0:
+                    price_per_bed = round(float(row.price) / row.bedrooms, 2)
+                
+                results.append({
+                    "id": str(row.id),
+                    "title": row.title,
+                    "address": row.address,
+                    "county": row.county,
+                    "property_type": row.property_type,
+                    "price": float(row.price),
+                    "bedrooms": row.bedrooms,
+                    "floor_area_sqm": row.floor_area_sqm,
+                    "value_score": float(row.value_score) if row.value_score else None,
+                    "price_per_sqm": price_per_sqm,
+                    "price_per_bed": price_per_bed,
+                })
+            
+            return results
+        except Exception as exc:
+            logger.warning("best_value_properties_failed", error=str(exc))
+            return []
+
+    def get_price_trends_by_type(
+        self, county: str | None = None, months: int = 12
+    ) -> dict[str, list[PriceTrend]]:
+        """Get monthly price trends grouped by property type (drilldown).
+        
+        Useful for understanding value trends across different property categories.
+        """
+        try:
+            cutoff = datetime.now(UTC) - timedelta(days=months * 30)
+            
+            query = (
+                self.db.query(
+                    Property.property_type,
+                    func.date_trunc("month", SoldProperty.sale_date).label("month"),
+                    func.avg(SoldProperty.price).label("avg_price"),
+                    func.count(SoldProperty.id).label("sale_count"),
+                )
+                .join(SoldProperty, Property.county == SoldProperty.county)
+                .filter(
+                    SoldProperty.sale_date >= cutoff,
+                    SoldProperty.price.isnot(None),
+                    SoldProperty.price > 0,
+                    Property.property_type.isnot(None),
+                )
+            )
+            
+            if county:
+                query = query.filter(SoldProperty.county == county)
+            
+            rows = (
+                query
+                .group_by(Property.property_type, text("2"))
+                .order_by(Property.property_type, text("2"))
+                .all()
+            )
+            
+            trends_by_type: dict[str, list[PriceTrend]] = {}
+            for row in rows:
+                prop_type = row.property_type or "unknown"
+                if prop_type not in trends_by_type:
+                    trends_by_type[prop_type] = []
+                
+                trends_by_type[prop_type].append(
+                    PriceTrend(
+                        period=row.month.strftime("%Y-%m") if row.month else "",
+                        avg_price=round(float(row.avg_price), 2),
+                        count=row.sale_count,
+                    )
+                )
+            
+            return trends_by_type
+        except Exception as exc:
+            logger.warning("price_trends_by_type_failed", error=str(exc))
+            return {}
+
     # ── Private helpers ───────────────────────────────────────────────────────
 
     def _compute_median_price(self) -> float | None:
