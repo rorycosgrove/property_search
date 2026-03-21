@@ -74,6 +74,14 @@ start "PropertySearch Web" cmd /k "cd /d %~dp0web && start-dev.cmd"
 echo [7/7] Starting Local SQS Worker window...
 start "PropertySearch SQS Worker" cmd /k "cd /d %~dp0 && start-sqs-worker.cmd"
 
+echo Verifying SQS worker process startup...
+powershell -NoProfile -Command "$deadline=(Get-Date).AddSeconds(12); $ok=$false; while((Get-Date) -lt $deadline){ $p=Get-CimInstance Win32_Process -Filter \"Name='python.exe'\" | Where-Object { $_.CommandLine -like '*sqs_local_worker.py*' }; if($p){ $ok=$true; break }; Start-Sleep -Milliseconds 500 }; if($ok){ Write-Host '[start-all] SQS worker process: running'; exit 0 } else { Write-Host '[start-all] SQS worker process: not detected'; exit 1 }"
+if errorlevel 1 (
+  echo [ERROR] SQS worker process was not detected. Messages will not be processed.
+  echo [HINT] Check the "PropertySearch SQS Worker" window for startup errors.
+  set "STARTALL_FAILED=1"
+)
+
 echo.
 set "API_PORT=8000"
 set "WEB_PORT=3000"

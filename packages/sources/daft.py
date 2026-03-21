@@ -28,6 +28,12 @@ logger = get_logger(__name__)
 # Daft gateway API endpoint (public, used by their SPA)
 DAFT_API_URL = "https://gateway.daft.ie/old/v1/listings"
 
+_BROWSER_UA_FALLBACKS: tuple[str, ...] = (
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 14_4) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36",
+)
+
 # Daft area slug → storedShapeIds mapping
 AREA_SHAPE_MAP: dict[str, list[str]] = {
     "ireland": ["daft_ie"],
@@ -176,10 +182,13 @@ class DaftAdapter(SourceAdapter):
         async with httpx.AsyncClient(
             timeout=settings.request_timeout_seconds,
             headers={
-                "User-Agent": settings.user_agent,
                 "Content-Type": "application/json",
                 "Brand": "daft",
                 "Platform": "web",
+                "Accept": "application/json, text/plain, */*",
+                "Accept-Language": "en-IE,en;q=0.9",
+                "Origin": "https://www.daft.ie",
+                "Referer": "https://www.daft.ie/",
             },
         ) as client:
             for area in areas:
@@ -443,12 +452,34 @@ class DaftAdapter(SourceAdapter):
         while True:
             try:
                 logger.info("daft_api_fetch", area=area, page=page, offset=offset, attempt=attempt)
-                response = await client.post(DAFT_API_URL, json=payload)
+                response = await self._post_with_headers_fallback(
+                    client,
+                    DAFT_API_URL,
+                    payload,
+                    self._build_request_headers(area=area, attempt=attempt),
+                )
                 response.raise_for_status()
                 return response.json()
             except httpx.HTTPStatusError as exc:
                 status = exc.response.status_code
-                if status in {401, 403}:
+                if status == 403 and attempt < max_retries:
+                    attempt += 1
+                    retry_delay = min(8.0, (2 ** attempt) + random.uniform(0.0, 0.8))
+                    logger.warning(
+                        "daft_blocked_retry",
+                        area=area,
+                        page=page,
+                        status=status,
+                        attempt=attempt,
+                        delay_seconds=retry_delay,
+                    )
+                    await asyncio.sleep(retry_delay)
+                    continue
+
+                if status == 401:
+                    raise _DaftBlockedError(status) from exc
+
+                if status == 403:
                     raise _DaftBlockedError(status) from exc
                 transient = status == 429 or status >= 500
                 if transient and attempt < max_retries:
@@ -494,6 +525,39 @@ class DaftAdapter(SourceAdapter):
                     error=str(exc),
                 )
                 return None
+
+    @staticmethod
+    def _looks_like_default_bot_ua(user_agent: str) -> bool:
+        raw = (user_agent or "").strip().lower()
+        return (not raw) or raw.startswith("propertysearch/")
+
+    def _build_request_headers(self, *, area: str, attempt: int) -> dict[str, str]:
+        configured_ua = (settings.user_agent or "").strip()
+        if self._looks_like_default_bot_ua(configured_ua):
+            user_agent = random.choice(_BROWSER_UA_FALLBACKS)
+        else:
+            user_agent = configured_ua
+
+        return {
+            "User-Agent": user_agent,
+            "Sec-Fetch-Dest": "empty",
+            "Sec-Fetch-Mode": "cors",
+            "Sec-Fetch-Site": "same-site",
+            "X-Requested-With": "XMLHttpRequest",
+        }
+
+    @staticmethod
+    async def _post_with_headers_fallback(
+        client: httpx.AsyncClient,
+        url: str,
+        payload: dict[str, Any],
+        headers: dict[str, str],
+    ) -> httpx.Response:
+        try:
+            return await client.post(url, json=payload, headers=headers)
+        except TypeError:
+            # Test doubles may not accept per-request headers.
+            return await client.post(url, json=payload)
 
     def _build_listing_url(self, seo_path: str) -> str:
         """Build and normalize a Daft listing URL from API path fragments."""
