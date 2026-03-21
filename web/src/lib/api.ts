@@ -337,6 +337,7 @@ export interface BestValueProperty {
   id: string;
   title: string;
   address: string;
+  url?: string;
   county: string;
   property_type?: string;
   price: number;
@@ -350,11 +351,13 @@ export interface BestValueProperty {
 export async function getBestValueProperties(
   county?: string,
   propertyType?: string,
+  maxBudget?: number,
   limit = 10
 ): Promise<BestValueProperty[]> {
   const params = new URLSearchParams({ limit: String(limit) });
   if (county) params.set('county', county);
   if (propertyType) params.set('property_type', propertyType);
+  if (maxBudget !== undefined) params.set('max_price', String(maxBudget));
   return fetchJSON<BestValueProperty[]>(`/api/v1/analytics/best-value-properties?${params}`);
 }
 
@@ -368,13 +371,14 @@ export interface PriceChange {
   property_id: string;
   title: string;
   address: string;
+  url?: string;
   county: string;
-  current_price: number;
+  current_price: number | null;
   property_type?: string;
   bedrooms?: number;
   bathrooms?: number;
-  price_change: number;
-  price_change_pct: number;
+  price_change: number | null;
+  price_change_pct: number | null;
   recorded_at: string;
 }
 
@@ -400,7 +404,7 @@ export async function getPriceChangesByBudget(
   limit = 100
 ): Promise<PriceChange[]> {
   const params = new URLSearchParams({ days: String(days), limit: String(limit) });
-  if (maxBudget) params.set('max_budget', String(maxBudget));
+  if (maxBudget !== undefined) params.set('max_budget', String(maxBudget));
   if (county) params.set('county', county);
   return fetchJSON<PriceChange[]>(`/api/v1/analytics/price-changes-by-budget?${params}`);
 }
@@ -411,7 +415,7 @@ export async function getPriceChangesTimeline(
   days = 30
 ): Promise<PriceChangesTimeline> {
   const params = new URLSearchParams({ days: String(days) });
-  if (maxBudget) params.set('max_budget', String(maxBudget));
+  if (maxBudget !== undefined) params.set('max_budget', String(maxBudget));
   if (county) params.set('county', county);
   return fetchJSON<PriceChangesTimeline>(`/api/v1/analytics/price-changes-timeline?${params}`);
 }

@@ -250,11 +250,15 @@ class AnalyticsEngine:
     # ── Value ranking and drilldown ────────────────────────────────────────────
 
     def get_best_value_properties(
-        self, county: str | None = None, property_type: str | None = None, limit: int = 10
+        self,
+        county: str | None = None,
+        property_type: str | None = None,
+        max_price: float | None = None,
+        limit: int = 10,
     ) -> list[dict]:
         """Get properties ranked by LLM value score (best value first).
         
-        Supports drilldown by county and property type.
+        Supports drilldown by county, property type, and max price.
         Returns properties with value_score, price/sqm, price/bed metrics.
         """
         try:
@@ -264,6 +268,7 @@ class AnalyticsEngine:
                 Property.id,
                 Property.title,
                 Property.address,
+                Property.url,
                 Property.county,
                 Property.property_type,
                 Property.price,
@@ -282,6 +287,8 @@ class AnalyticsEngine:
                 query = query.filter(Property.county == county)
             if property_type:
                 query = query.filter(Property.property_type == property_type)
+            if max_price is not None:
+                query = query.filter(Property.price <= max_price)
             
             rows = (
                 query
@@ -304,6 +311,7 @@ class AnalyticsEngine:
                     "id": str(row.id),
                     "title": row.title,
                     "address": row.address,
+                    "url": row.url,
                     "county": row.county,
                     "property_type": row.property_type,
                     "price": float(row.price),
@@ -390,6 +398,7 @@ class AnalyticsEngine:
                     Property.id,
                     Property.title,
                     Property.address,
+                    Property.url,
                     Property.county,
                     Property.price,
                     Property.property_type,
@@ -407,10 +416,8 @@ class AnalyticsEngine:
             )
             
             # Filter by current price within budget if provided
-            if max_budget:
+            if max_budget is not None:
                 query = query.filter(Property.price.isnot(None), Property.price <= max_budget)
-            else:
-                query = query.filter(Property.price.isnot(None))
             
             if county:
                 query = query.filter(Property.county == county)
@@ -428,13 +435,14 @@ class AnalyticsEngine:
                     "property_id": str(row.id),
                     "title": row.title,
                     "address": row.address,
+                    "url": row.url,
                     "county": row.county,
-                    "current_price": float(row.price) if row.price else None,
+                    "current_price": float(row.price) if row.price is not None else None,
                     "property_type": row.property_type,
                     "bedrooms": row.bedrooms,
                     "bathrooms": row.bathrooms,
-                    "price_change": float(row.price_change) if row.price_change else None,
-                    "price_change_pct": float(row.price_change_pct) if row.price_change_pct else None,
+                    "price_change": float(row.price_change) if row.price_change is not None else None,
+                    "price_change_pct": float(row.price_change_pct) if row.price_change_pct is not None else None,
                     "recorded_at": row.recorded_at.isoformat() if row.recorded_at else None,
                 })
             
@@ -470,10 +478,8 @@ class AnalyticsEngine:
                 .filter(PropertyPriceHistory.recorded_at >= cutoff)
             )
             
-            if max_budget:
+            if max_budget is not None:
                 query = query.filter(Property.price.isnot(None), Property.price <= max_budget)
-            else:
-                query = query.filter(Property.price.isnot(None))
             
             if county:
                 query = query.filter(Property.county == county)
