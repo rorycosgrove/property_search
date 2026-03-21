@@ -55,6 +55,8 @@ class TestBuildPropertyFilters:
                 lat=None,
                 lng=None,
                 radius_km=None,
+                eligible_only=False,
+                min_eligible_grants_total=None,
             )
 
     def test_raises_when_geospatial_args_incomplete(self):
@@ -74,6 +76,8 @@ class TestBuildPropertyFilters:
                 lat=53.3,
                 lng=None,
                 radius_km=5.0,
+                eligible_only=False,
+                min_eligible_grants_total=None,
             )
 
 
@@ -131,6 +135,8 @@ class TestPropertyPayloads:
             lat=None,
             lng=None,
             radius_km=None,
+            eligible_only=False,
+            min_eligible_grants_total=None,
         )
 
         assert payload["total"] == 1

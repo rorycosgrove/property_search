@@ -439,9 +439,10 @@ def scrape_source(source_id: str, force: bool = False) -> dict[str, Any]:
                     existing = property_repo.get_by_content_hash(record["content_hash"])
 
                 if existing:
-                    if record.get("price") and existing.price:
-                        new_price = float(record["price"])
-                        old_price = float(existing.price)
+                    old_price = float(existing.price) if existing.price is not None else None
+                    new_price = float(record["price"]) if record.get("price") is not None else None
+
+                    if old_price is not None and new_price is not None:
                         if abs(new_price - old_price) > 0.01:
                             change = new_price - old_price
                             change_pct = (change / old_price * 100) if old_price else 0
@@ -451,11 +452,42 @@ def scrape_source(source_id: str, force: bool = False) -> dict[str, Any]:
                                 price_change=change,
                                 price_change_pct=change_pct,
                             )
-                            property_repo.update(str(existing.id), price=new_price, status="price_changed")
+                            property_repo.update(
+                                str(existing.id),
+                                price=new_price,
+                                price_text=record.get("price_text"),
+                                status="price_changed",
+                            )
                             _materialize_property_documents_safe(db, str(existing.id))
                             updated_count += 1
                         else:
                             price_unchanged_count += 1
+                    elif old_price is not None and new_price is None:
+                        # Edge case: priced listing transitions to POA/no numeric price.
+                        property_repo.update(
+                            str(existing.id),
+                            price=None,
+                            price_text=record.get("price_text") or "POA",
+                            status="price_changed",
+                        )
+                        _materialize_property_documents_safe(db, str(existing.id))
+                        updated_count += 1
+                    elif old_price is None and new_price is not None:
+                        # Edge case: POA listing gets a concrete numeric price.
+                        price_repo.add_entry_if_new_price(
+                            property_id=str(existing.id),
+                            price=new_price,
+                            price_change=None,
+                            price_change_pct=None,
+                        )
+                        property_repo.update(
+                            str(existing.id),
+                            price=new_price,
+                            price_text=record.get("price_text"),
+                            status="price_changed",
+                        )
+                        _materialize_property_documents_safe(db, str(existing.id))
+                        updated_count += 1
                     else:
                         price_unchanged_count += 1
                 else:

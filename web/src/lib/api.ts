@@ -333,6 +333,93 @@ export async function getHeatmapData(): Promise<HeatmapPoint[]> {
   return fetchJSON<HeatmapPoint[]>('/api/v1/analytics/heatmap');
 }
 
+export interface BestValueProperty {
+  id: string;
+  title: string;
+  address: string;
+  url?: string;
+  county: string;
+  property_type?: string;
+  price: number;
+  bedrooms?: number;
+  floor_area_sqm?: number;
+  value_score?: number;
+  price_per_sqm?: number;
+  price_per_bed?: number;
+}
+
+export async function getBestValueProperties(
+  county?: string,
+  propertyType?: string,
+  maxBudget?: number,
+  limit = 10
+): Promise<BestValueProperty[]> {
+  const params = new URLSearchParams({ limit: String(limit) });
+  if (county) params.set('county', county);
+  if (propertyType) params.set('property_type', propertyType);
+  if (maxBudget !== undefined) params.set('max_price', String(maxBudget));
+  return fetchJSON<BestValueProperty[]>(`/api/v1/analytics/best-value-properties?${params}`);
+}
+
+export async function getPriceTrendsByType(county?: string, months = 12): Promise<Record<string, PriceTrend[]>> {
+  const params = new URLSearchParams({ months: String(months) });
+  if (county) params.set('county', county);
+  return fetchJSON<Record<string, PriceTrend[]>>(`/api/v1/analytics/price-trends-by-type?${params}`);
+}
+
+export interface PriceChange {
+  property_id: string;
+  title: string;
+  address: string;
+  url?: string;
+  county: string;
+  current_price: number | null;
+  property_type?: string;
+  bedrooms?: number;
+  bathrooms?: number;
+  price_change: number | null;
+  price_change_pct: number | null;
+  recorded_at: string;
+}
+
+export interface PriceChangesTimeline {
+  increases: Array<{
+    date: string;
+    count: number;
+    avg_change: number;
+    avg_change_pct: number;
+  }>;
+  decreases: Array<{
+    date: string;
+    count: number;
+    avg_change: number;
+    avg_change_pct: number;
+  }>;
+}
+
+export async function getPriceChangesByBudget(
+  maxBudget?: number,
+  county?: string,
+  days = 30,
+  limit = 100
+): Promise<PriceChange[]> {
+  const params = new URLSearchParams({ days: String(days), limit: String(limit) });
+  if (maxBudget !== undefined) params.set('max_budget', String(maxBudget));
+  if (county) params.set('county', county);
+  return fetchJSON<PriceChange[]>(`/api/v1/analytics/price-changes-by-budget?${params}`);
+}
+
+export async function getPriceChangesTimeline(
+  maxBudget?: number,
+  county?: string,
+  days = 30
+): Promise<PriceChangesTimeline> {
+  const params = new URLSearchParams({ days: String(days) });
+  if (maxBudget !== undefined) params.set('max_budget', String(maxBudget));
+  if (county) params.set('county', county);
+  return fetchJSON<PriceChangesTimeline>(`/api/v1/analytics/price-changes-timeline?${params}`);
+}
+
 // ── Alerts ──────────────────────────────────────────────────────────────────
 
 export interface Alert {
