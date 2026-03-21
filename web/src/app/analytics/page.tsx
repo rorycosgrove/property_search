@@ -276,8 +276,8 @@ export default function AnalyticsPage() {
                       <td className={`text-right py-2 px-2 ${change.price_change > 0 ? 'text-red-500' : 'text-green-500'}`}>
                         {change.price_change > 0 ? '+' : ''}{formatEur(change.price_change)}
                       </td>
-                      <td className={`text-right py-2 px-2 ${change.price_change_pct > 0 ? 'text-red-500' : 'text-green-500'}`}>
-                        {change.price_change_pct > 0 ? '+' : ''}{change.price_change_pct.toFixed(2)}%
+                      <td className={`text-right py-2 px-2 ${change.price_change_pct && change.price_change_pct > 0 ? 'text-red-500' : 'text-green-500'}`}>
+                        {change.price_change_pct ? `${change.price_change_pct > 0 ? '+' : ''}${change.price_change_pct.toFixed(2)}%` : '-'}
                       </td>
                       <td className="text-right py-2 px-2">
                         {change.bedrooms || '-'} / {change.bathrooms || '-'}
