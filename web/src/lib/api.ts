@@ -183,6 +183,7 @@ export interface Property {
   llm_value_score?: number;
   eligible_grants_total?: number;
   net_price?: number;
+  enrichment?: LLMEnrichment;
 }
 
 export interface PropertyListResponse {

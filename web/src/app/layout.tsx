@@ -1,6 +1,7 @@
 import type { Metadata } from 'next';
 import { Space_Grotesk, Syne } from 'next/font/google';
 import './globals.css';
+import BottomNav from '@/components/BottomNav';
 import TopNav from '@/components/TopNav';
 
 const syne = Syne({
@@ -39,6 +40,7 @@ export default function RootLayout({
             <TopNav />
           </header>
           <main className="flex-1 pb-20 lg:pb-0">{children}</main>
+          <BottomNav />
         </div>
       </body>
     </html>
