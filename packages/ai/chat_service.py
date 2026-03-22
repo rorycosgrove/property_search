@@ -227,9 +227,19 @@ async def send_message_payload(
         processing_time_ms=response.processing_time_ms,
     )
 
+    evidence = {
+        "policy": "chat_evidence_v1",
+        "citation_count": len(citations),
+        "grounded": bool(citations),
+        "sample": citations[:3],
+    }
+    if property_context and not citations:
+        evidence["note"] = "Property-specific answer generated without source citations"
+
     return {
         "conversation_id": conversation_id,
         "user_message": message_to_dict(user_message),
         "assistant_message": message_to_dict(assistant_message),
         "retrieval_context": request_context,
+        "evidence": evidence,
     }

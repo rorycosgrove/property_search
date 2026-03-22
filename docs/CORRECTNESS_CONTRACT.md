@@ -31,6 +31,8 @@ them measurable.
 | **Alert Precision** | Manual spot-check: proportion of generated alerts matching user saved-search criteria | ≥ 99 % | Monthly; min. 100 alerts sampled |
 | **API Error Rate** | HTTP 5xx responses / total API responses, 24-hour rolling | < 2 % | Continuous; CloudWatch metric |
 | **LLM Enrichment Success Rate** | `llm_enrichment_complete` / (`llm_enrichment_complete` + `llm_enrichment_failed` + `llm_enrichment_skipped[reason!=llm_disabled]`), 24-hour rolling | ≥ 95 % when LLM is enabled | Daily; `GET /api/v1/admin/backend-logs/summary` |
+| **Chat Citation Coverage (24h)** | `assistant_messages_with_citations / assistant_messages` | ≥ 0.80 when sample size ≥ 10 | Continuous; `GET /api/v1/health/quality-gates` |
+| **Chat p95 Latency (24h)** | p95 of `conversation_messages.processing_time_ms` for assistant messages | ≤ 4500 ms when sample size ≥ 10 | Continuous; `GET /api/v1/health/quality-gates` |
 
 ---
 
@@ -62,6 +64,9 @@ curl http://localhost:8000/api/v1/admin/sources/freshness | python -m json.tool
 
 # Backend health summary — last 24h
 curl http://localhost:8000/api/v1/admin/logs/health | python -m json.tool
+
+# Product quality gates (AI citation + latency + backend errors)
+curl http://localhost:8000/api/v1/health/quality-gates | python -m json.tool
 
 # Error log review
 curl "http://localhost:8000/api/v1/admin/backend-logs?hours=24&level=ERROR&limit=50" | python -m json.tool
@@ -114,4 +119,5 @@ If Capture Rate drops below 90 % for any active source **for 24 hours**:
 
 | Date | Change |
 |------|--------|
+| 2026-03-22 | Added product quality-gates metrics and `/api/v1/health/quality-gates` measurement endpoint |
 | 2026-03-16 | Initial contract established |

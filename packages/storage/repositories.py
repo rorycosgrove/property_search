@@ -1521,6 +1521,45 @@ class ConversationRepository:
             .where(Conversation.id == conversation_id)
         )
 
+    def assistant_message_quality_snapshot(self, *, hours: int = 24, limit: int = 1000) -> dict[str, float | int | None]:
+        """Return citation and latency stats for recent assistant messages."""
+        cutoff = utc_now() - timedelta(hours=hours)
+        query = (
+            select(ConversationMessage)
+            .where(ConversationMessage.role == "assistant")
+            .where(ConversationMessage.created_at >= cutoff)
+            .order_by(ConversationMessage.created_at.desc())
+            .limit(limit)
+        )
+        messages = list(self.session.scalars(query))
+
+        sample_size = len(messages)
+        if sample_size == 0:
+            return {
+                "sample_size": 0,
+                "citation_coverage": None,
+                "p95_latency_ms": None,
+            }
+
+        with_citations = sum(1 for message in messages if (message.citations or []))
+        citation_coverage = with_citations / sample_size
+
+        latencies = sorted(
+            int(message.processing_time_ms)
+            for message in messages
+            if message.processing_time_ms is not None
+        )
+        p95_latency_ms: int | None = None
+        if latencies:
+            index = max(0, int(round(0.95 * len(latencies))) - 1)
+            p95_latency_ms = latencies[index]
+
+        return {
+            "sample_size": sample_size,
+            "citation_coverage": citation_coverage,
+            "p95_latency_ms": p95_latency_ms,
+        }
+
     def add_message(
         self,
         conversation_id: str,

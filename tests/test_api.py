@@ -65,6 +65,58 @@ class TestHealthEndpoint:
         finally:
             app.dependency_overrides.clear()
 
+    def test_quality_gates_pass(self, client):
+        from packages.storage.database import get_db_session
+
+        mock_session = MagicMock()
+        app.dependency_overrides[get_db_session] = lambda: mock_session
+
+        try:
+            with patch("apps.api.routers.health.BackendLogRepository") as MockBackendRepo:
+                with patch("apps.api.routers.health.ConversationRepository") as MockConvoRepo:
+                    MockBackendRepo.return_value.count_recent_errors.return_value = 2
+                    MockConvoRepo.return_value.assistant_message_quality_snapshot.return_value = {
+                        "sample_size": 24,
+                        "citation_coverage": 0.92,
+                        "p95_latency_ms": 1800,
+                    }
+
+                    resp = client.get("/api/v1/health/quality-gates")
+
+            assert resp.status_code == 200
+            data = resp.json()
+            assert data["status"] == "pass"
+            assert len(data["metrics"]) == 3
+            assert all(metric["status"] == "pass" for metric in data["metrics"])
+        finally:
+            app.dependency_overrides.clear()
+
+    def test_quality_gates_warn_on_low_sample(self, client):
+        from packages.storage.database import get_db_session
+
+        mock_session = MagicMock()
+        app.dependency_overrides[get_db_session] = lambda: mock_session
+
+        try:
+            with patch("apps.api.routers.health.BackendLogRepository") as MockBackendRepo:
+                with patch("apps.api.routers.health.ConversationRepository") as MockConvoRepo:
+                    MockBackendRepo.return_value.count_recent_errors.return_value = 1
+                    MockConvoRepo.return_value.assistant_message_quality_snapshot.return_value = {
+                        "sample_size": 2,
+                        "citation_coverage": 1.0,
+                        "p95_latency_ms": 300,
+                    }
+
+                    resp = client.get("/api/v1/health/quality-gates")
+
+            assert resp.status_code == 200
+            data = resp.json()
+            assert data["status"] == "warn"
+            warn_metrics = [metric for metric in data["metrics"] if metric["status"] == "warn"]
+            assert len(warn_metrics) == 2
+        finally:
+            app.dependency_overrides.clear()
+
 
 class TestAdminLogsEndpoint:
     def test_get_backend_logs(self, client):
@@ -1314,6 +1366,8 @@ class TestLLMChatEndpoint:
                         data = resp.json()
                         assert data["conversation_id"] == "conv-1"
                         assert data["assistant_message"]["content"] == "Hi there"
+                        assert data["evidence"]["policy"] == "chat_evidence_v1"
+                        assert data["evidence"]["citation_count"] == 0
         finally:
             app.dependency_overrides.clear()
 
