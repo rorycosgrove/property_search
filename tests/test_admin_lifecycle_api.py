@@ -110,3 +110,40 @@ def test_execute_data_lifecycle_action_returns_400_for_invalid_action():
         assert resp.status_code == 400
     finally:
         app.dependency_overrides.clear()
+
+
+def test_get_data_lifecycle_history_endpoint():
+    from packages.storage.database import get_db_session
+
+    mock_session = MagicMock()
+    app.dependency_overrides[get_db_session] = lambda: mock_session
+
+    try:
+        with patch("apps.api.routers.admin.list_data_lifecycle_activity") as mock_history:
+            mock_history.return_value = [
+                {
+                    "id": "log-1",
+                    "timestamp": "2026-03-22T00:00:00+00:00",
+                    "level": "INFO",
+                    "event_type": "admin_data_lifecycle_action",
+                    "component": "api",
+                    "source_id": None,
+                    "message": "Lifecycle action dry-run executed: archive_properties",
+                    "context": {
+                        "action": "archive_properties",
+                        "dry_run": True,
+                        "affected_candidates": 11,
+                    },
+                }
+            ]
+
+            client = _client()
+            resp = client.get("/api/v1/admin/data-lifecycle/history?hours=48&limit=20")
+
+        assert resp.status_code == 200
+        data = resp.json()
+        assert len(data) == 1
+        assert data[0]["event_type"] == "admin_data_lifecycle_action"
+        mock_history.assert_called_once_with(mock_session, hours=48, limit=20)
+    finally:
+        app.dependency_overrides.clear()

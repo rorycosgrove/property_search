@@ -5,6 +5,7 @@ import { useEffect, useMemo, useState } from 'react';
 import {
   getAlerts,
   getAnalyticsSummary,
+  getDataLifecycleHistory,
   getDataLifecycleReport,
   getGrants,
   getHealth,
@@ -79,6 +80,12 @@ export default function AdminPage() {
   const [lifecycleSummary, setLifecycleSummary] = useState<string>('Loading lifecycle candidates...');
   const [lifecycleActionStatus, setLifecycleActionStatus] = useState<string>('No lifecycle dry-run executed yet.');
   const [lifecycleActionBusy, setLifecycleActionBusy] = useState<string | null>(null);
+  const [lifecycleHistory, setLifecycleHistory] = useState<Array<{
+    id: string;
+    timestamp?: string;
+    message: string;
+    context: Record<string, unknown>;
+  }>>([]);
   const [checks, setChecks] = useState<EndpointCheck[]>([
     { key: 'health', label: 'Platform health', route: '/admin', state: 'loading', detail: 'Checking...' },
     { key: 'properties', label: 'Properties domain', route: '/workspace', state: 'loading', detail: 'Checking...' },
@@ -105,6 +112,7 @@ export default function AdminPage() {
         getSavedSearches(),
         getSources(),
         getDataLifecycleReport(),
+        getDataLifecycleHistory({ hours: 168, limit: 8 }),
       ]);
 
       if (cancelled) {
@@ -204,6 +212,17 @@ export default function AdminPage() {
         setLifecycleSummary('Unable to load lifecycle candidate counts.');
       }
 
+      if (results[9].status === 'fulfilled') {
+        setLifecycleHistory(results[9].value.map((row) => ({
+          id: row.id,
+          timestamp: row.timestamp,
+          message: row.message,
+          context: row.context,
+        })));
+      } else {
+        setLifecycleHistory([]);
+      }
+
       setChecks(next);
     };
 
@@ -230,6 +249,13 @@ export default function AdminPage() {
       setLifecycleActionStatus(
         `${result.action} dry-run complete: ${result.affected_candidates.toLocaleString()} candidates.`
       );
+      const history = await getDataLifecycleHistory({ hours: 168, limit: 8 });
+      setLifecycleHistory(history.map((row) => ({
+        id: row.id,
+        timestamp: row.timestamp,
+        message: row.message,
+        context: row.context,
+      })));
     } catch {
       setLifecycleActionStatus(`${action} dry-run failed. Check backend logs.`);
     } finally {
@@ -326,6 +352,30 @@ export default function AdminPage() {
         <Link href="/settings#data-lifecycle" className="mt-3 inline-flex text-sm font-medium text-[var(--accent-strong)] hover:underline">
           Open lifecycle settings
         </Link>
+
+        <div className="mt-5 rounded-xl border border-[var(--card-border)] bg-[var(--background)]/55 p-3">
+          <p className="text-[11px] uppercase tracking-[0.14em] text-[var(--muted)]">Recent lifecycle runs</p>
+          {lifecycleHistory.length === 0 ? (
+            <p className="mt-2 text-xs text-[var(--muted)]">No lifecycle actions recorded in the selected lookback.</p>
+          ) : (
+            <ul className="mt-2 space-y-2">
+              {lifecycleHistory.map((entry) => {
+                const action = typeof entry.context.action === 'string' ? entry.context.action : 'unknown';
+                const affected = typeof entry.context.affected_candidates === 'number'
+                  ? entry.context.affected_candidates
+                  : Number(entry.context.affected_candidates ?? 0);
+                return (
+                  <li key={entry.id} className="rounded-lg border border-[var(--card-border)] bg-[var(--card-bg)] px-3 py-2">
+                    <p className="text-xs font-medium">{action}</p>
+                    <p className="text-[11px] text-[var(--muted)]">
+                      {entry.timestamp ? new Date(entry.timestamp).toLocaleString() : 'unknown time'} · {affected.toLocaleString()} candidates
+                    </p>
+                  </li>
+                );
+              })}
+            </ul>
+          )}
+        </div>
       </section>
 
       <section className="mt-6 grid gap-4 md:grid-cols-2">

@@ -16,6 +16,7 @@ from packages.admin.service import (
     explain_source_quality,
     get_migration_status,
     list_backend_logs,
+    list_data_lifecycle_activity,
     list_discovery_activity,
     list_feed_activity,
     list_recent_errors,
@@ -118,6 +119,15 @@ def execute_data_lifecycle_action(
         )
     except AdminServiceError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@router.get("/data-lifecycle/history", summary="Recent lifecycle action history")
+def get_data_lifecycle_history(
+    hours: int = Query(168, ge=1, le=720),
+    limit: int = Query(50, ge=1, le=500),
+    db: Session = Depends(get_db_session),
+):
+    return list_data_lifecycle_activity(db, hours=hours, limit=limit)
 
 
 @router.get("/logs/discovery", summary="Recent discovery activity")

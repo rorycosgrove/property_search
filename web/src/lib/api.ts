@@ -908,6 +908,17 @@ export interface DataLifecycleActionResult {
   report: DataLifecycleReport;
 }
 
+export interface DataLifecycleHistoryEntry {
+  id: string;
+  timestamp?: string;
+  level: string;
+  event_type: string;
+  component: string;
+  source_id?: string;
+  message: string;
+  context: Record<string, unknown>;
+}
+
 export interface BackendLogEntry {
   id: string;
   timestamp?: string;
@@ -1005,6 +1016,24 @@ export async function runDataLifecycleAction(
     `/api/v1/admin/data-lifecycle/actions/${action}?${params.toString()}`,
     { method: 'POST' },
   );
+}
+
+export async function getDataLifecycleHistory(options?: {
+  hours?: number;
+  limit?: number;
+}): Promise<DataLifecycleHistoryEntry[]> {
+  const params = new URLSearchParams();
+  if (options?.hours !== undefined) {
+    params.set('hours', String(options.hours));
+  }
+  if (options?.limit !== undefined) {
+    params.set('limit', String(options.limit));
+  }
+  const suffix = params.toString();
+  const path = suffix
+    ? `/api/v1/admin/data-lifecycle/history?${suffix}`
+    : '/api/v1/admin/data-lifecycle/history';
+  return fetchJSON<DataLifecycleHistoryEntry[]>(path);
 }
 
 export async function getBackendRecentErrors(

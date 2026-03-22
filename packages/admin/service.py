@@ -686,6 +686,22 @@ def list_backend_logs(
     return [backend_log_to_dict(row) for row in rows]
 
 
+def list_data_lifecycle_activity(
+    db: Session,
+    *,
+    hours: int = 168,
+    limit: int = 50,
+) -> list[dict[str, Any]]:
+    """Return recent lifecycle dry-run actions for operator audit timelines."""
+    repo = BackendLogRepository(db)
+    rows = repo.list_recent(
+        hours=hours,
+        limit=limit,
+        event_type="admin_data_lifecycle_action",
+    )
+    return [backend_log_to_dict(row) for row in rows]
+
+
 def backend_logs_summary(db: Session, *, hours: int = 24) -> dict[str, Any]:
     repo = BackendLogRepository(db)
     return repo.summary(hours=hours)
