@@ -28,3 +28,26 @@ To keep docs accurate:
 - Prefer capability-based descriptions over brittle hardcoded counts/versions.
 - Keep dated milestone details in release notes, not in evergreen setup docs.
 - If behavior changes in worker orchestration, update `QUICKSTART.md`, `DEVELOPMENT.md`, and `WINDOWS_SETUP.md` together.
+
+## Plan Update (Mar 22, 2026)
+
+Functional-error remediation was applied to Phase 4 operability work:
+
+- Added lifecycle action execution endpoint with strict safety guard (dry-run only):
+  - `POST /api/v1/admin/data-lifecycle/actions/{action}`
+  - Supported actions: `archive_properties`, `archive_backend_logs`, `rollup_price_and_timeline`
+- Added backend audit logging for lifecycle dry-runs (`admin_data_lifecycle_action`) to improve operator traceability.
+- Added admin UI controls for lifecycle dry-runs and result feedback.
+- Added API and service regression coverage for lifecycle report/action flows.
+
+Validation snapshot:
+
+- Admin lifecycle focused tests pass:
+  - `tests/test_admin_service.py`
+  - `tests/test_admin_lifecycle_api.py`
+
+Remaining Phase 4 implementation track:
+
+1. Add lifecycle action history endpoint and UI timeline for previous runs.
+2. Add scheduled execution metadata (cadence + policy visibility) in admin surfaces.
+3. Keep destructive execution disabled until explicit feature flag and rollback strategy are implemented.
