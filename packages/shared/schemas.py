@@ -169,8 +169,10 @@ class PropertyFilters(BaseModel):
     max_bedrooms: int | None = None
     property_types: list[PropertyType] | None = None
     ber_ratings: list[str] | None = None
+    keywords: list[str] | None = None
     statuses: list[PropertyStatus] | None = None
     source_id: str | None = None
+    sale_type: str | None = None
     lat: float | None = None
     lng: float | None = None
     radius_km: float | None = None

@@ -9,13 +9,15 @@ never ORM model instances. This decouples persistence from domain logic.
 from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
+from decimal import Decimal
 from typing import Any
 
 from geoalchemy2 import Geography
 from geoalchemy2.elements import WKTElement
 from geoalchemy2.functions import ST_DWithin, ST_MakePoint, ST_SetSRID
-from sqlalchemy import and_, case, cast, func, select
-from sqlalchemy.exc import DatabaseError
+from sqlalchemy import and_, case, cast, func, or_, select, Float
+from sqlalchemy.dialects.postgresql import insert as pg_insert
+from sqlalchemy.exc import DatabaseError, IntegrityError
 from sqlalchemy.orm import Session, joinedload
 
 from packages.shared.constants import (
@@ -24,6 +26,7 @@ from packages.shared.constants import (
     SIMILAR_PROPERTY_PRICE_TOLERANCE,
     SOURCE_ERROR_THRESHOLD,
 )
+from packages.shared.money import to_decimal
 from packages.shared.schemas import (
     CountyPriceStats,
     PropertyFilters,
@@ -114,7 +117,13 @@ class SourceRepository:
             source.last_success_at = now
             source.error_count = 0
             source.last_error = None
-            source.total_listings += listings_count
+            actual_count = (
+                self.session.scalar(
+                    select(func.count(Property.id)).where(Property.source_id == source_id)
+                )
+                or 0
+            )
+            source.total_listings = actual_count
             self.session.flush()
 
     def mark_poll_error(self, source_id: str, error_message: str) -> None:
@@ -146,8 +155,8 @@ class SourceRepository:
             )
             return bool(acquired)
         except DatabaseError:
-            # Fail open to avoid halting ingestion if lock function is unavailable.
-            return True
+            # Fail closed when lock checks cannot run to avoid duplicate concurrent scrapes.
+            return False
 
     def should_skip_poll(self, source: Source, now: datetime | None = None) -> bool:
         """Return True when source poll interval has not elapsed yet."""
@@ -239,6 +248,7 @@ class PropertyRepository:
         """
         query = select(Property).options(
             joinedload(Property.enrichment),
+            joinedload(Property.price_history),
         )
         count_query = select(func.count(Property.id))
 
@@ -263,8 +273,22 @@ class PropertyRepository:
         if filters.property_types:
             conditions.append(Property.property_type.in_([pt.value for pt in filters.property_types]))
 
+        if filters.sale_type:
+            conditions.append(Property.sale_type == filters.sale_type)
+
         if filters.ber_ratings:
             conditions.append(Property.ber_rating.in_(filters.ber_ratings))
+
+        if filters.keywords:
+            for keyword in filters.keywords:
+                pattern = f"%{keyword}%"
+                conditions.append(
+                    or_(
+                        Property.title.ilike(pattern),
+                        Property.description.ilike(pattern),
+                        Property.address.ilike(pattern),
+                    )
+                )
 
         if filters.statuses:
             conditions.append(Property.status.in_([s.value for s in filters.statuses]))
@@ -300,7 +324,7 @@ class PropertyRepository:
         if filters.sort_order == "asc":
             query = query.order_by(sort_col.asc().nullslast())
         else:
-            query = query.order_by(sort_col.desc().nullsfirst())
+            query = query.order_by(sort_col.desc().nullslast())
 
         # Count
         total = self.session.scalar(count_query) or 0
@@ -332,16 +356,29 @@ class PropertyRepository:
             ),
             0.0,
         )
-        net_price_expr = (func.coalesce(Property.price, 0.0) - eligible_grants_expr)
+        grant_totals_sq = (
+            select(
+                PropertyGrantMatch.property_id.label("property_id"),
+                eligible_grants_expr.label("eligible_grants_total"),
+            )
+            .group_by(PropertyGrantMatch.property_id)
+            .subquery()
+        )
+
+        eligible_total_col = func.coalesce(grant_totals_sq.c.eligible_grants_total, 0.0)
+        net_price_expr = (func.coalesce(Property.price, 0.0) - eligible_total_col)
 
         query = (
             select(
                 Property,
-                eligible_grants_expr.label("eligible_grants_total"),
+                eligible_total_col.label("eligible_grants_total"),
                 net_price_expr.label("net_price"),
             )
-            .outerjoin(PropertyGrantMatch, PropertyGrantMatch.property_id == Property.id)
-            .group_by(Property.id)
+            .outerjoin(grant_totals_sq, grant_totals_sq.c.property_id == Property.id)
+            .options(
+                joinedload(Property.enrichment),
+                joinedload(Property.price_history),
+            )
         )
         conditions = []
 
@@ -363,8 +400,22 @@ class PropertyRepository:
         if filters.property_types:
             conditions.append(Property.property_type.in_([pt.value for pt in filters.property_types]))
 
+        if filters.sale_type:
+            conditions.append(Property.sale_type == filters.sale_type)
+
         if filters.ber_ratings:
             conditions.append(Property.ber_rating.in_(filters.ber_ratings))
+
+        if filters.keywords:
+            for keyword in filters.keywords:
+                pattern = f"%{keyword}%"
+                conditions.append(
+                    or_(
+                        Property.title.ilike(pattern),
+                        Property.description.ilike(pattern),
+                        Property.address.ilike(pattern),
+                    )
+                )
 
         if filters.statuses:
             conditions.append(Property.status.in_([s.value for s in filters.statuses]))
@@ -388,11 +439,11 @@ class PropertyRepository:
 
         having_conditions = []
         if filters.eligible_only:
-            having_conditions.append(eligible_grants_expr > 0)
+            having_conditions.append(eligible_total_col > 0)
         if filters.min_eligible_grants_total is not None:
-            having_conditions.append(eligible_grants_expr >= filters.min_eligible_grants_total)
+            having_conditions.append(eligible_total_col >= filters.min_eligible_grants_total)
         if having_conditions:
-            query = query.having(and_(*having_conditions))
+            query = query.where(and_(*having_conditions))
 
         if filters.sort_order == "desc":
             query = query.order_by(net_price_expr.desc(), Property.created_at.desc(), Property.id.asc())
@@ -406,7 +457,7 @@ class PropertyRepository:
         offset = (filters.page - 1) * filters.per_page
         query = query.offset(offset).limit(filters.per_page)
 
-        rows = list(self.session.execute(query))
+        rows = list(self.session.execute(query).unique())
         items = [row[0] for row in rows]
         metrics = {
             str(row[0].id): {
@@ -603,61 +654,138 @@ class PriceHistoryRepository:
     def add_entry(
         self,
         property_id: str,
-        price: float,
-        price_change: float | None = None,
+        price: Decimal | float,
+        price_change: Decimal | float | None = None,
         price_change_pct: float | None = None,
         timeline_event_type: str | None = None,
         timeline_context: dict[str, Any] | None = None,
     ) -> PropertyPriceHistory:
-        entry = PropertyPriceHistory(
-            property_id=property_id,
-            price=price,
-            price_change=price_change,
-            price_change_pct=price_change_pct,
-        )
-        self.session.add(entry)
-        self.session.flush()
+        hour_bucket = datetime.now(UTC).replace(minute=0, second=0, microsecond=0, tzinfo=None)
 
-        resolved_event_type = timeline_event_type or (
-            "asking_price_changed" if price_change is not None else "asking_price_set"
-        )
-        context = dict(timeline_context or {})
-        metadata = {"origin": "price_history"}
-        metadata.update(context.pop("metadata_json", {}) or {})
-        dedup_key = context.pop("dedup_key", None) or f"price:{float(price):.2f}"
+        bind = self.session.get_bind()
+        dialect_name = bind.dialect.name if bind is not None else ""
+        entry: PropertyPriceHistory | None = None
+        inserted_new = False
 
-        PropertyTimelineRepository(self.session).add_event(
-            property_id=property_id,
-            event_type=resolved_event_type,
-            price=price,
-            price_change=price_change,
-            price_change_pct=price_change_pct,
-            detection_method=str(context.pop("detection_method", None) or "price_history_repository"),
-            confidence_score=context.pop("confidence_score", 1.0),
-            dedup_key=dedup_key,
-            metadata_json=metadata,
-            **context,
-        )
+        if dialect_name == "postgresql":
+            table = PropertyPriceHistory.__table__
+            insert_stmt = (
+                pg_insert(table)
+                .values(
+                    property_id=property_id,
+                    price=price,
+                    price_change=price_change,
+                    price_change_pct=price_change_pct,
+                    recorded_hour_utc=hour_bucket,
+                )
+                .on_conflict_do_nothing(
+                    index_elements=[
+                        table.c.property_id,
+                        table.c.price,
+                        table.c.recorded_hour_utc,
+                    ]
+                )
+                .returning(table.c.id)
+            )
+            inserted_id = self.session.scalar(insert_stmt)
+            if inserted_id is not None:
+                inserted_new = True
+                entry = self.session.get(PropertyPriceHistory, str(inserted_id))
+            else:
+                entry = self.session.scalar(
+                    select(PropertyPriceHistory)
+                    .where(PropertyPriceHistory.property_id == property_id)
+                    .where(PropertyPriceHistory.price == price)
+                    .where(PropertyPriceHistory.recorded_hour_utc == hour_bucket)
+                    .order_by(PropertyPriceHistory.recorded_at.desc())
+                    .limit(1)
+                )
+        else:
+            candidate = PropertyPriceHistory(
+                property_id=property_id,
+                price=price,
+                price_change=price_change,
+                price_change_pct=price_change_pct,
+                recorded_hour_utc=hour_bucket,
+            )
+            if hasattr(self.session, "begin_nested"):
+                try:
+                    with self.session.begin_nested():
+                        self.session.add(candidate)
+                        self.session.flush()
+                except IntegrityError:
+                    candidate = None
+            else:
+                self.session.add(candidate)
+                self.session.flush()
+
+            if candidate is not None:
+                inserted_new = True
+                entry = candidate
+            else:
+                entry = self.session.scalar(
+                    select(PropertyPriceHistory)
+                    .where(PropertyPriceHistory.property_id == property_id)
+                    .where(PropertyPriceHistory.price == price)
+                    .where(PropertyPriceHistory.recorded_hour_utc == hour_bucket)
+                    .order_by(PropertyPriceHistory.recorded_at.desc())
+                    .limit(1)
+                )
+        if entry is None:
+            raise RuntimeError("failed to persist or resolve property price history entry")
+
+        if inserted_new:
+            resolved_event_type = timeline_event_type or (
+                "asking_price_changed" if price_change is not None else "asking_price_set"
+            )
+            context = dict(timeline_context or {})
+            metadata = {"origin": "price_history"}
+            metadata.update(context.pop("metadata_json", {}) or {})
+            dedup_key = context.pop("dedup_key", None) or f"price:{float(price):.2f}"
+
+            PropertyTimelineRepository(self.session).add_event(
+                property_id=property_id,
+                event_type=resolved_event_type,
+                price=price,
+                price_change=price_change,
+                price_change_pct=price_change_pct,
+                detection_method=str(context.pop("detection_method", None) or "price_history_repository"),
+                confidence_score=context.pop("confidence_score", 1.0),
+                dedup_key=dedup_key,
+                metadata_json=metadata,
+                **context,
+            )
         return entry
 
     def add_entry_if_new_price(
         self,
         property_id: str,
-        price: float,
-        price_change: float | None = None,
+        price: Decimal | float,
+        price_change: Decimal | float | None = None,
         price_change_pct: float | None = None,
-        tolerance: float = 0.01,
+        tolerance: Decimal | float = Decimal("0.01"),
         timeline_event_type: str | None = None,
         timeline_context: dict[str, Any] | None = None,
     ) -> PropertyPriceHistory | None:
         """Insert a history row only when latest recorded price is different."""
-        latest_price = self.get_latest_price(property_id)
-        if latest_price is not None and abs(float(latest_price) - float(price)) <= tolerance:
+        # Safe conversion to Decimal
+        price_dec = to_decimal(price)
+        if price_dec is None:
             return None
+            
+        latest_price = self.get_latest_price(property_id)
+        if latest_price is not None:
+            tolerance_dec = to_decimal(tolerance, Decimal("0.01"))
+            if abs(latest_price - price_dec) <= tolerance_dec:
+                return None
+                
+        # Convert price_change to Decimal if provided
+        price_change_dec = to_decimal(price_change) if price_change is not None else None
+        
         return self.add_entry(
             property_id=property_id,
-            price=price,
-            price_change=price_change,
+            price=price_dec,
+            price_change=price_change_dec,
             price_change_pct=price_change_pct,
             timeline_event_type=timeline_event_type,
             timeline_context=timeline_context,
@@ -675,14 +803,14 @@ class PriceHistoryRepository:
     def list_for_property(self, property_id: str) -> list[PropertyPriceHistory]:
         return self.get_for_property(property_id)
 
-    def get_latest_price(self, property_id: str) -> float | None:
+    def get_latest_price(self, property_id: str) -> Decimal | None:
         entry = self.session.scalar(
             select(PropertyPriceHistory)
             .where(PropertyPriceHistory.property_id == property_id)
             .order_by(PropertyPriceHistory.recorded_at.desc())
             .limit(1)
         )
-        return float(entry.price) if entry else None
+        return entry.price if entry else None
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -723,18 +851,6 @@ class PropertyTimelineRepository:
     ) -> PropertyTimelineEvent | None:
         hour_bucket = self._hour_bucket_utc(occurred_at)
 
-        if dedup_key and hasattr(self.session, "scalar"):
-            existing = self.session.scalar(
-                select(PropertyTimelineEvent.id)
-                .where(PropertyTimelineEvent.property_id == property_id)
-                .where(PropertyTimelineEvent.event_type == event_type)
-                .where(PropertyTimelineEvent.dedup_key == dedup_key)
-                .where(PropertyTimelineEvent.occurred_hour_utc == hour_bucket)
-                .limit(1)
-            )
-            if existing:
-                return None
-
         entry_kwargs = {
             "property_id": property_id,
             "event_type": event_type,
@@ -754,9 +870,39 @@ class PropertyTimelineRepository:
         if occurred_at is not None:
             entry_kwargs["occurred_at"] = occurred_at
 
-        entry = PropertyTimelineEvent(
-            **entry_kwargs,
-        )
+        bind = self.session.get_bind()
+        dialect_name = bind.dialect.name if bind is not None else ""
+        if dialect_name == "postgresql":
+            table = PropertyTimelineEvent.__table__
+            insert_stmt = (
+                pg_insert(table)
+                .values(**entry_kwargs)
+                .on_conflict_do_nothing(
+                    index_elements=[
+                        table.c.property_id,
+                        table.c.event_type,
+                        table.c.dedup_key,
+                        table.c.occurred_hour_utc,
+                    ]
+                )
+                .returning(table.c.id)
+            )
+            inserted_id = self.session.scalar(insert_stmt)
+            if inserted_id is None:
+                return None
+            return self.session.get(PropertyTimelineEvent, str(inserted_id))
+
+        # Non-PostgreSQL fallback keeps compatibility while still handling race duplicates.
+        entry = PropertyTimelineEvent(**entry_kwargs)
+        if hasattr(self.session, "begin_nested"):
+            try:
+                with self.session.begin_nested():
+                    self.session.add(entry)
+                    self.session.flush()
+            except IntegrityError:
+                return None
+            return entry
+
         self.session.add(entry)
         self.session.flush()
         return entry

@@ -57,6 +57,8 @@ def list_properties(
             min_beds=min_beds,
             max_beds=max_beds,
             property_types=property_types,
+            sale_type=sale_type,
+            keywords=keywords,
             ber_ratings=ber_ratings,
             sort_by=sort_by,
             sort_dir=sort_dir,

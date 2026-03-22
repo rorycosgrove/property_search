@@ -13,6 +13,7 @@ import asyncio
 import os
 from contextlib import nullcontext
 from datetime import UTC, date, datetime, timedelta
+from decimal import Decimal
 from typing import Any
 
 from sqlalchemy.exc import IntegrityError
@@ -25,6 +26,7 @@ from packages.shared.constants import (
 )
 from packages.shared.config import settings
 from packages.shared.logging import get_logger
+from packages.shared.money import safe_price_difference, to_decimal
 
 logger = get_logger(__name__)
 
@@ -481,17 +483,32 @@ def scrape_source(source_id: str, force: bool = False) -> dict[str, Any]:
                     existing = property_repo.get_by_content_hash(record["content_hash"])
 
                 if existing:
-                    old_price = float(existing.price) if existing.price is not None else None
-                    new_price = float(record["price"]) if record.get("price") is not None else None
+                    existing_price = existing.price  # Decimal from DB
+                    raw_new_price = record.get("price")  # float or numeric from adapter
+                    
+                    # Safe Decimal conversion for all prices
+                    old_price_dec = to_decimal(existing_price)
+                    new_price_dec = to_decimal(raw_new_price)
 
-                    if old_price is not None and new_price is not None:
-                        if abs(new_price - old_price) > 0.01:
-                            change = new_price - old_price
-                            change_pct = (change / old_price * 100) if old_price else 0
+                    if old_price_dec is not None and new_price_dec is not None:
+                        # Use safe price difference calculation (tolerance = 0.01)
+                        price_diff = safe_price_difference(
+                            new_price_dec,
+                            old_price_dec,
+                            tolerance=Decimal("0.01")
+                        )
+                        
+                        if price_diff is not None:  # Difference exceeds tolerance
+                            # Calculate percentage change safely
+                            if old_price_dec != 0:
+                                change_pct = float((price_diff / old_price_dec * Decimal(100)))
+                            else:
+                                change_pct = 0.0
+                            
                             price_repo.add_entry_if_new_price(
                                 property_id=str(existing.id),
-                                price=new_price,
-                                price_change=change,
+                                price=new_price_dec,
+                                price_change=price_diff,
                                 price_change_pct=change_pct,
                                 timeline_event_type="asking_price_changed",
                                 timeline_context={

@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import uuid
 from datetime import UTC, date, datetime
+from decimal import Decimal
 
 from geoalchemy2 import Geometry
 from sqlalchemy import (
@@ -22,6 +23,7 @@ from sqlalchemy import (
     Numeric,
     String,
     Text,
+    text,
 )
 from sqlalchemy.dialects.postgresql import ARRAY, JSONB
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
@@ -108,8 +110,8 @@ class Property(Base):
     county: Mapped[str | None] = mapped_column(String(100), nullable=True, index=True)
     eircode: Mapped[str | None] = mapped_column(String(10), nullable=True)
 
-    # Pricing
-    price: Mapped[float | None] = mapped_column(Numeric(12, 2), nullable=True, index=True)
+    # Pricing — Numeric(12, 2) for precise money calculations
+    price: Mapped[Decimal | None] = mapped_column(Numeric(12, 2), nullable=True, index=True)
     price_text: Mapped[str | None] = mapped_column(String(100), nullable=True)
 
     # Property details
@@ -189,6 +191,13 @@ class Property(Base):
         Index("ix_properties_status_created", "status", "created_at"),
         Index("ix_properties_canonical_property_id", "canonical_property_id"),
         Index("ix_properties_source_external_id", "source_id", "external_id"),
+        Index(
+            "uq_properties_source_external_id_not_null",
+            "source_id",
+            "external_id",
+            unique=True,
+            postgresql_where=text("external_id IS NOT NULL"),
+        ),
         {"schema": None},
     )
 
@@ -202,8 +211,8 @@ class PropertyPriceHistory(Base):
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid)
     property_id: Mapped[str] = mapped_column(String(36), nullable=False, index=True)
-    price: Mapped[float] = mapped_column(Numeric(12, 2), nullable=False)
-    price_change: Mapped[float | None] = mapped_column(Numeric(12, 2), nullable=True)
+    price: Mapped[Decimal] = mapped_column(Numeric(12, 2), nullable=False)
+    price_change: Mapped[Decimal | None] = mapped_column(Numeric(12, 2), nullable=True)
     price_change_pct: Mapped[float | None] = mapped_column(Float, nullable=True)
     recorded_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=_utcnow, server_default="now()"
@@ -248,8 +257,8 @@ class PropertyTimelineEvent(Base):
         nullable=False,
     )
 
-    price: Mapped[float | None] = mapped_column(Numeric(12, 2), nullable=True)
-    price_change: Mapped[float | None] = mapped_column(Numeric(12, 2), nullable=True)
+    price: Mapped[Decimal | None] = mapped_column(Numeric(12, 2), nullable=True)
+    price_change: Mapped[Decimal | None] = mapped_column(Numeric(12, 2), nullable=True)
     price_change_pct: Mapped[float | None] = mapped_column(Float, nullable=True)
 
     source_id: Mapped[str | None] = mapped_column(String(36), nullable=True, index=True)
@@ -287,7 +296,7 @@ class SoldProperty(Base):
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid)
     address: Mapped[str] = mapped_column(String(500), nullable=False)
     county: Mapped[str] = mapped_column(String(100), nullable=False, index=True)
-    price: Mapped[float] = mapped_column(Numeric(12, 2), nullable=False)
+    price: Mapped[Decimal] = mapped_column(Numeric(12, 2), nullable=False)
     sale_date: Mapped[date] = mapped_column(Date, nullable=False, index=True)
     is_new: Mapped[bool] = mapped_column(Boolean, nullable=False)
     is_full_market_price: Mapped[bool] = mapped_column(Boolean, default=True, server_default="true")
@@ -522,7 +531,7 @@ class GrantProgram(Base):
     description: Mapped[str | None] = mapped_column(Text, nullable=True)
     eligibility_rules: Mapped[dict] = mapped_column(JSONB, default=dict, server_default="{}")
     benefit_type: Mapped[str | None] = mapped_column(String(80), nullable=True)
-    max_amount: Mapped[float | None] = mapped_column(Numeric(12, 2), nullable=True)
+    max_amount: Mapped[Decimal | None] = mapped_column(Numeric(12, 2), nullable=True)
     currency: Mapped[str] = mapped_column(String(10), default="EUR", server_default="EUR")
     active: Mapped[bool] = mapped_column(Boolean, default=True, server_default="true")
     valid_from: Mapped[date | None] = mapped_column(Date, nullable=True)
@@ -552,7 +561,7 @@ class PropertyGrantMatch(Base):
     grant_program_id: Mapped[str] = mapped_column(String(36), nullable=False, index=True)
     status: Mapped[str] = mapped_column(String(20), default="unknown", server_default="unknown")
     reason: Mapped[str | None] = mapped_column(Text, nullable=True)
-    estimated_benefit: Mapped[float | None] = mapped_column(Numeric(12, 2), nullable=True)
+    estimated_benefit: Mapped[Decimal | None] = mapped_column(Numeric(12, 2), nullable=True)
     metadata_json: Mapped[dict] = mapped_column(
         "metadata", JSONB, default=dict, server_default="{}"
     )
