@@ -11,6 +11,7 @@ from packages.admin.service import (
     MigrationCommandTimedOutError,
     backend_health_summary,
     backend_logs_summary,
+    data_lifecycle_schedule_metadata,
     data_lifecycle_report,
     diagnose_listing_by_external_id,
     explain_source_quality,
@@ -128,6 +129,13 @@ def get_data_lifecycle_history(
     db: Session = Depends(get_db_session),
 ):
     return list_data_lifecycle_activity(db, hours=hours, limit=limit)
+
+
+@router.get("/data-lifecycle/schedule", summary="Lifecycle schedule and policy metadata")
+def get_data_lifecycle_schedule(
+    db: Session = Depends(get_db_session),
+):
+    return data_lifecycle_schedule_metadata(db, queue_settings=settings)
 
 
 @router.get("/logs/discovery", summary="Recent discovery activity")

@@ -702,6 +702,42 @@ def list_data_lifecycle_activity(
     return [backend_log_to_dict(row) for row in rows]
 
 
+def data_lifecycle_schedule_metadata(
+    db: Session,
+    *,
+    queue_settings: Any,
+) -> dict[str, Any]:
+    """Return lifecycle scheduling and policy metadata for operator visibility."""
+    repo = BackendLogRepository(db)
+    recent_runs = repo.list_recent(
+        hours=24 * 30,
+        limit=1,
+        event_type="admin_data_lifecycle_action",
+    )
+    last_run = recent_runs[0] if recent_runs else None
+
+    return {
+        "checked_at": datetime.now(UTC).isoformat(),
+        "execution_mode": {
+            "destructive_enabled": False,
+            "dry_run_only": True,
+            "note": "Destructive lifecycle execution remains disabled until feature-flag and rollback controls are implemented.",
+        },
+        "cadence": {
+            "source_scrape_interval_seconds": int(getattr(queue_settings, "scrape_poll_interval_seconds", 0) or 0),
+            "rss_poll_interval_seconds": int(getattr(queue_settings, "rss_poll_interval_seconds", 0) or 0),
+            "ppr_poll_interval_seconds": int(getattr(queue_settings, "ppr_poll_interval_seconds", 0) or 0),
+            "lifecycle_action_trigger": "manual_admin_dry_run",
+        },
+        "policy": {
+            "backend_log_retention_days": int(getattr(queue_settings, "backend_log_retention_days", 0) or 0),
+            "default_property_archive_days": 365,
+            "default_rollup_days": 180,
+        },
+        "last_lifecycle_run": backend_log_to_dict(last_run) if last_run else None,
+    }
+
+
 def backend_logs_summary(db: Session, *, hours: int = 24) -> dict[str, Any]:
     repo = BackendLogRepository(db)
     return repo.summary(hours=hours)

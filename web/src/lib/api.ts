@@ -919,6 +919,27 @@ export interface DataLifecycleHistoryEntry {
   context: Record<string, unknown>;
 }
 
+export interface DataLifecycleScheduleMetadata {
+  checked_at: string;
+  execution_mode: {
+    destructive_enabled: boolean;
+    dry_run_only: boolean;
+    note: string;
+  };
+  cadence: {
+    source_scrape_interval_seconds: number;
+    rss_poll_interval_seconds: number;
+    ppr_poll_interval_seconds: number;
+    lifecycle_action_trigger: string;
+  };
+  policy: {
+    backend_log_retention_days: number;
+    default_property_archive_days: number;
+    default_rollup_days: number;
+  };
+  last_lifecycle_run: DataLifecycleHistoryEntry | null;
+}
+
 export interface BackendLogEntry {
   id: string;
   timestamp?: string;
@@ -1034,6 +1055,10 @@ export async function getDataLifecycleHistory(options?: {
     ? `/api/v1/admin/data-lifecycle/history?${suffix}`
     : '/api/v1/admin/data-lifecycle/history';
   return fetchJSON<DataLifecycleHistoryEntry[]>(path);
+}
+
+export async function getDataLifecycleScheduleMetadata(): Promise<DataLifecycleScheduleMetadata> {
+  return fetchJSON<DataLifecycleScheduleMetadata>('/api/v1/admin/data-lifecycle/schedule');
 }
 
 export async function getBackendRecentErrors(

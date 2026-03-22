@@ -7,6 +7,7 @@ import {
   getAnalyticsSummary,
   getDataLifecycleHistory,
   getDataLifecycleReport,
+  getDataLifecycleScheduleMetadata,
   getGrants,
   getHealth,
   getProperties,
@@ -86,6 +87,7 @@ export default function AdminPage() {
     message: string;
     context: Record<string, unknown>;
   }>>([]);
+  const [lifecycleScheduleNote, setLifecycleScheduleNote] = useState<string>('Loading schedule metadata...');
   const [checks, setChecks] = useState<EndpointCheck[]>([
     { key: 'health', label: 'Platform health', route: '/admin', state: 'loading', detail: 'Checking...' },
     { key: 'properties', label: 'Properties domain', route: '/workspace', state: 'loading', detail: 'Checking...' },
@@ -113,6 +115,7 @@ export default function AdminPage() {
         getSources(),
         getDataLifecycleReport(),
         getDataLifecycleHistory({ hours: 168, limit: 8 }),
+        getDataLifecycleScheduleMetadata(),
       ]);
 
       if (cancelled) {
@@ -223,6 +226,15 @@ export default function AdminPage() {
         setLifecycleHistory([]);
       }
 
+      if (results[10].status === 'fulfilled') {
+        const meta = results[10].value;
+        setLifecycleScheduleNote(
+          `Cadence: scrape ${meta.cadence.source_scrape_interval_seconds}s, RSS ${meta.cadence.rss_poll_interval_seconds}s, PPR ${meta.cadence.ppr_poll_interval_seconds}s · retention ${meta.policy.backend_log_retention_days}d logs · mode: ${meta.execution_mode.dry_run_only ? 'dry-run only' : 'destructive enabled'}`
+        );
+      } else {
+        setLifecycleScheduleNote('Unable to load lifecycle scheduling metadata.');
+      }
+
       setChecks(next);
     };
 
@@ -323,6 +335,7 @@ export default function AdminPage() {
         <h2 className="mt-1 text-2xl">Retention dry-run snapshot</h2>
         <p className="mt-2 max-w-4xl text-sm leading-6 text-[var(--muted)]">{lifecycleSummary}</p>
         <p className="mt-2 text-xs text-[var(--muted)]">{lifecycleActionStatus}</p>
+        <p className="mt-1 text-xs text-[var(--muted)]">{lifecycleScheduleNote}</p>
         <div className="mt-3 flex flex-wrap gap-2">
           <button
             type="button"

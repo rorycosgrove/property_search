@@ -147,3 +147,45 @@ def test_get_data_lifecycle_history_endpoint():
         mock_history.assert_called_once_with(mock_session, hours=48, limit=20)
     finally:
         app.dependency_overrides.clear()
+
+
+def test_get_data_lifecycle_schedule_endpoint():
+    from packages.storage.database import get_db_session
+
+    mock_session = MagicMock()
+    app.dependency_overrides[get_db_session] = lambda: mock_session
+
+    try:
+        with patch("apps.api.routers.admin.data_lifecycle_schedule_metadata") as mock_schedule:
+            mock_schedule.return_value = {
+                "checked_at": "2026-03-22T00:00:00+00:00",
+                "execution_mode": {
+                    "destructive_enabled": False,
+                    "dry_run_only": True,
+                    "note": "dry-run only",
+                },
+                "cadence": {
+                    "source_scrape_interval_seconds": 21600,
+                    "rss_poll_interval_seconds": 3600,
+                    "ppr_poll_interval_seconds": 86400,
+                    "lifecycle_action_trigger": "manual_admin_dry_run",
+                },
+                "policy": {
+                    "backend_log_retention_days": 7,
+                    "default_property_archive_days": 365,
+                    "default_rollup_days": 180,
+                },
+                "last_lifecycle_run": None,
+            }
+
+            client = _client()
+            resp = client.get("/api/v1/admin/data-lifecycle/schedule")
+
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["execution_mode"]["dry_run_only"] is True
+        assert data["cadence"]["source_scrape_interval_seconds"] == 21600
+        assert data["policy"]["backend_log_retention_days"] == 7
+        mock_schedule.assert_called_once()
+    finally:
+        app.dependency_overrides.clear()

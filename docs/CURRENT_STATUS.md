@@ -48,8 +48,7 @@ Validation snapshot:
 
 Remaining Phase 4 implementation track:
 
-1. Add scheduled execution metadata (cadence + policy visibility) in admin surfaces.
-2. Keep destructive execution disabled until explicit feature flag and rollback strategy are implemented.
+1. Keep destructive execution disabled until explicit feature flag and rollback strategy are implemented.
 
 Progress update:
 
@@ -57,3 +56,6 @@ Progress update:
   - `GET /api/v1/admin/data-lifecycle/history`
   - Admin UI now shows recent lifecycle run timeline from backend logs.
 - Added lifecycle history API regression test coverage (`tests/test_admin_lifecycle_api.py`).
+- Completed scheduled execution metadata visibility:
+  - `GET /api/v1/admin/data-lifecycle/schedule`
+  - Admin UI now shows cadence and policy metadata (scrape/RSS/PPR intervals, log retention, execution mode).
