@@ -22,6 +22,11 @@ import { SourcesTableTab } from './_components/SourcesTableTab';
 import { ActivityTab } from './_components/ActivityTab';
 import { HistoryTab } from './_components/HistoryTab';
 import type { SourceSort, SourceStatusFilter, SourcesTab } from './_components/types';
+import { LoadingBlock, LoadingRows } from '@/components/LoadingState';
+
+const SOURCES_PAGE_SIZE = 25;
+const ACTIVITY_PAGE_SIZE = 25;
+const HISTORY_PAGE_SIZE = 8;
 
 function byLatestTimestamp(a?: string, b?: string): number {
   const at = a ? new Date(a).getTime() : 0;
@@ -59,6 +64,42 @@ export default function SourcesPage() {
   const [sourceQuery, setSourceQuery] = useState('');
   const [statusFilter, setStatusFilter] = useState<SourceStatusFilter>('all');
   const [sourceSort, setSourceSort] = useState<SourceSort>('last_polled');
+  const [sourcesPage, setSourcesPage] = useState(1);
+  const [activityPage, setActivityPage] = useState(1);
+  const [historyPage, setHistoryPage] = useState(1);
+
+  const renderLoadingPanel = () => {
+    if (activeTab === 'sources') {
+      return (
+        <div className="rounded-xl border border-[var(--card-border)] bg-[var(--card-bg)] p-5">
+          <LoadingBlock className="h-5 w-48" />
+          <LoadingRows rows={8} />
+        </div>
+      );
+    }
+
+    if (activeTab === 'activity' || activeTab === 'history') {
+      return (
+        <div className="rounded-xl border border-[var(--card-border)] bg-[var(--card-bg)] p-5">
+          <LoadingBlock className="h-5 w-40" />
+          <LoadingRows rows={6} />
+        </div>
+      );
+    }
+
+    return (
+      <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
+        <div className="rounded-xl border border-[var(--card-border)] bg-[var(--card-bg)] p-5">
+          <LoadingBlock className="h-5 w-44" />
+          <LoadingRows rows={4} />
+        </div>
+        <div className="rounded-xl border border-[var(--card-border)] bg-[var(--card-bg)] p-5">
+          <LoadingBlock className="h-5 w-40" />
+          <LoadingRows rows={4} />
+        </div>
+      </div>
+    );
+  };
 
   const refreshBurstTimersRef = useRef<number[]>([]);
   const refreshInFlightRef = useRef<Promise<void> | null>(null);
@@ -126,8 +167,40 @@ export default function SourcesPage() {
   }, [sources, sourceQuery, statusFilter, sourceSort]);
 
   const visibleSourceIds = useMemo(() => filteredSources.map((s) => s.id), [filteredSources]);
+  const sourcesTotalPages = Math.max(1, Math.ceil(filteredSources.length / SOURCES_PAGE_SIZE));
+  const pagedFilteredSources = useMemo(() => {
+    const start = (sourcesPage - 1) * SOURCES_PAGE_SIZE;
+    return filteredSources.slice(start, start + SOURCES_PAGE_SIZE);
+  }, [filteredSources, sourcesPage]);
+  const pagedVisibleSourceIds = useMemo(() => pagedFilteredSources.map((s) => s.id), [pagedFilteredSources]);
+  const pagedActivityLogs = useMemo(() => {
+    const start = (activityPage - 1) * ACTIVITY_PAGE_SIZE;
+    return sourceActivityLogs.slice(start, start + ACTIVITY_PAGE_SIZE);
+  }, [sourceActivityLogs, activityPage]);
+  const activityTotalPages = Math.max(1, Math.ceil(sourceActivityLogs.length / ACTIVITY_PAGE_SIZE));
+  const pagedRunHistory = useMemo(() => {
+    const start = (historyPage - 1) * HISTORY_PAGE_SIZE;
+    return runHistory.slice(start, start + HISTORY_PAGE_SIZE);
+  }, [runHistory, historyPage]);
+  const historyTotalPages = Math.max(1, Math.ceil(runHistory.length / HISTORY_PAGE_SIZE));
   const allVisibleSelected =
-    visibleSourceIds.length > 0 && visibleSourceIds.every((id) => selectedSourceIds.includes(id));
+    pagedVisibleSourceIds.length > 0 && pagedVisibleSourceIds.every((id) => selectedSourceIds.includes(id));
+
+  useEffect(() => {
+    setSourcesPage(1);
+  }, [sourceQuery, statusFilter, sourceSort]);
+
+  useEffect(() => {
+    setSourcesPage((prev) => Math.min(prev, sourcesTotalPages));
+  }, [sourcesTotalPages]);
+
+  useEffect(() => {
+    setActivityPage((prev) => Math.min(prev, activityTotalPages));
+  }, [activityTotalPages]);
+
+  useEffect(() => {
+    setHistoryPage((prev) => Math.min(prev, historyTotalPages));
+  }, [historyTotalPages]);
 
   const clearRefreshBurstTimers = useCallback(() => {
     refreshBurstTimersRef.current.forEach((timer) => window.clearTimeout(timer));
@@ -381,14 +454,14 @@ export default function SourcesPage() {
 
   const toggleSelectAllVisible = () => {
     if (allVisibleSelected) {
-      setSelectedSourceIds((prev) => prev.filter((id) => !visibleSourceIds.includes(id)));
+      setSelectedSourceIds((prev) => prev.filter((id) => !pagedVisibleSourceIds.includes(id)));
     } else {
-      setSelectedSourceIds((prev) => Array.from(new Set([...prev, ...visibleSourceIds])));
+      setSelectedSourceIds((prev) => Array.from(new Set([...prev, ...pagedVisibleSourceIds])));
     }
   };
 
   return (
-    <div className="p-4 lg:p-6 max-w-7xl mx-auto rise-in">
+    <div className="page-shell page-shell-wide rise-in">
       <DashboardHeader
         activeTab={activeTab}
         setActiveTab={setActiveTab}
@@ -434,9 +507,7 @@ export default function SourcesPage() {
       ) : null}
 
       {isLoading ? (
-        <div className="rounded-xl border border-[var(--card-border)] bg-[var(--card-bg)] p-5 text-sm text-[var(--muted)]">
-          Loading sources dashboard...
-        </div>
+        renderLoadingPanel()
       ) : null}
 
       {!isLoading && activeTab === 'overview' ? (
@@ -458,19 +529,24 @@ export default function SourcesPage() {
 
       {!isLoading && activeTab === 'sources' ? (
         <SourcesTableTab
-          filteredSources={filteredSources}
+          filteredSources={pagedFilteredSources}
           selectedSourceIds={selectedSourceIds}
           sourceQuery={sourceQuery}
           statusFilter={statusFilter}
           sourceSort={sourceSort}
           allVisibleSelected={allVisibleSelected}
-          visibleSourceCount={visibleSourceIds.length}
+          visibleSourceCount={pagedVisibleSourceIds.length}
           sourcesError={sourcesError}
+          currentPage={sourcesPage}
+          totalPages={sourcesTotalPages}
+          totalFilteredCount={filteredSources.length}
           onSetSourceQuery={setSourceQuery}
           onSetStatusFilter={setStatusFilter}
           onSetSourceSort={setSourceSort}
           onToggleSelectAllVisible={toggleSelectAllVisible}
           onToggleSourceSelection={toggleSourceSelection}
+          onPreviousPage={() => setSourcesPage((prev) => Math.max(1, prev - 1))}
+          onNextPage={() => setSourcesPage((prev) => Math.min(sourcesTotalPages, prev + 1))}
           onScrapeNow={(sourceId) => {
             void handleTrigger(sourceId);
           }}
@@ -479,16 +555,24 @@ export default function SourcesPage() {
 
       {!isLoading && activeTab === 'activity' ? (
         <ActivityTab
-          sourceActivityLogs={sourceActivityLogs}
+          sourceActivityLogs={pagedActivityLogs}
           sources={sources}
           activityError={activityError}
+          currentPage={activityPage}
+          totalPages={activityTotalPages}
+          onPreviousPage={() => setActivityPage((prev) => Math.max(1, prev - 1))}
+          onNextPage={() => setActivityPage((prev) => Math.min(activityTotalPages, prev + 1))}
         />
       ) : null}
 
       {!isLoading && activeTab === 'history' ? (
         <HistoryTab
-          runHistory={runHistory}
+          runHistory={pagedRunHistory}
           historyError={historyError}
+          currentPage={historyPage}
+          totalPages={historyTotalPages}
+          onPreviousPage={() => setHistoryPage((prev) => Math.max(1, prev - 1))}
+          onNextPage={() => setHistoryPage((prev) => Math.min(historyTotalPages, prev + 1))}
         />
       ) : null}
     </div>

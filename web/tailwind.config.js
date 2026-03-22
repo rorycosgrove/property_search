@@ -7,6 +7,15 @@ module.exports = {
   theme: {
     extend: {
       colors: {
+        atlas: {
+          ink: '#16222f',
+          mist: '#f6f6f2',
+          sand: '#fefbf4',
+          reef: '#0f766e',
+          reefDeep: '#0b5f5a',
+          amber: '#e49d37',
+          fog: '#5f6d77',
+        },
         brand: {
           50: '#eef8ff',
           100: '#d9eeff',

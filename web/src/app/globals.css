@@ -3,24 +3,28 @@
 @tailwind utilities;
 
 :root {
-  --background: #f4f2ec;
-  --foreground: #1b2430;
-  --card-bg: #fcfbf8;
-  --card-border: #cfd7d4;
-  --muted: #596675;
-  --accent: #b42318;
-  --accent-strong: #8f1d14;
-  --accent-soft: rgba(180, 35, 24, 0.1);
-  --accent-soft-strong: rgba(180, 35, 24, 0.16);
-  --success: #2e7d5b;
-  --danger: #a54545;
+  --background: #f6f6f2;
+  --foreground: #16222f;
+  --surface: #fffdf8;
+  --surface-elevated: #fefbf4;
+  --card-bg: #fffdf8;
+  --card-border: #d6d8d2;
+  --muted: #5f6d77;
+  --accent: #0f766e;
+  --accent-strong: #0b5f5a;
+  --accent-soft: rgba(15, 118, 110, 0.12);
+  --accent-soft-strong: rgba(15, 118, 110, 0.2);
+  --signal: #e49d37;
+  --success: #2f855a;
+  --danger: #b64a3d;
+  --focus-ring: rgba(15, 118, 110, 0.35);
 }
 
 body {
   background:
-    radial-gradient(circle at 5% -10%, #ece7da 0%, transparent 46%),
-    radial-gradient(circle at 92% 14%, #dceaea 0%, transparent 38%),
-    linear-gradient(160deg, rgba(255, 255, 255, 0.66), rgba(234, 240, 236, 0.33)),
+    radial-gradient(circle at 6% -14%, rgba(228, 157, 55, 0.2) 0%, transparent 52%),
+    radial-gradient(circle at 88% 14%, rgba(15, 118, 110, 0.14) 0%, transparent 40%),
+    linear-gradient(152deg, rgba(255, 255, 255, 0.75), rgba(242, 244, 238, 0.58)),
     var(--background);
   color: var(--foreground);
   font-family: var(--font-body), sans-serif;
@@ -36,13 +40,13 @@ h4 {
 }
 
 .ai-glass {
-  background: rgba(251, 251, 248, 0.78);
+  background: rgba(255, 253, 248, 0.8);
   backdrop-filter: blur(12px);
 }
 
 .focus-ring {
   outline: none;
-  box-shadow: 0 0 0 2px rgba(180, 35, 24, 0.2);
+  box-shadow: 0 0 0 3px var(--focus-ring);
 }
 
 .rise-in {
@@ -51,6 +55,131 @@ h4 {
 
 .sheet-in {
   animation: sheetIn 220ms ease-out;
+}
+
+.skeleton {
+  position: relative;
+  overflow: hidden;
+  background: linear-gradient(110deg, rgba(214, 216, 210, 0.5), rgba(250, 249, 245, 0.8), rgba(214, 216, 210, 0.5));
+  background-size: 200% 100%;
+  animation: shimmer 1.2s linear infinite;
+}
+
+.skeleton-soft {
+  background-color: rgba(214, 216, 210, 0.45);
+  border-radius: 0.6rem;
+}
+
+.app-shell-gradient {
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.88), rgba(255, 255, 255, 0.6)),
+    linear-gradient(125deg, rgba(228, 157, 55, 0.07), rgba(15, 118, 110, 0.04));
+}
+
+.soft-card {
+  background: linear-gradient(160deg, rgba(255, 255, 255, 0.92), rgba(254, 251, 244, 0.9));
+  border: 1px solid var(--card-border);
+  box-shadow: 0 12px 34px rgba(22, 34, 47, 0.07);
+}
+
+.page-shell {
+  margin-inline: auto;
+  width: 100%;
+  padding: 1.25rem 1rem 1.75rem;
+}
+
+.page-shell-wide {
+  max-width: 80rem;
+}
+
+.page-shell-regular {
+  max-width: 72rem;
+}
+
+.page-shell-narrow {
+  max-width: 56rem;
+}
+
+.page-hero {
+  border-radius: 1rem;
+  border: 1px solid var(--card-border);
+  background: rgba(255, 253, 248, 0.88);
+  padding: 1.25rem;
+}
+
+.page-section-card {
+  border-radius: 0.75rem;
+  border: 1px solid var(--card-border);
+  background: var(--card-bg);
+  padding: 1.25rem;
+}
+
+.ui-input,
+.ui-select {
+  border-radius: 0.5rem;
+  border: 1px solid var(--card-border);
+  background: var(--surface);
+  color: var(--foreground);
+  padding: 0.5rem 0.75rem;
+  font-size: 0.875rem;
+  line-height: 1.2rem;
+}
+
+.ui-input:focus,
+.ui-select:focus {
+  outline: none;
+  box-shadow: 0 0 0 3px var(--focus-ring);
+  border-color: var(--accent);
+}
+
+.ui-btn {
+  border-radius: 0.5rem;
+  padding: 0.5rem 0.75rem;
+  font-size: 0.875rem;
+  line-height: 1.2rem;
+  transition: background-color 140ms ease, border-color 140ms ease, color 140ms ease;
+}
+
+.ui-btn-primary {
+  border: 1px solid var(--accent);
+  background: var(--accent);
+  color: #fff;
+}
+
+.ui-btn-primary:hover {
+  background: var(--accent-strong);
+  border-color: var(--accent-strong);
+}
+
+.ui-btn-secondary {
+  border: 1px solid var(--card-border);
+  background: var(--card-bg);
+  color: var(--foreground);
+}
+
+.ui-btn-secondary:hover {
+  background: var(--background);
+}
+
+.ui-btn-soft {
+  border: 1px solid rgba(15, 118, 110, 0.25);
+  background: var(--accent-soft);
+  color: var(--accent-strong);
+}
+
+.ui-btn-soft:hover {
+  background: var(--accent-soft-strong);
+}
+
+@media (min-width: 1024px) {
+  .page-shell {
+    padding: 1.5rem;
+  }
+
+  .page-hero,
+  .page-section-card {
+    padding: 1.5rem;
+  }
 }
 
 @keyframes riseIn {
@@ -75,25 +204,40 @@ h4 {
   }
 }
 
+@keyframes shimmer {
+  0% {
+    background-position: 180% 0;
+  }
+  100% {
+    background-position: -20% 0;
+  }
+}
+
 /* Leaflet dark mode overrides */
 .leaflet-container {
-  background: #dce3dc;
+  background: #d6e3db;
 }
 .leaflet-tile-pane {
   filter: saturate(0.9) contrast(1.02);
 }
 .leaflet-control-zoom a {
-  background: var(--card-bg) !important;
+  background: var(--surface) !important;
   color: var(--foreground) !important;
   border-color: var(--card-border) !important;
 }
 
 @media (max-width: 1023px) {
   .leaflet-control-zoom a {
-    width: 40px !important;
-    height: 40px !important;
-    line-height: 38px !important;
+    width: 44px !important;
+    height: 44px !important;
+    line-height: 42px !important;
     font-size: 20px !important;
+  }
+}
+
+@media (max-width: 640px) {
+  body {
+    overscroll-behavior-y: none;
   }
 }
 
@@ -195,8 +339,12 @@ h4 {
 .property-marker-badge.is-selected {
   background: var(--accent-strong);
   border-color: #0f172a;
-  box-shadow: 0 0 0 3px rgba(180, 35, 24, 0.24), 0 8px 18px rgba(0, 0, 0, 0.32);
+  box-shadow: 0 0 0 3px rgba(15, 118, 110, 0.24), 0 8px 18px rgba(0, 0, 0, 0.32);
   transform: scale(1.08);
+}
+
+.safe-bottom {
+  padding-bottom: max(0.75rem, env(safe-area-inset-bottom));
 }
 
 /* Custom scrollbar */

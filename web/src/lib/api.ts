@@ -143,6 +143,15 @@ async function fetchJSON<T>(path: string, options?: RequestInit): Promise<T> {
     throw new Error(`API error ${res.status} at ${requestUrl}: ${body}`);
   }
 
+  if (res.status === 204) {
+    return undefined as T;
+  }
+
+  const contentLength = res.headers.get('content-length');
+  if (contentLength === '0') {
+    return undefined as T;
+  }
+
   return res.json();
 }
 
@@ -231,6 +240,27 @@ export interface PriceHistoryEntry {
 
 export async function getPriceHistory(id: string): Promise<PriceHistoryEntry[]> {
   return fetchJSON<PriceHistoryEntry[]>(`/api/v1/properties/${id}/price-history`);
+}
+
+export interface PropertyTimelineEvent {
+  id: string;
+  event_type: string;
+  occurred_at: string;
+  price?: number;
+  price_change?: number;
+  price_change_pct?: number;
+  source_id?: string;
+  adapter_name?: string;
+  source_url?: string;
+  detection_method?: string;
+  confidence_score?: number;
+  dedup_key?: string;
+  evidence?: Record<string, unknown>;
+  metadata?: Record<string, unknown>;
+}
+
+export async function getPropertyTimeline(id: string, limit = 50): Promise<PropertyTimelineEvent[]> {
+  return fetchJSON<PropertyTimelineEvent[]>(`/api/v1/properties/${id}/timeline?limit=${limit}`);
 }
 
 export async function getSimilarProperties(id: string, limit = 5): Promise<Property[]> {
@@ -433,6 +463,17 @@ export interface Alert {
   created_at?: string;
 }
 
+export interface AlertTypeStat {
+  type: string;
+  total: number;
+  unacknowledged: number;
+}
+
+export interface AlertStats {
+  by_type: AlertTypeStat[];
+  total_unacknowledged: number;
+}
+
 export async function getAlerts(filters: Record<string, string | number | boolean | undefined> = {}): Promise<{ items: Alert[]; total: number }> {
   const params = new URLSearchParams();
   Object.entries(filters).forEach(([k, v]) => {
@@ -445,12 +486,96 @@ export async function getUnreadAlertCount(): Promise<{ count: number }> {
   return fetchJSON<{ count: number }>('/api/v1/alerts/unread-count');
 }
 
+export async function getAlertStats(): Promise<AlertStats> {
+  return fetchJSON<AlertStats>('/api/v1/alerts/stats');
+}
+
 export async function acknowledgeAlert(id: string): Promise<{ id: string; acknowledged: boolean }> {
   return fetchJSON<{ id: string; acknowledged: boolean }>(`/api/v1/alerts/${id}/acknowledge`, { method: 'PATCH' });
 }
 
 export async function acknowledgeAllAlerts(): Promise<{ acknowledged: number }> {
   return fetchJSON<{ acknowledged: number }>('/api/v1/alerts/acknowledge-all', { method: 'POST' });
+}
+
+// ── Saved Searches ──────────────────────────────────────────────────────────
+
+export type NotifyMethod = 'in_app' | 'email' | 'both';
+
+export interface SavedSearchCriteria {
+  counties?: string[];
+  min_price?: number;
+  max_price?: number;
+  min_bedrooms?: number;
+  max_bedrooms?: number;
+  property_types?: string[];
+  ber_ratings?: string[];
+  min_floor_area_sqm?: number;
+  keywords?: string[];
+  radius_km?: number;
+  center_lat?: number;
+  center_lng?: number;
+}
+
+export interface SavedSearch {
+  id: string;
+  name: string;
+  criteria: SavedSearchCriteria;
+  notify_new_listings: boolean;
+  notify_price_drops: boolean;
+  notify_method: NotifyMethod;
+  email?: string;
+  is_active: boolean;
+  last_matched_at?: string;
+  created_at?: string;
+  updated_at?: string;
+}
+
+export interface SavedSearchCreateRequest {
+  name: string;
+  criteria: SavedSearchCriteria;
+  notify_new_listings: boolean;
+  notify_price_drops: boolean;
+  notify_method: NotifyMethod;
+  email?: string;
+}
+
+export interface SavedSearchUpdateRequest {
+  name?: string;
+  criteria?: SavedSearchCriteria;
+  notify_new_listings?: boolean;
+  notify_price_drops?: boolean;
+  notify_method?: NotifyMethod;
+  email?: string;
+  is_active?: boolean;
+}
+
+export async function getSavedSearches(): Promise<SavedSearch[]> {
+  return fetchJSON<SavedSearch[]>('/api/v1/saved-searches');
+}
+
+export async function createSavedSearch(payload: SavedSearchCreateRequest): Promise<SavedSearch> {
+  return fetchJSON<SavedSearch>('/api/v1/saved-searches', {
+    method: 'POST',
+    body: JSON.stringify(payload),
+  });
+}
+
+export async function getSavedSearch(id: string): Promise<SavedSearch> {
+  return fetchJSON<SavedSearch>(`/api/v1/saved-searches/${id}`);
+}
+
+export async function updateSavedSearch(id: string, payload: SavedSearchUpdateRequest): Promise<SavedSearch> {
+  return fetchJSON<SavedSearch>(`/api/v1/saved-searches/${id}`, {
+    method: 'PATCH',
+    body: JSON.stringify(payload),
+  });
+}
+
+export async function deleteSavedSearch(id: string): Promise<void> {
+  await fetchJSON<Record<string, never>>(`/api/v1/saved-searches/${id}`, {
+    method: 'DELETE',
+  });
 }
 
 // ── Sources ─────────────────────────────────────────────────────────────────

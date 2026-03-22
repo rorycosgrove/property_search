@@ -8,6 +8,12 @@ const RESEARCH_ITEMS = [
     cta: 'Open market analytics',
   },
   {
+    title: 'Sold Comparables',
+    description: 'Validate asking prices against closed transactions and nearby sold evidence.',
+    href: '/sold',
+    cta: 'Open sold comparables',
+  },
+  {
     title: 'Buyer Incentives',
     description: 'Review grants and scheme eligibility so budget constraints are realistic from day one.',
     href: '/grants',
@@ -19,12 +25,18 @@ const RESEARCH_ITEMS = [
     href: '/sources',
     cta: 'Manage sources',
   },
+  {
+    title: 'Saved Search Automation',
+    description: 'Persist your criteria and route alerts using saved-search endpoints before moving into active decision cycles.',
+    href: '/saved-searches',
+    cta: 'Manage saved searches',
+  },
 ];
 
 export default function ResearchPage() {
   return (
-    <div className="max-w-6xl mx-auto px-4 lg:px-6 py-8">
-      <div className="rounded-2xl border border-[var(--card-border)] bg-[var(--card-bg)]/80 p-6 lg:p-8 mb-6">
+    <div className="page-shell page-shell-regular">
+      <div className="page-hero mb-6">
         <p className="text-xs uppercase tracking-[0.14em] text-[var(--muted)]">Research phase</p>
         <h1 className="text-3xl mt-2">Build confidence before you shortlist</h1>
         <p className="mt-3 text-sm text-[var(--muted)] max-w-3xl">
@@ -41,7 +53,7 @@ export default function ResearchPage() {
         </div>
       </div>
 
-      <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
         {RESEARCH_ITEMS.map((item) => (
           <article key={item.href} className="rounded-xl border border-[var(--card-border)] bg-[var(--card-bg)] p-5 rise-in">
             <h2 className="text-xl">{item.title}</h2>

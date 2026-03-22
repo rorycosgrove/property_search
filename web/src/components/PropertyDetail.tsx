@@ -1,8 +1,8 @@
 'use client';
 
 import { useEffect, useState } from 'react';
-import type { LLMEnrichment, PriceHistoryEntry, Property, PropertyGrantMatch } from '@/lib/api';
-import { getEnrichment, getPriceHistory, getPropertyGrantMatches, triggerEnrichment } from '@/lib/api';
+import type { LLMEnrichment, PriceHistoryEntry, Property, PropertyGrantMatch, PropertyTimelineEvent } from '@/lib/api';
+import { getEnrichment, getPriceHistory, getPropertyGrantMatches, getPropertyTimeline, triggerEnrichment } from '@/lib/api';
 import { useMapStore } from '@/lib/stores';
 import { formatEur, formatDate, berColor } from '@/lib/utils';
 
@@ -14,6 +14,7 @@ interface Props {
 export default function PropertyDetail({ property: prop, onClose }: Props) {
   const [enrichment, setEnrichment] = useState<LLMEnrichment | null>(null);
   const [priceHistory, setPriceHistory] = useState<PriceHistoryEntry[]>([]);
+  const [timeline, setTimeline] = useState<PropertyTimelineEvent[]>([]);
   const [grants, setGrants] = useState<PropertyGrantMatch[]>([]);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
@@ -33,6 +34,7 @@ export default function PropertyDetail({ property: prop, onClose }: Props) {
     setAutoEnrichPending(false);
     setEnrichment(null);
     setPriceHistory([]);
+    setTimeline([]);
     setGrants([]);
     setLoadError(null);
 
@@ -40,9 +42,10 @@ export default function PropertyDetail({ property: prop, onClose }: Props) {
 
     const load = async () => {
       const errors: string[] = [];
-      const [enrichmentResult, historyResult, grantsResult] = await Promise.allSettled([
+      const [enrichmentResult, historyResult, timelineResult, grantsResult] = await Promise.allSettled([
         getEnrichment(prop.id),
         getPriceHistory(prop.id),
+        getPropertyTimeline(prop.id),
         getPropertyGrantMatches(prop.id),
       ]);
 
@@ -60,6 +63,12 @@ export default function PropertyDetail({ property: prop, onClose }: Props) {
         setPriceHistory(historyResult.value);
       } else {
         errors.push('price history');
+      }
+
+      if (timelineResult.status === 'fulfilled') {
+        setTimeline(timelineResult.value);
+      } else {
+        errors.push('timeline');
       }
 
       if (grantsResult.status === 'fulfilled') {
@@ -244,6 +253,36 @@ export default function PropertyDetail({ property: prop, onClose }: Props) {
                     </span>
                   ) : null}
                 </span>
+              </div>
+            ))}
+          </div>
+        </section>
+      ) : null}
+
+      {timeline.length > 0 ? (
+        <section className="mb-4 rounded-xl border border-[var(--card-border)] bg-[var(--card-bg)] p-3">
+          <h3 className="mb-2 text-sm font-semibold">Property timeline</h3>
+          <div className="space-y-2">
+            {timeline.slice(0, 8).map((event) => (
+              <div key={event.id} className="rounded-lg border border-[var(--card-border)] bg-[var(--background)] px-2.5 py-2 text-xs">
+                <div className="flex items-center justify-between gap-2">
+                  <span className="font-semibold uppercase tracking-[0.08em] text-[var(--muted)]">
+                    {event.event_type.replace(/_/g, ' ')}
+                  </span>
+                  <span className="text-[var(--muted)]">{formatDate(event.occurred_at)}</span>
+                </div>
+                <div className="mt-1.5 flex flex-wrap items-center gap-x-3 gap-y-1 text-[var(--muted)]">
+                  {event.price != null ? <span>Price: {formatEur(event.price)}</span> : null}
+                  {event.price_change != null ? (
+                    <span className={event.price_change < 0 ? 'text-[var(--success)]' : 'text-[var(--danger)]'}>
+                      Change: {event.price_change > 0 ? '+' : ''}{formatEur(event.price_change)}
+                    </span>
+                  ) : null}
+                  {event.detection_method ? <span>Method: {event.detection_method}</span> : null}
+                  {typeof event.confidence_score === 'number' ? (
+                    <span>Confidence: {(event.confidence_score * 100).toFixed(0)}%</span>
+                  ) : null}
+                </div>
               </div>
             ))}
           </div>

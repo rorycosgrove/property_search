@@ -25,6 +25,9 @@ const HOME_PANELS = [
 ];
 
 const QUICK_LINKS = [
+  { href: '/admin', label: 'Admin interface' },
+  { href: '/saved-searches', label: 'Saved searches' },
+  { href: '/sold', label: 'Sold comparables' },
   { href: '/workspace?focus=ask', label: 'Ask Atlas' },
   { href: '/analytics', label: 'Market analytics' },
   { href: '/grants', label: 'Grant incentives' },
@@ -34,7 +37,7 @@ const QUICK_LINKS = [
 
 export default function HomePage() {
   return (
-    <div className="mx-auto max-w-7xl px-4 py-8 lg:px-6 lg:py-10">
+    <div className="page-shell page-shell-wide">
       <section className="relative overflow-hidden rounded-[28px] border border-[var(--card-border)] bg-[linear-gradient(145deg,rgba(252,251,248,0.96),rgba(240,236,228,0.88))] p-6 lg:p-10 shadow-[0_24px_80px_rgba(27,36,48,0.08)] rise-in">
         <div className="absolute inset-y-0 right-0 hidden w-[38%] bg-[radial-gradient(circle_at_top,rgba(180,35,24,0.12),transparent_55%),radial-gradient(circle_at_70%_70%,rgba(46,125,91,0.16),transparent_48%)] lg:block" />
         <div className="relative max-w-3xl">

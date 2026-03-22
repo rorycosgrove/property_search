@@ -22,8 +22,14 @@ import {
   type PropertyTypeDistribution,
 } from '@/lib/api';
 import { formatEur, COUNTIES } from '@/lib/utils';
+import { LoadingBlock, LoadingRows } from '@/components/LoadingState';
 
 type AnalyticsTab = 'overview' | 'changes' | 'value';
+
+const DEFAULT_MAX_BUDGET = (() => {
+  const parsed = Number(process.env.NEXT_PUBLIC_DEFAULT_MAX_BUDGET ?? '100000');
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : 100000;
+})();
 
 export default function AnalyticsPage() {
   const router = useRouter();
@@ -40,9 +46,11 @@ export default function AnalyticsPage() {
   const [priceChangesTimeline, setPriceChangesTimeline] = useState<PriceChangesTimeline>({increases: [], decreases: []});
   const [selectedCounty, setSelectedCounty] = useState<string>('');
   const [selectedPropertyType, setSelectedPropertyType] = useState<string>('');
-  const [maxBudget, setMaxBudget] = useState<number | undefined>(undefined);
-  const [budgetInput, setBudgetInput] = useState<string>('');
+  const [maxBudget, setMaxBudget] = useState<number | undefined>(DEFAULT_MAX_BUDGET);
+  const [budgetInput, setBudgetInput] = useState<string>(String(DEFAULT_MAX_BUDGET));
   const [activeTab, setActiveTab] = useState<AnalyticsTab>('overview');
+  const [isLoading, setIsLoading] = useState(true);
+  const [loadError, setLoadError] = useState<string | null>(null);
 
   const setActiveTabWithUrl = (tab: AnalyticsTab) => {
     setActiveTab(tab);
@@ -59,19 +67,131 @@ export default function AnalyticsPage() {
   }, [searchParams]);
 
   useEffect(() => {
-    getAnalyticsSummary().then(setSummary).catch(console.error);
-    getCountyStats().then(setCountyStats).catch(console.error);
-    getPriceTrends(selectedCounty || undefined).then(setPriceTrends).catch(console.error);
-    getTypeDistribution(selectedCounty || undefined).then(setTypeDistribution).catch(console.error);
-    getBERDistribution(selectedCounty || undefined).then(setBERDistribution).catch(console.error);
-    getBestValueProperties(selectedCounty || undefined, selectedPropertyType || undefined, maxBudget).then(setBestValueProperties).catch(console.error);
-    getPriceTrendsByType(selectedCounty || undefined).then(setPriceTrendsByType).catch(console.error);
-    getPriceChangesByBudget(maxBudget, selectedCounty || undefined).then(setPriceChanges).catch(console.error);
-    getPriceChangesTimeline(maxBudget, selectedCounty || undefined).then(setPriceChangesTimeline).catch(console.error);
+    let cancelled = false;
+
+    const load = async () => {
+      setIsLoading(true);
+      setLoadError(null);
+
+      const results = await Promise.allSettled([
+        getAnalyticsSummary(),
+        getCountyStats(),
+        getPriceTrends(selectedCounty || undefined),
+        getTypeDistribution(selectedCounty || undefined),
+        getBERDistribution(selectedCounty || undefined),
+        getBestValueProperties(selectedCounty || undefined, selectedPropertyType || undefined, maxBudget),
+        getPriceTrendsByType(selectedCounty || undefined),
+        getPriceChangesByBudget(maxBudget, selectedCounty || undefined),
+        getPriceChangesTimeline(maxBudget, selectedCounty || undefined),
+      ]);
+
+      if (cancelled) {
+        return;
+      }
+
+      const errors: string[] = [];
+
+      if (results[0].status === 'fulfilled') setSummary(results[0].value);
+      else errors.push('summary');
+
+      if (results[1].status === 'fulfilled') setCountyStats(results[1].value);
+      else errors.push('county stats');
+
+      if (results[2].status === 'fulfilled') setPriceTrends(results[2].value);
+      else errors.push('price trends');
+
+      if (results[3].status === 'fulfilled') setTypeDistribution(results[3].value);
+      else errors.push('type distribution');
+
+      if (results[4].status === 'fulfilled') setBERDistribution(results[4].value);
+      else errors.push('BER distribution');
+
+      if (results[5].status === 'fulfilled') setBestValueProperties(results[5].value);
+      else errors.push('best value');
+
+      if (results[6].status === 'fulfilled') setPriceTrendsByType(results[6].value);
+      else errors.push('type trends');
+
+      if (results[7].status === 'fulfilled') setPriceChanges(results[7].value);
+      else errors.push('price changes');
+
+      if (results[8].status === 'fulfilled') setPriceChangesTimeline(results[8].value);
+      else errors.push('price change timeline');
+
+      if (errors.length > 0) {
+        setLoadError(`Some analytics sections failed to load: ${errors.join(', ')}`);
+      }
+
+      setIsLoading(false);
+    };
+
+    void load();
+
+    return () => {
+      cancelled = true;
+    };
   }, [selectedCounty, selectedPropertyType, maxBudget]);
 
+  const renderOverviewLoading = () => (
+    <>
+      <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-4 mb-8">
+        {Array.from({ length: 6 }).map((_, index) => (
+          <div key={index} className="bg-[var(--card-bg)] border border-[var(--card-border)] rounded-lg p-4">
+            <LoadingBlock className="h-3 w-20" />
+            <LoadingBlock className="mt-2 h-7 w-16" />
+          </div>
+        ))}
+      </div>
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+        {Array.from({ length: 4 }).map((_, index) => (
+          <div key={index} className="bg-[var(--card-bg)] border border-[var(--card-border)] rounded-lg p-4">
+            <LoadingBlock className="mb-3 h-5 w-36" />
+            <LoadingRows rows={5} />
+          </div>
+        ))}
+      </div>
+    </>
+  );
+
+  const renderChangesLoading = () => (
+    <div className="mt-8 mb-8">
+      <LoadingBlock className="h-7 w-56 mb-4" />
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-6 mb-6">
+        <div className="bg-[var(--card-bg)] border border-[var(--card-border)] rounded-lg p-4">
+          <LoadingBlock className="mb-3 h-5 w-32" />
+          <LoadingRows rows={4} />
+        </div>
+        <div className="bg-[var(--card-bg)] border border-[var(--card-border)] rounded-lg p-4">
+          <LoadingBlock className="mb-3 h-5 w-32" />
+          <LoadingRows rows={4} />
+        </div>
+      </div>
+      <div className="bg-[var(--card-bg)] border border-[var(--card-border)] rounded-lg p-4">
+        <LoadingBlock className="mb-3 h-5 w-48" />
+        <LoadingRows rows={6} />
+      </div>
+    </div>
+  );
+
+  const renderValueLoading = () => (
+    <div className="mt-8">
+      <LoadingBlock className="h-7 w-64 mb-4" />
+      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+        {Array.from({ length: 6 }).map((_, index) => (
+          <div key={index} className="bg-[var(--card-bg)] border border-[var(--card-border)] rounded-lg p-4">
+            <LoadingBlock className="h-4 w-3/4" />
+            <LoadingBlock className="mt-2 h-3 w-1/2" />
+            <LoadingBlock className="mt-4 h-3 w-full" />
+            <LoadingBlock className="mt-2 h-3 w-5/6" />
+            <LoadingBlock className="mt-2 h-3 w-2/3" />
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+
   return (
-    <div className="p-6 max-w-7xl mx-auto rise-in">
+    <div className="page-shell page-shell-wide rise-in">
       <div className="flex items-center justify-between mb-6">
         <div>
           <p className="text-[11px] uppercase tracking-[0.16em] text-[var(--muted)]">Market Intelligence</p>
@@ -87,12 +207,12 @@ export default function AnalyticsPage() {
               const val = e.target.value ? parseFloat(e.target.value) : undefined;
               setMaxBudget(val);
             }}
-            className="bg-[var(--background)] border border-[var(--card-border)] rounded px-3 py-1.5 text-sm w-32"
+            className="ui-input w-32"
           />
           <select
             value={selectedCounty}
             onChange={(e) => setSelectedCounty(e.target.value)}
-            className="bg-[var(--background)] border border-[var(--card-border)] rounded px-3 py-1.5 text-sm"
+            className="ui-select"
           >
             <option value="">All of Ireland</option>
             {COUNTIES.map((c) => (
@@ -102,7 +222,7 @@ export default function AnalyticsPage() {
           <select
             value={selectedPropertyType}
             onChange={(e) => setSelectedPropertyType(e.target.value)}
-            className="bg-[var(--background)] border border-[var(--card-border)] rounded px-3 py-1.5 text-sm"
+            className="ui-select"
           >
             <option value="">All Types</option>
             {typeDistribution.map((d) => (
@@ -115,6 +235,12 @@ export default function AnalyticsPage() {
       <div className="rounded-lg border border-[var(--card-border)] ai-glass p-4 mb-6">
         <p className="text-sm">Atlas Insight: use this panel to identify pricing pressure, inventory mix, and BER opportunity before running compare analysis in the workspace. Drilldown by county and property type to see value ranking and market trends.</p>
       </div>
+
+      {loadError ? (
+        <div className="mb-6 rounded-lg border border-[var(--danger)]/30 bg-[var(--danger)]/10 px-3 py-2 text-sm text-[var(--danger)]">
+          {loadError}
+        </div>
+      ) : null}
 
        <div className="text-xs text-[var(--muted)] space-y-1 mb-6">
          <p>
@@ -132,30 +258,30 @@ export default function AnalyticsPage() {
         <div className="mb-6 flex gap-2 rounded-lg border border-[var(--card-border)] bg-[var(--card-bg)] p-1">
          <button
             onClick={() => setActiveTabWithUrl('overview')}
-            className={`rounded-md px-4 py-2 font-medium text-sm transition-colors ${
+            className={`ui-btn ${
              activeTab === 'overview'
-                ? 'bg-[var(--accent-soft)] text-[var(--accent-strong)]'
-                : 'text-[var(--muted)] hover:bg-[var(--background)] hover:text-[var(--foreground)]'
+              ? 'ui-btn-soft font-medium'
+              : 'ui-btn-secondary text-[var(--muted)]'
            }`}
          >
            Market Overview
          </button>
          <button
             onClick={() => setActiveTabWithUrl('changes')}
-            className={`rounded-md px-4 py-2 font-medium text-sm transition-colors ${
+            className={`ui-btn ${
              activeTab === 'changes'
-                ? 'bg-[var(--accent-soft)] text-[var(--accent-strong)]'
-                : 'text-[var(--muted)] hover:bg-[var(--background)] hover:text-[var(--foreground)]'
+              ? 'ui-btn-soft font-medium'
+              : 'ui-btn-secondary text-[var(--muted)]'
            }`}
          >
           Price Changes {maxBudget && <span className="text-xs text-[var(--muted)]"> (max {formatEur(maxBudget)})</span>}
          </button>
          <button
             onClick={() => setActiveTabWithUrl('value')}
-            className={`rounded-md px-4 py-2 font-medium text-sm transition-colors ${
+            className={`ui-btn ${
              activeTab === 'value'
-                ? 'bg-[var(--accent-soft)] text-[var(--accent-strong)]'
-                : 'text-[var(--muted)] hover:bg-[var(--background)] hover:text-[var(--foreground)]'
+              ? 'ui-btn-soft font-medium'
+              : 'ui-btn-secondary text-[var(--muted)]'
            }`}
          >
           Best Value {maxBudget && <span className="text-xs text-[var(--muted)]"> (max {formatEur(maxBudget)})</span>}
@@ -163,6 +289,7 @@ export default function AnalyticsPage() {
        </div>
 
       {activeTab === 'overview' && (
+      isLoading ? renderOverviewLoading() : (
       <>
       {/* Summary cards */}
       {summary && (
@@ -271,10 +398,12 @@ export default function AnalyticsPage() {
         </div>
       </div>
       </>
+      )
       )}
 
       {/* Price changes timeline and drilldown */}
       {activeTab === 'changes' && (
+      isLoading ? renderChangesLoading() : (
       <div id="changes" className="mt-8 mb-8">
         <h2 className="text-xl font-semibold mb-4">Price Changes Timeline {maxBudget && <span className="text-sm font-normal text-[var(--muted)]">(up to {formatEur(maxBudget)})</span>}</h2>
         <div className="grid grid-cols-1 lg:grid-cols-2 gap-6 mb-6">
@@ -380,10 +509,12 @@ export default function AnalyticsPage() {
           )}
         </div>
       </div>
+      )
       )}
 
       {/* Best value properties */}
       {activeTab === 'value' && (
+      isLoading ? renderValueLoading() : (
       <div id="value" className="mt-8">
         <h2 className="text-xl font-semibold mb-4">Best Value Properties (AI-Ranked)</h2>
         {bestValueProperties.length > 0 ? (
@@ -444,10 +575,11 @@ export default function AnalyticsPage() {
           <p className="text-[var(--muted)] text-sm">No enriched properties available for value ranking.</p>
         )}
       </div>
+      )
       )}
 
       {/* Price trends by type */}
-      {activeTab === 'overview' && Object.keys(priceTrendsByType).length > 0 && (
+      {!isLoading && activeTab === 'overview' && Object.keys(priceTrendsByType).length > 0 && (
         <div className="mt-8">
           <h2 className="text-xl font-semibold mb-4">Price Trends by Property Type</h2>
           <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">

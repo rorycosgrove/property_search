@@ -216,8 +216,8 @@ export default function SettingsPage() {
   };
 
   return (
-    <div className="p-6 max-w-4xl mx-auto space-y-6 rise-in">
-      <div className="rounded-xl border border-[var(--card-border)] ai-glass p-5">
+    <div className="page-shell page-shell-narrow space-y-6 rise-in">
+      <div className="page-hero ai-glass">
         <p className="text-[11px] uppercase tracking-[0.16em] text-[var(--muted)]">AI Control Center</p>
         <h1 className="text-2xl font-bold mt-1">Tune Atlas AI for your decision workflow</h1>
         <p className="text-sm text-[var(--muted)] mt-2">Choose your model, check readiness, and keep analysis quality high.</p>
@@ -229,7 +229,7 @@ export default function SettingsPage() {
         <StatusCard label="Inference profile" value={health?.inference_profile_configured ? 'Configured' : 'Not configured'} tone={health?.inference_profile_configured ? 'ok' : 'warn'} />
       </div>
 
-      <div className="bg-[var(--card-bg)] border border-[var(--card-border)] rounded-lg p-6">
+      <div className="page-section-card">
         <h2 className="text-lg font-semibold mb-4">Model Selection</h2>
 
         <div className="space-y-4">
@@ -238,7 +238,7 @@ export default function SettingsPage() {
             <select
               value={provider}
               onChange={(e) => setProvider(e.target.value)}
-              className="w-full bg-[var(--background)] border border-[var(--card-border)] rounded px-3 py-2"
+              className="ui-select w-full"
             >
               <option value="bedrock">Amazon Bedrock (Cloud)</option>
             </select>
@@ -277,7 +277,7 @@ export default function SettingsPage() {
           <button
             onClick={handleSave}
             disabled={!model || isSaving || isLoading}
-            className="px-4 py-2 bg-[var(--accent)] text-white hover:bg-[var(--accent-strong)] disabled:opacity-60 disabled:cursor-not-allowed rounded text-sm font-medium transition-colors"
+            className="ui-btn ui-btn-primary disabled:opacity-60 disabled:cursor-not-allowed font-medium"
           >
             {isSaving ? 'Saving...' : saved ? '✓ Saved' : 'Save'}
           </button>
@@ -289,7 +289,7 @@ export default function SettingsPage() {
           ) : null}
 
           {saveWarning ? (
-            <div className="rounded border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-sm text-amber-700">
+            <div className="rounded border border-amber-300/40 bg-amber-200/25 px-3 py-2 text-sm text-amber-800">
               {saveWarning}
             </div>
           ) : null}
@@ -302,7 +302,7 @@ export default function SettingsPage() {
         </div>
       </div>
 
-      <div className="bg-[var(--card-bg)] border border-[var(--card-border)] rounded-lg p-6">
+      <div className="page-section-card">
         <h2 className="text-lg font-semibold mb-2">About</h2>
         <p className="text-sm text-[var(--muted)]">
           Atlas AI Property Decisions v0.1.0<br />
@@ -312,7 +312,7 @@ export default function SettingsPage() {
         </p>
       </div>
 
-      <div className="bg-[var(--card-bg)] border border-[var(--card-border)] rounded-lg p-6 space-y-5">
+      <div id="backend-diagnostics" className="page-section-card space-y-5">
         <div className="flex items-center justify-between gap-4 flex-wrap">
           <div>
             <h2 className="text-lg font-semibold">Backend Status</h2>
@@ -323,7 +323,7 @@ export default function SettingsPage() {
             <select
               value={backendLogLevel}
               onChange={(e) => setBackendLogLevel(e.target.value as 'ERROR' | 'WARNING' | 'ALL')}
-              className="bg-[var(--background)] border border-[var(--card-border)] rounded px-2 py-1 text-xs"
+              className="ui-select text-xs"
             >
               <option value="ALL">Warnings + Errors</option>
               <option value="ERROR">Errors only</option>
@@ -452,7 +452,7 @@ export default function SettingsPage() {
           </div>
         </section>
 
-        <section>
+        <section id="listing-diagnostics">
           <h3 className="text-sm font-semibold mb-2">Missed Listing Diagnostic (Daft)</h3>
           <p className="text-xs text-[var(--muted)] mb-3">
             Diagnose why a listing ID was missed and optionally trigger one-click repair ingestion.
@@ -465,7 +465,7 @@ export default function SettingsPage() {
                 type="text"
                 value={diagnosticExternalId}
                 onChange={(e) => setDiagnosticExternalId(e.target.value)}
-                className="w-full bg-[var(--background)] border border-[var(--card-border)] rounded px-3 py-2 text-sm"
+                className="ui-input w-full"
                 placeholder="e.g. 6437639"
               />
             </div>
@@ -475,7 +475,7 @@ export default function SettingsPage() {
                 type="text"
                 value={diagnosticListingUrl}
                 onChange={(e) => setDiagnosticListingUrl(e.target.value)}
-                className="w-full bg-[var(--background)] border border-[var(--card-border)] rounded px-3 py-2 text-sm"
+                className="ui-input w-full"
                 placeholder="https://www.daft.ie/for-sale/.../6437639"
               />
             </div>
@@ -485,7 +485,7 @@ export default function SettingsPage() {
                 type="text"
                 value={diagnosticSimilarIds}
                 onChange={(e) => setDiagnosticSimilarIds(e.target.value)}
-                className="w-full bg-[var(--background)] border border-[var(--card-border)] rounded px-3 py-2 text-sm"
+                className="ui-input w-full"
                 placeholder="6007301,6326209,6450670,5787846"
               />
             </div>
@@ -497,7 +497,7 @@ export default function SettingsPage() {
                 max={720}
                 value={diagnosticHours}
                 onChange={(e) => setDiagnosticHours(Number(e.target.value) || 168)}
-                className="w-full bg-[var(--background)] border border-[var(--card-border)] rounded px-3 py-2 text-sm"
+                className="ui-input w-full"
               />
             </div>
             <div>
@@ -508,7 +508,7 @@ export default function SettingsPage() {
                 max={60}
                 value={diagnosticMaxProbeSources}
                 onChange={(e) => setDiagnosticMaxProbeSources(Number(e.target.value) || 25)}
-                className="w-full bg-[var(--background)] border border-[var(--card-border)] rounded px-3 py-2 text-sm"
+                className="ui-input w-full"
               />
             </div>
             <div>
@@ -519,7 +519,7 @@ export default function SettingsPage() {
                 max={300}
                 value={diagnosticProbeMaxPages}
                 onChange={(e) => setDiagnosticProbeMaxPages(Number(e.target.value) || 120)}
-                className="w-full bg-[var(--background)] border border-[var(--card-border)] rounded px-3 py-2 text-sm"
+                className="ui-input w-full"
               />
             </div>
           </div>

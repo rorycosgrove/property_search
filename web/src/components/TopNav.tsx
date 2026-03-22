@@ -14,13 +14,23 @@ const PHASE_GROUPS = [
     links: [
       { href: '/research', label: 'Overview' },
       { href: '/analytics', label: 'Market' },
+      { href: '/sold', label: 'Sold Comps' },
       { href: '/grants', label: 'Incentives' },
-      { href: '/sources', label: 'Sources' },
+    ],
+  },
+  {
+    phase: 'Admin',
+    links: [
+      { href: '/admin', label: 'Admin' },
+      { href: '/sources', label: 'Sources Ops' },
     ],
   },
   {
     phase: 'Decide',
-    links: [{ href: '/workspace', label: 'Workspace' }],
+    links: [
+      { href: '/workspace', label: 'Workspace' },
+      { href: '/saved-searches', label: 'Saved Searches' },
+    ],
   },
   {
     phase: 'Execute',
@@ -55,6 +65,13 @@ export default function TopNav() {
 
   const allLinks = PHASE_GROUPS.flatMap((group) => group.links);
 
+  const quickMobileLinks = [
+    { href: '/admin', label: 'Admin' },
+    { href: '/workspace', label: 'Workspace' },
+    { href: '/sold', label: 'Sold' },
+    { href: '/alerts', label: 'Alerts' },
+  ];
+
   const phaseForHref = (href: string): string => {
     for (const group of PHASE_GROUPS) {
       if (group.links.some((item) => item.href === href)) {
@@ -65,12 +82,13 @@ export default function TopNav() {
   };
 
   return (
-    <div className="border-b border-[var(--card-border)] bg-[var(--card-bg)]/85 backdrop-blur-md">
-      <div className="px-4 lg:px-6 py-4 flex flex-wrap items-center justify-between gap-3">
+    <>
+      <div className="sticky top-0 z-[730] border-b border-[var(--card-border)] bg-[var(--card-bg)]/88 app-shell-gradient backdrop-blur-md">
+        <div className="px-4 lg:px-6 py-3.5 flex flex-wrap items-center justify-between gap-3">
         <div className="flex items-center gap-3 min-w-0">
-          <div className="h-2.5 w-2.5 rounded-full bg-[var(--success)]" aria-hidden="true" />
-          <h1 className="text-xl lg:text-2xl tracking-tight">Atlas</h1>
-          <span className="hidden lg:inline-flex text-[11px] uppercase tracking-[0.16em] text-[var(--muted)] border border-[var(--card-border)] rounded-full px-2 py-1 bg-[var(--background)]">
+          <div className="h-2.5 w-2.5 rounded-full bg-[var(--signal)]" aria-hidden="true" />
+          <h1 className="text-xl lg:text-2xl tracking-tight">Atlas Field Desk</h1>
+          <span className="hidden lg:inline-flex text-[11px] uppercase tracking-[0.16em] text-[var(--muted)] border border-[var(--card-border)] rounded-full px-2 py-1 bg-[var(--surface)]">
             {activePhase} phase
           </span>
         </div>
@@ -85,7 +103,7 @@ export default function TopNav() {
                 className={[
                   'px-3 py-1.5 rounded-full text-sm border transition-colors focus:outline-none focus:ring-2 focus:ring-[var(--accent)]',
                   active
-                    ? 'border-[var(--accent)] bg-[var(--accent-soft)] text-[var(--accent-strong)]'
+                    ? 'border-[var(--accent)] bg-[var(--accent-soft)] text-[var(--accent-strong)] shadow-[0_4px_12px_rgba(15,118,110,0.14)]'
                     : 'border-transparent text-[var(--muted)] hover:text-[var(--foreground)] hover:border-[var(--card-border)]',
                 ].join(' ')}
                 aria-current={active ? 'page' : undefined}
@@ -99,7 +117,7 @@ export default function TopNav() {
         <button
           type="button"
           onClick={() => setMobileOpen((prev) => !prev)}
-          className="lg:hidden px-3 py-1.5 rounded-md border border-[var(--card-border)] text-xs font-semibold hover:bg-[var(--background)] focus:outline-none focus:ring-2 focus:ring-[var(--accent)]"
+          className="lg:hidden px-3 py-1.5 rounded-md border border-[var(--card-border)] text-xs font-semibold hover:bg-[var(--surface)] focus:outline-none focus:ring-2 focus:ring-[var(--accent)]"
           aria-expanded={mobileOpen}
           aria-label="Toggle navigation menu"
         >
@@ -107,11 +125,35 @@ export default function TopNav() {
         </button>
 
         <div className="hidden lg:flex items-center gap-2">
-          <span className="inline-flex items-center gap-1 px-2 py-1 rounded-full text-[11px] border border-[var(--card-border)] text-[var(--muted)] bg-[var(--background)]/70">
+          <span className="inline-flex items-center gap-1 px-2 py-1 rounded-full text-[11px] border border-[var(--card-border)] text-[var(--muted)] bg-[var(--surface)]/70">
             <span className="h-1.5 w-1.5 rounded-full bg-[var(--success)]" aria-hidden="true" />
             AI ready
           </span>
         </div>
+      </div>
+      </div>
+
+      <div className="lg:hidden fixed bottom-0 inset-x-0 z-[725] safe-bottom border-t border-[var(--card-border)] bg-[var(--card-bg)]/92 backdrop-blur-md">
+        <nav aria-label="Quick mobile actions" className="grid grid-cols-4 gap-1 px-2 pt-2">
+          {quickMobileLinks.map((item) => {
+            const active = isActiveRoute(item.href);
+            return (
+              <Link
+                key={item.href}
+                href={item.href}
+                className={[
+                  'rounded-xl px-2 py-2 text-center text-[11px] font-semibold transition-colors',
+                  active
+                    ? 'bg-[var(--accent-soft)] text-[var(--accent-strong)]'
+                    : 'text-[var(--muted)] hover:bg-[var(--surface)] hover:text-[var(--foreground)]',
+                ].join(' ')}
+                aria-current={active ? 'page' : undefined}
+              >
+                {item.label}
+              </Link>
+            );
+          })}
+        </nav>
       </div>
 
       {mobileOpen && (
@@ -171,6 +213,6 @@ export default function TopNav() {
           </nav>
         </div>
       )}
-    </div>
+    </>
   );
 }

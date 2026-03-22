@@ -39,10 +39,10 @@ function tabButton(
     <button
       key={tab}
       onClick={() => setActiveTab(tab)}
-      className={`text-sm px-3 py-2 rounded-md border transition-colors ${
+      className={`ui-btn ${
         activeTab === tab
-          ? 'border-[var(--accent)] bg-[var(--accent-soft)] text-[var(--accent-strong)]'
-          : 'border-[var(--card-border)] bg-[var(--card-bg)] hover:bg-[var(--background)]'
+          ? 'ui-btn-soft'
+          : 'ui-btn-secondary'
       }`}
     >
       {label}
@@ -104,34 +104,34 @@ export function DashboardHeader(props: Props) {
         <button
           onClick={props.onRunFullSearch}
           disabled={props.runningFullSearch}
-          className="text-sm px-4 py-2 rounded-md bg-[var(--accent)] text-white hover:bg-[var(--accent-strong)] disabled:opacity-60 disabled:cursor-not-allowed transition-colors"
+          className="ui-btn ui-btn-primary disabled:opacity-60 disabled:cursor-not-allowed"
         >
           {props.runningFullSearch ? 'Running Full Organic Search...' : 'Run Full Organic Search'}
         </button>
         <button
           onClick={props.onDiscoverSources}
           disabled={props.discoveringSources}
-          className="text-sm px-4 py-2 rounded-md border border-[var(--card-border)] bg-[var(--card-bg)] hover:bg-[var(--background)] disabled:opacity-60 disabled:cursor-not-allowed transition-colors"
+          className="ui-btn ui-btn-secondary disabled:opacity-60 disabled:cursor-not-allowed"
         >
           {props.discoveringSources ? 'Discovering Feeds...' : 'Auto-Discover Feeds'}
         </button>
         <button
           onClick={props.onScrapeSelected}
           disabled={props.scrapingSelected || props.selectedSourceCount === 0}
-          className="text-sm px-4 py-2 rounded-md border border-[var(--card-border)] bg-[var(--card-bg)] hover:bg-[var(--background)] disabled:opacity-60 disabled:cursor-not-allowed transition-colors"
+          className="ui-btn ui-btn-secondary disabled:opacity-60 disabled:cursor-not-allowed"
         >
           {props.scrapingSelected ? 'Queueing Selected...' : `Scrape Selected Sources (${props.selectedSourceCount})`}
         </button>
         <button
           onClick={props.onApproveSelected}
           disabled={props.approvingSelected || props.selectedPendingCount === 0}
-          className="text-sm px-4 py-2 rounded-md border border-[var(--card-border)] bg-[var(--card-bg)] hover:bg-[var(--background)] disabled:opacity-60 disabled:cursor-not-allowed transition-colors"
+          className="ui-btn ui-btn-secondary disabled:opacity-60 disabled:cursor-not-allowed"
         >
           {props.approvingSelected ? 'Approving...' : `Approve Selected (${props.selectedPendingCount})`}
         </button>
         <button
           onClick={props.onRefresh}
-          className="text-sm px-4 py-2 rounded-md border border-[var(--card-border)] bg-[var(--card-bg)] hover:bg-[var(--background)]"
+          className="ui-btn ui-btn-secondary"
         >
           Refresh Dashboard
         </button>

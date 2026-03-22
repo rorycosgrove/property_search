@@ -3,6 +3,7 @@
 import type { Property } from '@/lib/api';
 import { useFilterStore, useMapStore, useUIStore } from '@/lib/stores';
 import { formatEur, berColor, truncate } from '@/lib/utils';
+import { LoadingBlock } from '@/components/LoadingState';
 
 interface Props {
   properties: Property[];
@@ -49,6 +50,28 @@ export default function PropertyFeed({ properties, total, loading }: Props) {
       </div>
 
       <div className="flex-1 overflow-y-auto bg-[var(--background)]/18 px-3 py-3">
+        {loading && properties.length === 0 ? (
+          <div className="space-y-3">
+            {Array.from({ length: 6 }).map((_, index) => (
+              <div key={index} className="rounded-2xl border border-[var(--card-border)] bg-[var(--card-bg)] p-4">
+                <div className="flex gap-4">
+                  <LoadingBlock className="h-24 w-28 rounded-xl" />
+                  <div className="min-w-0 flex-1">
+                    <LoadingBlock className="h-4 w-24" />
+                    <LoadingBlock className="mt-2 h-3 w-3/4" />
+                    <LoadingBlock className="mt-3 h-3 w-full" />
+                    <LoadingBlock className="mt-2 h-3 w-2/3" />
+                    <div className="mt-4 flex gap-2">
+                      <LoadingBlock className="h-7 w-24 rounded-full" />
+                      <LoadingBlock className="h-7 w-28 rounded-full" />
+                    </div>
+                  </div>
+                </div>
+              </div>
+            ))}
+          </div>
+        ) : null}
+
         {properties.map((prop) => (
           (() => {
             const inCompare = comparedPropertyIds.includes(prop.id);

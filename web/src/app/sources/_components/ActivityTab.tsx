@@ -4,6 +4,10 @@ type Props = {
   sourceActivityLogs: BackendLogEntry[];
   sources: Source[];
   activityError: string | null;
+  currentPage: number;
+  totalPages: number;
+  onPreviousPage: () => void;
+  onNextPage: () => void;
 };
 
 export function ActivityTab(props: Props) {
@@ -27,7 +31,7 @@ export function ActivityTab(props: Props) {
               </tr>
             </thead>
             <tbody>
-              {props.sourceActivityLogs.slice(0, 80).map((entry) => {
+              {props.sourceActivityLogs.map((entry) => {
                 const relatedSource =
                   entry.source_id ? props.sources.find((source) => source.id === entry.source_id) : null;
                 return (
@@ -44,6 +48,30 @@ export function ActivityTab(props: Props) {
           </table>
         </div>
       )}
+
+      {props.totalPages > 1 ? (
+        <div className="mt-4 flex items-center justify-between gap-3 border-t border-[var(--card-border)] pt-3">
+          <button
+            type="button"
+            onClick={props.onPreviousPage}
+            disabled={props.currentPage <= 1}
+            className="ui-btn ui-btn-secondary disabled:opacity-50"
+          >
+            Previous
+          </button>
+          <p className="text-sm text-[var(--muted)]">
+            Page {props.currentPage} of {props.totalPages}
+          </p>
+          <button
+            type="button"
+            onClick={props.onNextPage}
+            disabled={props.currentPage >= props.totalPages}
+            className="ui-btn ui-btn-secondary disabled:opacity-50"
+          >
+            Next
+          </button>
+        </div>
+      ) : null}
     </section>
   );
 }

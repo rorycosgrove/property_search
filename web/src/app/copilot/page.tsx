@@ -4,8 +4,8 @@ import Link from 'next/link';
 
 export default function CopilotPage() {
   return (
-    <div className="p-6 max-w-3xl mx-auto min-h-[40vh] flex items-center justify-center">
-      <div className="w-full rounded-xl border border-[var(--card-border)] ai-glass p-6 text-center">
+    <div className="page-shell page-shell-narrow min-h-[40vh] flex items-center justify-center">
+      <div className="page-section-card ai-glass w-full text-center">
         <p className="text-[11px] uppercase tracking-[0.16em] text-[var(--muted)]">Atlas AI</p>
         <h1 className="text-2xl font-bold mt-1">AI query lives in the dedicated workspace</h1>
         <p className="text-sm text-[var(--muted)] mt-3">

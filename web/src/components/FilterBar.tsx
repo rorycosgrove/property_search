@@ -11,11 +11,7 @@ export default function FilterBar() {
   const { setRankingMode } = useUIStore();
   const [advancedOpen, setAdvancedOpen] = useState(false);
 
-  const controlClasses = [
-    'bg-[var(--background)] border border-[var(--card-border)] rounded-xl px-3 py-2.5',
-    'focus:outline-none focus:ring-2 focus:ring-cyan-700/60 focus:border-cyan-700',
-    'hover:border-stone-500 transition-colors',
-  ].join(' ');
+  const controlClasses = 'ui-input w-full';
 
   const advancedControls = (
     <>
@@ -30,7 +26,7 @@ export default function FilterBar() {
       <select
         value={filters.min_beds || ''}
         onChange={(e) => setFilter('min_beds', e.target.value ? Number(e.target.value) : undefined)}
-        className={controlClasses}
+        className="ui-select w-full"
       >
         <option value="">Any beds</option>
         {[1, 2, 3, 4, 5].map((n) => (
@@ -41,7 +37,7 @@ export default function FilterBar() {
       <select
         value={filters.property_types || ''}
         onChange={(e) => setFilter('property_types', e.target.value || undefined)}
-        className={controlClasses}
+        className="ui-select w-full"
       >
         <option value="">All types</option>
         <option value="house">House</option>
@@ -59,7 +55,7 @@ export default function FilterBar() {
         className={controlClasses}
       />
 
-      <label className="flex items-center gap-2 text-xs text-[var(--muted)] border border-[var(--card-border)] rounded-xl px-3 py-2.5 bg-[var(--background)]">
+      <label className="flex items-center gap-2 rounded-xl border border-[var(--card-border)] bg-[var(--surface)] px-3 py-2.5 text-xs text-[var(--muted)]">
         <input
           type="checkbox"
           checked={Boolean(filters.eligible_only)}
@@ -83,7 +79,7 @@ export default function FilterBar() {
           setFilter('sort_by', by);
           setFilter('sort_dir', dir);
         }}
-        className={controlClasses}
+        className="ui-select w-full"
       >
         <option value="created_at_desc">Newest</option>
         <option value="created_at_asc">Oldest</option>
@@ -152,7 +148,7 @@ export default function FilterBar() {
             <button
               type="button"
               onClick={resetFilters}
-              className="rounded-full border border-[var(--card-border)] px-3 py-1.5 text-xs transition-colors hover:bg-[var(--background)]"
+              className="ui-btn ui-btn-secondary rounded-full px-3 py-1.5 text-xs"
             >
               Reset filters
             </button>
@@ -166,7 +162,7 @@ export default function FilterBar() {
               <select
                 value={filters.county || ''}
                 onChange={(e) => setFilter('county', e.target.value || undefined)}
-                className={controlClasses}
+                className="ui-select w-full"
               >
                 <option value="">All counties</option>
                 {COUNTIES.map((county) => (
@@ -191,7 +187,7 @@ export default function FilterBar() {
               <select
                 value={filters.min_beds || ''}
                 onChange={(e) => setFilter('min_beds', e.target.value ? Number(e.target.value) : undefined)}
-                className={controlClasses}
+                className="ui-select w-full"
               >
                 <option value="">Any size</option>
                 {[1, 2, 3, 4, 5].map((beds) => (
@@ -204,7 +200,7 @@ export default function FilterBar() {
           <button
             type="button"
             onClick={() => setAdvancedOpen((value) => !value)}
-            className="rounded-full border border-[var(--card-border)] px-4 py-2 text-xs transition-colors hover:bg-[var(--background)]"
+            className="ui-btn ui-btn-secondary rounded-full px-4 py-2 text-xs"
             aria-expanded={advancedOpen}
           >
             {advancedOpen ? 'Hide extra filters' : 'Show extra filters'}
@@ -218,7 +214,7 @@ export default function FilterBar() {
               { max_price: 500000, min_beds: 3, sort_by: 'created_at', sort_dir: 'desc' },
               'hybrid',
             )}
-            className="rounded-full border border-[var(--card-border)] bg-[var(--card-bg)] px-3 py-1.5 transition-colors hover:border-[var(--accent)]"
+            className="ui-btn ui-btn-secondary rounded-full px-3 py-1.5"
           >
             Under EUR500k
           </button>
@@ -228,7 +224,7 @@ export default function FilterBar() {
               { min_beds: 3, property_types: 'house', sort_by: 'price', sort_dir: 'asc' },
               'user_weighted',
             )}
-            className="rounded-full border border-[var(--card-border)] bg-[var(--card-bg)] px-3 py-1.5 transition-colors hover:border-[var(--accent)]"
+            className="ui-btn ui-btn-secondary rounded-full px-3 py-1.5"
           >
             Family homes
           </button>
@@ -238,7 +234,7 @@ export default function FilterBar() {
               { keywords: 'ber retrofit grant', sort_by: 'created_at', sort_dir: 'desc' },
               'llm_only',
             )}
-            className="rounded-full border border-[var(--card-border)] bg-[var(--card-bg)] px-3 py-1.5 transition-colors hover:border-[var(--accent)]"
+            className="ui-btn ui-btn-secondary rounded-full px-3 py-1.5"
           >
             Grant-ready
           </button>
@@ -278,7 +274,7 @@ export default function FilterBar() {
                 <button
                   type="button"
                   onClick={() => setAdvancedOpen(false)}
-                  className="px-2 py-1 text-xs border border-[var(--card-border)] rounded-md"
+                  className="ui-btn ui-btn-secondary px-2 py-1 text-xs"
                 >
                   Close
                 </button>

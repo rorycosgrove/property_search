@@ -11,12 +11,17 @@ type Props = {
   allVisibleSelected: boolean;
   visibleSourceCount: number;
   sourcesError: string | null;
+  currentPage: number;
+  totalPages: number;
+  totalFilteredCount: number;
   onSetSourceQuery: (value: string) => void;
   onSetStatusFilter: (value: SourceStatusFilter) => void;
   onSetSourceSort: (value: SourceSort) => void;
   onToggleSelectAllVisible: () => void;
   onToggleSourceSelection: (sourceId: string) => void;
   onScrapeNow: (sourceId: string) => void;
+  onPreviousPage: () => void;
+  onNextPage: () => void;
 };
 
 export function SourcesTableTab(props: Props) {
@@ -30,12 +35,12 @@ export function SourcesTableTab(props: Props) {
             value={props.sourceQuery}
             onChange={(event) => props.onSetSourceQuery(event.target.value)}
             placeholder="Search name, url, adapter, error..."
-            className="text-sm px-3 py-2 rounded-md border border-[var(--card-border)] bg-[var(--background)] min-w-[240px]"
+            className="ui-input min-w-[240px]"
           />
           <select
             value={props.statusFilter}
             onChange={(event) => props.onSetStatusFilter(event.target.value as SourceStatusFilter)}
-            className="text-sm px-3 py-2 rounded-md border border-[var(--card-border)] bg-[var(--background)]"
+            className="ui-select"
           >
             <option value="all">All statuses</option>
             <option value="enabled">Enabled</option>
@@ -46,7 +51,7 @@ export function SourcesTableTab(props: Props) {
           <select
             value={props.sourceSort}
             onChange={(event) => props.onSetSourceSort(event.target.value as SourceSort)}
-            className="text-sm px-3 py-2 rounded-md border border-[var(--card-border)] bg-[var(--background)]"
+            className="ui-select"
           >
             <option value="last_polled">Sort: Last polled</option>
             <option value="name">Sort: Name</option>
@@ -69,7 +74,7 @@ export function SourcesTableTab(props: Props) {
           Select all visible
         </label>
         <span className="text-[var(--muted)]">
-          {props.selectedSourceIds.length} selected / {props.filteredSources.length} visible
+          {props.selectedSourceIds.length} selected / {props.totalFilteredCount} filtered
         </span>
       </div>
 
@@ -103,10 +108,10 @@ export function SourcesTableTab(props: Props) {
                   <td className="py-2 px-3">
                     <span className={`text-xs px-2 py-0.5 rounded ${
                       pending
-                        ? 'bg-amber-900 text-amber-300'
+                        ? 'border border-amber-300/40 bg-amber-200/30 text-amber-700'
                         : source.enabled
-                          ? 'bg-green-900 text-green-300'
-                          : 'bg-red-900 text-red-300'
+                          ? 'border border-emerald-300/40 bg-emerald-200/30 text-emerald-700'
+                          : 'border border-rose-300/40 bg-rose-200/30 text-rose-700'
                     }`}>
                       {pending ? 'Pending approval' : source.enabled ? 'Enabled' : 'Disabled'}
                     </span>
@@ -122,7 +127,7 @@ export function SourcesTableTab(props: Props) {
                   <td className="py-2 px-3">
                     <button
                       onClick={() => props.onScrapeNow(source.id)}
-                      className="text-xs px-3 py-1.5 rounded bg-[var(--accent)] text-white hover:bg-[var(--accent-strong)]"
+                      className="ui-btn ui-btn-primary text-xs"
                     >
                       Scrape Now
                     </button>
@@ -135,6 +140,30 @@ export function SourcesTableTab(props: Props) {
       </div>
 
       {props.filteredSources.length === 0 ? <p className="text-sm text-[var(--muted)] mt-3">No sources match this filter set.</p> : null}
+
+      {props.totalPages > 1 ? (
+        <div className="mt-4 flex items-center justify-between gap-3 border-t border-[var(--card-border)] pt-3">
+          <button
+            type="button"
+            onClick={props.onPreviousPage}
+            disabled={props.currentPage <= 1}
+            className="ui-btn ui-btn-secondary disabled:opacity-50"
+          >
+            Previous
+          </button>
+          <p className="text-sm text-[var(--muted)]">
+            Page {props.currentPage} of {props.totalPages}
+          </p>
+          <button
+            type="button"
+            onClick={props.onNextPage}
+            disabled={props.currentPage >= props.totalPages}
+            className="ui-btn ui-btn-secondary disabled:opacity-50"
+          >
+            Next
+          </button>
+        </div>
+      ) : null}
     </section>
   );
 }
