@@ -11,6 +11,7 @@ from packages.admin.service import (
     MigrationCommandTimedOutError,
     backend_health_summary,
     backend_logs_summary,
+    data_lifecycle_report,
     diagnose_listing_by_external_id,
     explain_source_quality,
     get_migration_status,
@@ -78,6 +79,22 @@ def get_source_freshness(db: Session = Depends(get_db_session)):
     sources represent live data gaps.
     """
     return source_freshness_report(db)
+
+
+@router.get("/data-lifecycle/report", summary="Data lifecycle archival/rollup report")
+def get_data_lifecycle_report(
+    property_archive_days: int = Query(365, ge=30, le=3650),
+    backend_log_archive_days: int = Query(90, ge=7, le=3650),
+    rollup_days: int = Query(180, ge=30, le=3650),
+    db: Session = Depends(get_db_session),
+):
+    """Return dry-run lifecycle candidates for archival and rollup workflows."""
+    return data_lifecycle_report(
+        db,
+        property_archive_days=property_archive_days,
+        backend_log_archive_days=backend_log_archive_days,
+        rollup_days=rollup_days,
+    )
 
 
 @router.get("/logs/discovery", summary="Recent discovery activity")

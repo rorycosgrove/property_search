@@ -5,6 +5,7 @@ import { useEffect, useMemo, useState } from 'react';
 import {
   getAlerts,
   getAnalyticsSummary,
+  getDataLifecycleReport,
   getGrants,
   getHealth,
   getProperties,
@@ -51,6 +52,13 @@ const ADMIN_CARDS = [
     cta: 'Open listing repair console',
   },
   {
+    title: 'Data Lifecycle',
+    description:
+      'Inspect archival and rollup candidate counts before running retention jobs across properties, logs, and history tables.',
+    href: '/settings#data-lifecycle',
+    cta: 'Open lifecycle controls',
+  },
+  {
     title: 'System Settings',
     description:
       'Adjust runtime settings, model preferences, and operator controls used across the workspace.',
@@ -67,6 +75,7 @@ const ADMIN_CARDS = [
 ];
 
 export default function AdminPage() {
+  const [lifecycleSummary, setLifecycleSummary] = useState<string>('Loading lifecycle candidates...');
   const [checks, setChecks] = useState<EndpointCheck[]>([
     { key: 'health', label: 'Platform health', route: '/admin', state: 'loading', detail: 'Checking...' },
     { key: 'properties', label: 'Properties domain', route: '/workspace', state: 'loading', detail: 'Checking...' },
@@ -76,6 +85,7 @@ export default function AdminPage() {
     { key: 'alerts', label: 'Alerts domain', route: '/alerts', state: 'loading', detail: 'Checking...' },
     { key: 'saved', label: 'Saved searches', route: '/saved-searches', state: 'loading', detail: 'Checking...' },
     { key: 'sources', label: 'Sources operations', route: '/sources', state: 'loading', detail: 'Checking...' },
+    { key: 'lifecycle', label: 'Data lifecycle', route: '/settings#data-lifecycle', state: 'loading', detail: 'Checking...' },
   ]);
 
   useEffect(() => {
@@ -91,6 +101,7 @@ export default function AdminPage() {
         getAlerts({ size: 1 }),
         getSavedSearches(),
         getSources(),
+        getDataLifecycleReport(),
       ]);
 
       if (cancelled) {
@@ -170,7 +181,25 @@ export default function AdminPage() {
             ? `${results[7].value.length} configured sources`
             : 'sources endpoint failed',
         },
+        {
+          key: 'lifecycle',
+          label: 'Data lifecycle',
+          route: '/settings#data-lifecycle',
+          state: results[8].status === 'fulfilled' ? 'ok' : 'error',
+          detail: results[8].status === 'fulfilled'
+            ? `${results[8].value.candidates.property_archive} archive · ${results[8].value.candidates.price_history_rollup} rollup`
+            : 'lifecycle endpoint failed',
+        },
       ];
+
+      if (results[8].status === 'fulfilled') {
+        const c = results[8].value.candidates;
+        setLifecycleSummary(
+          `${c.property_archive.toLocaleString()} properties, ${c.backend_log_archive.toLocaleString()} logs, ${c.price_history_rollup.toLocaleString()} price history rows, and ${c.timeline_rollup.toLocaleString()} timeline rows currently eligible.`
+        );
+      } else {
+        setLifecycleSummary('Unable to load lifecycle candidate counts.');
+      }
 
       setChecks(next);
     };
@@ -242,6 +271,15 @@ export default function AdminPage() {
             </article>
           ))}
         </div>
+      </section>
+
+      <section className="mt-6 rounded-2xl border border-[var(--card-border)] bg-[var(--card-bg)]/85 p-5">
+        <p className="text-[11px] uppercase tracking-[0.14em] text-[var(--muted)]">Lifecycle preview</p>
+        <h2 className="mt-1 text-2xl">Retention dry-run snapshot</h2>
+        <p className="mt-2 max-w-4xl text-sm leading-6 text-[var(--muted)]">{lifecycleSummary}</p>
+        <Link href="/settings#data-lifecycle" className="mt-3 inline-flex text-sm font-medium text-[var(--accent-strong)] hover:underline">
+          Open lifecycle settings
+        </Link>
       </section>
 
       <section className="mt-6 grid gap-4 md:grid-cols-2">

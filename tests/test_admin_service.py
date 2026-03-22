@@ -7,6 +7,7 @@ import pytest
 from packages.admin.service import (
     MigrationCommandFailedError,
     MigrationCommandTimedOutError,
+    data_lifecycle_report,
     explain_source_quality,
     get_migration_status,
     list_source_quality_activity,
@@ -369,3 +370,41 @@ def test_explain_source_quality_returns_decisions_and_scorecard():
     assert payload["scorecard"]["source_id"] == "s-1"
     assert payload["governance_decisions"][0]["action"] == "promote"
     assert payload["recent_scrape_quality"][0]["total_fetched"] == 100
+
+
+def test_data_lifecycle_report_returns_candidate_counts():
+    from packages.storage.models import BackendLog, Property, PropertyPriceHistory, PropertyTimelineEvent
+
+    counts = {
+        Property: 12,
+        BackendLog: 250,
+        PropertyPriceHistory: 1042,
+        PropertyTimelineEvent: 980,
+    }
+
+    class FakeQuery:
+        def __init__(self, model):
+            self.model = model
+
+        def filter(self, *_args, **_kwargs):
+            return self
+
+        def count(self):
+            return counts.get(self.model, 0)
+
+    class FakeDB:
+        def query(self, model):
+            return FakeQuery(model)
+
+    payload = data_lifecycle_report(
+        FakeDB(),
+        property_archive_days=365,
+        backend_log_archive_days=90,
+        rollup_days=180,
+    )
+
+    assert payload["candidates"]["property_archive"] == 12
+    assert payload["candidates"]["backend_log_archive"] == 250
+    assert payload["candidates"]["price_history_rollup"] == 1042
+    assert payload["candidates"]["timeline_rollup"] == 980
+    assert payload["actions"][0]["dry_run"] is True

@@ -17,6 +17,7 @@ from sqlalchemy.orm import Session
 
 from packages.shared.constants import MIGRATION_STATUS_TIMEOUT_SECONDS, MIGRATION_TIMEOUT_SECONDS
 from packages.storage.models import BackendLog, Source
+from packages.storage.models import Property, PropertyPriceHistory, PropertyTimelineEvent
 from packages.storage.repositories import (
     BackendLogRepository,
     PriceHistoryRepository,
@@ -194,6 +195,82 @@ def source_freshness_report(db: Session) -> dict[str, Any]:
         "stale": stale,
         "never_polled": never_polled,
         "healthy": healthy,
+    }
+
+
+def data_lifecycle_report(
+    db: Session,
+    *,
+    property_archive_days: int = 365,
+    backend_log_archive_days: int = 90,
+    rollup_days: int = 180,
+) -> dict[str, Any]:
+    """Return archival and rollup candidates for lifecycle operations.
+
+    This endpoint is intentionally read-only: it provides a safe dry-run
+    overview before any destructive or archival jobs are introduced.
+    """
+    now = datetime.now(UTC)
+
+    property_cutoff = now - timedelta(days=max(property_archive_days, 1))
+    log_cutoff = now - timedelta(days=max(backend_log_archive_days, 1))
+    rollup_cutoff = now - timedelta(days=max(rollup_days, 1))
+
+    property_archive_candidates = (
+        db.query(Property)
+        .filter(Property.status.in_(["sold", "withdrawn"]))
+        .filter(Property.updated_at < property_cutoff)
+        .count()
+    )
+
+    backend_log_archive_candidates = (
+        db.query(BackendLog)
+        .filter(BackendLog.created_at < log_cutoff)
+        .count()
+    )
+
+    price_history_rollup_candidates = (
+        db.query(PropertyPriceHistory)
+        .filter(PropertyPriceHistory.recorded_at < rollup_cutoff)
+        .count()
+    )
+
+    timeline_rollup_candidates = (
+        db.query(PropertyTimelineEvent)
+        .filter(PropertyTimelineEvent.occurred_at < rollup_cutoff)
+        .count()
+    )
+
+    return {
+        "checked_at": now.isoformat(),
+        "cutoffs": {
+            "property_archive_before": property_cutoff.isoformat(),
+            "backend_log_archive_before": log_cutoff.isoformat(),
+            "rollup_before": rollup_cutoff.isoformat(),
+        },
+        "candidates": {
+            "property_archive": int(property_archive_candidates),
+            "backend_log_archive": int(backend_log_archive_candidates),
+            "price_history_rollup": int(price_history_rollup_candidates),
+            "timeline_rollup": int(timeline_rollup_candidates),
+        },
+        "actions": [
+            {
+                "id": "archive_properties",
+                "description": "Archive sold/withdrawn properties older than cutoff",
+                "dry_run": True,
+            },
+            {
+                "id": "archive_backend_logs",
+                "description": "Archive backend logs older than cutoff",
+                "dry_run": True,
+            },
+            {
+                "id": "rollup_price_and_timeline",
+                "description": "Roll up historical price/timeline events older than cutoff",
+                "dry_run": True,
+            },
+        ],
     }
 
 

@@ -879,6 +879,26 @@ export interface BackendHealthSummary {
   };
 }
 
+export interface DataLifecycleReport {
+  checked_at: string;
+  cutoffs: {
+    property_archive_before: string;
+    backend_log_archive_before: string;
+    rollup_before: string;
+  };
+  candidates: {
+    property_archive: number;
+    backend_log_archive: number;
+    price_history_rollup: number;
+    timeline_rollup: number;
+  };
+  actions: Array<{
+    id: string;
+    description: string;
+    dry_run: boolean;
+  }>;
+}
+
 export interface BackendLogEntry {
   id: string;
   timestamp?: string;
@@ -928,6 +948,28 @@ export async function getBackendDiscoveryActivity(limit = 5): Promise<BackendDis
 
 export async function getBackendHealthSummary(): Promise<BackendHealthSummary> {
   return fetchJSON<BackendHealthSummary>('/api/v1/admin/logs/health');
+}
+
+export async function getDataLifecycleReport(options?: {
+  propertyArchiveDays?: number;
+  backendLogArchiveDays?: number;
+  rollupDays?: number;
+}): Promise<DataLifecycleReport> {
+  const params = new URLSearchParams();
+  if (options?.propertyArchiveDays !== undefined) {
+    params.set('property_archive_days', String(options.propertyArchiveDays));
+  }
+  if (options?.backendLogArchiveDays !== undefined) {
+    params.set('backend_log_archive_days', String(options.backendLogArchiveDays));
+  }
+  if (options?.rollupDays !== undefined) {
+    params.set('rollup_days', String(options.rollupDays));
+  }
+  const suffix = params.toString();
+  const path = suffix
+    ? `/api/v1/admin/data-lifecycle/report?${suffix}`
+    : '/api/v1/admin/data-lifecycle/report';
+  return fetchJSON<DataLifecycleReport>(path);
 }
 
 export async function getBackendRecentErrors(
