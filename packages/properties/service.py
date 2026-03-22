@@ -28,6 +28,15 @@ def _parse_csv_values(value: str | None) -> list[str] | None:
     return parsed or None
 
 
+def _parse_keywords(value: str | None) -> list[str] | None:
+    if not value:
+        return None
+    if "," in value:
+        return _parse_csv_values(value)
+    parsed = [item.strip() for item in value.split() if item.strip()]
+    return parsed or None
+
+
 def build_property_filters(
     *,
     page: int,
@@ -38,6 +47,8 @@ def build_property_filters(
     min_beds: int | None,
     max_beds: int | None,
     property_types: str | None,
+    sale_type: str | None,
+    keywords: str | None,
     ber_ratings: str | None,
     sort_by: str,
     sort_dir: str,
@@ -64,6 +75,8 @@ def build_property_filters(
         min_bedrooms=min_beds,
         max_bedrooms=max_beds,
         property_types=_parse_csv_values(property_types),
+        sale_type=sale_type,
+        keywords=_parse_keywords(keywords),
         ber_ratings=_parse_csv_values(ber_ratings),
         lat=lat,
         lng=lng,
@@ -156,6 +169,8 @@ def list_properties_payload(
     min_beds: int | None,
     max_beds: int | None,
     property_types: str | None,
+    sale_type: str | None,
+    keywords: str | None,
     ber_ratings: str | None,
     sort_by: str,
     sort_dir: str,
@@ -174,6 +189,8 @@ def list_properties_payload(
         min_beds=min_beds,
         max_beds=max_beds,
         property_types=property_types,
+        sale_type=sale_type,
+        keywords=keywords,
         ber_ratings=ber_ratings,
         sort_by=sort_by,
         sort_dir=sort_dir,

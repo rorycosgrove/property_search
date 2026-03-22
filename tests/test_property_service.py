@@ -58,6 +58,8 @@ class TestBuildPropertyFilters:
                 min_beds=None,
                 max_beds=None,
                 property_types=None,
+                sale_type=None,
+                keywords=None,
                 ber_ratings=None,
                 sort_by="created_at",
                 sort_dir="desc",
@@ -79,6 +81,8 @@ class TestBuildPropertyFilters:
                 min_beds=None,
                 max_beds=None,
                 property_types=None,
+                sale_type=None,
+                keywords=None,
                 ber_ratings=None,
                 sort_by="created_at",
                 sort_dir="desc",
@@ -138,6 +142,8 @@ class TestPropertyPayloads:
             min_beds=2,
             max_beds=4,
             property_types="house,apartment",
+            sale_type="sale",
+            keywords="Main",
             ber_ratings="A1,B2",
             sort_by="created_at",
             sort_dir="desc",
@@ -152,6 +158,8 @@ class TestPropertyPayloads:
         assert payload["pages"] == 1
         assert repo.last_filters is not None
         assert repo.last_filters.property_types == ["house", "apartment"]
+        assert repo.last_filters.sale_type == "sale"
+        assert repo.last_filters.keywords == ["Main"]
         assert repo.last_filters.ber_ratings == ["A1", "B2"]
 
     def test_property_to_dict_includes_price_history(self):

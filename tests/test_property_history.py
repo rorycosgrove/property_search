@@ -15,6 +15,14 @@ class DummySession:
             if isinstance(obj, model) and getattr(obj, 'id', None) == id:
                 return obj
         return None
+    def get_bind(self):
+        """Mock get_bind for dialect detection."""
+        bind = MagicMock()
+        bind.dialect.name = "sqlite"
+        return bind
+    def begin_nested(self):
+        """Mock savepoint context manager."""
+        return MagicMock(__enter__=MagicMock(return_value=None), __exit__=MagicMock(return_value=False))
 
 @pytest.fixture
 def dummy_session():
