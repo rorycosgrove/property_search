@@ -8,7 +8,8 @@ never ORM model instances. This decouples persistence from domain logic.
 
 from __future__ import annotations
 
-from datetime import datetime, timedelta
+from datetime import UTC, datetime, timedelta
+from typing import Any
 
 from geoalchemy2 import Geography
 from geoalchemy2.elements import WKTElement
@@ -40,6 +41,8 @@ from packages.storage.models import (
     PropertyDocument,
     PropertyGrantMatch,
     PropertyPriceHistory,
+    PropertyTimelineEvent,
+    SourceQualitySnapshot,
     OrganicSearchRun,
     SavedSearch,
     SoldProperty,
@@ -423,15 +426,12 @@ class PropertyRepository:
         self.session.flush()
         # Record initial price history
         if prop.price is not None:
-            from packages.storage.models import PropertyPriceHistory
-            price_history = PropertyPriceHistory(
+            PriceHistoryRepository(self.session).add_entry(
                 property_id=prop.id,
                 price=prop.price,
                 price_change=None,
                 price_change_pct=None,
             )
-            self.session.add(price_history)
-            self.session.flush()
         return prop
 
     def update(self, property_id: str, **kwargs) -> Property | None:
@@ -454,18 +454,15 @@ class PropertyRepository:
 
         # Record price history if price changed
         new_price = prop.price
-        if new_price is not None and old_price is not None and new_price != old_price:
-            from packages.storage.models import PropertyPriceHistory
-            price_change = new_price - old_price
-            price_change_pct = (price_change / old_price) * 100 if old_price else None
-            price_history = PropertyPriceHistory(
+        if new_price is not None and (old_price is None or new_price != old_price):
+            price_change = (new_price - old_price) if old_price is not None else None
+            price_change_pct = ((price_change / old_price) * 100) if old_price and price_change is not None else None
+            PriceHistoryRepository(self.session).add_entry(
                 property_id=prop.id,
                 price=new_price,
                 price_change=price_change,
                 price_change_pct=price_change_pct,
             )
-            self.session.add(price_history)
-            self.session.flush()
         return prop
 
     def get_stats(
@@ -609,6 +606,8 @@ class PriceHistoryRepository:
         price: float,
         price_change: float | None = None,
         price_change_pct: float | None = None,
+        timeline_event_type: str | None = None,
+        timeline_context: dict[str, Any] | None = None,
     ) -> PropertyPriceHistory:
         entry = PropertyPriceHistory(
             property_id=property_id,
@@ -618,6 +617,27 @@ class PriceHistoryRepository:
         )
         self.session.add(entry)
         self.session.flush()
+
+        resolved_event_type = timeline_event_type or (
+            "asking_price_changed" if price_change is not None else "asking_price_set"
+        )
+        context = dict(timeline_context or {})
+        metadata = {"origin": "price_history"}
+        metadata.update(context.pop("metadata_json", {}) or {})
+        dedup_key = context.pop("dedup_key", None) or f"price:{float(price):.2f}"
+
+        PropertyTimelineRepository(self.session).add_event(
+            property_id=property_id,
+            event_type=resolved_event_type,
+            price=price,
+            price_change=price_change,
+            price_change_pct=price_change_pct,
+            detection_method=str(context.pop("detection_method", None) or "price_history_repository"),
+            confidence_score=context.pop("confidence_score", 1.0),
+            dedup_key=dedup_key,
+            metadata_json=metadata,
+            **context,
+        )
         return entry
 
     def add_entry_if_new_price(
@@ -627,6 +647,8 @@ class PriceHistoryRepository:
         price_change: float | None = None,
         price_change_pct: float | None = None,
         tolerance: float = 0.01,
+        timeline_event_type: str | None = None,
+        timeline_context: dict[str, Any] | None = None,
     ) -> PropertyPriceHistory | None:
         """Insert a history row only when latest recorded price is different."""
         latest_price = self.get_latest_price(property_id)
@@ -637,6 +659,8 @@ class PriceHistoryRepository:
             price=price,
             price_change=price_change,
             price_change_pct=price_change_pct,
+            timeline_event_type=timeline_event_type,
+            timeline_context=timeline_context,
         )
 
     def get_for_property(self, property_id: str) -> list[PropertyPriceHistory]:
@@ -659,6 +683,94 @@ class PriceHistoryRepository:
             .limit(1)
         )
         return float(entry.price) if entry else None
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# PropertyTimelineRepository
+# ──────────────────────────────────────────────────────────────────────────────
+
+class PropertyTimelineRepository:
+    def __init__(self, session: Session):
+        self.session = session
+
+    @staticmethod
+    def _hour_bucket_utc(value: datetime | None) -> datetime:
+        if value is None:
+            ts = datetime.now(UTC)
+        elif value.tzinfo is None:
+            ts = value.replace(tzinfo=UTC)
+        else:
+            ts = value.astimezone(UTC)
+        return ts.replace(minute=0, second=0, microsecond=0, tzinfo=None)
+
+    def add_event(
+        self,
+        *,
+        property_id: str,
+        event_type: str,
+        occurred_at: datetime | None = None,
+        price: float | None = None,
+        price_change: float | None = None,
+        price_change_pct: float | None = None,
+        source_id: str | None = None,
+        adapter_name: str | None = None,
+        source_url: str | None = None,
+        detection_method: str | None = None,
+        confidence_score: float | None = None,
+        dedup_key: str | None = None,
+        evidence: dict | None = None,
+        metadata_json: dict | None = None,
+    ) -> PropertyTimelineEvent | None:
+        hour_bucket = self._hour_bucket_utc(occurred_at)
+
+        if dedup_key and hasattr(self.session, "scalar"):
+            existing = self.session.scalar(
+                select(PropertyTimelineEvent.id)
+                .where(PropertyTimelineEvent.property_id == property_id)
+                .where(PropertyTimelineEvent.event_type == event_type)
+                .where(PropertyTimelineEvent.dedup_key == dedup_key)
+                .where(PropertyTimelineEvent.occurred_hour_utc == hour_bucket)
+                .limit(1)
+            )
+            if existing:
+                return None
+
+        entry_kwargs = {
+            "property_id": property_id,
+            "event_type": event_type,
+            "occurred_hour_utc": hour_bucket,
+            "price": price,
+            "price_change": price_change,
+            "price_change_pct": price_change_pct,
+            "source_id": source_id,
+            "adapter_name": adapter_name,
+            "source_url": source_url,
+            "detection_method": detection_method,
+            "confidence_score": confidence_score,
+            "dedup_key": dedup_key,
+            "evidence": evidence or {},
+            "metadata_json": metadata_json or {},
+        }
+        if occurred_at is not None:
+            entry_kwargs["occurred_at"] = occurred_at
+
+        entry = PropertyTimelineEvent(
+            **entry_kwargs,
+        )
+        self.session.add(entry)
+        self.session.flush()
+        return entry
+
+    def list_for_property(self, property_id: str, *, limit: int = 200) -> list[PropertyTimelineEvent]:
+        safe_limit = max(1, min(limit, 2000))
+        return list(
+            self.session.scalars(
+                select(PropertyTimelineEvent)
+                .where(PropertyTimelineEvent.property_id == property_id)
+                .order_by(PropertyTimelineEvent.occurred_at.desc())
+                .limit(safe_limit)
+            )
+        )
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -1105,6 +1217,38 @@ class BackendLogRepository:
                 for row in by_event_rows
             ],
         }
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# SourceQualitySnapshotRepository
+# ──────────────────────────────────────────────────────────────────────────────
+
+class SourceQualitySnapshotRepository:
+    def __init__(self, session: Session):
+        self.session = session
+
+    def create_snapshot(self, **kwargs) -> SourceQualitySnapshot:
+        snapshot = SourceQualitySnapshot(**kwargs)
+        self.session.add(snapshot)
+        self.session.flush()
+        return snapshot
+
+    def list_recent(
+        self,
+        *,
+        source_id: str | None = None,
+        run_type: str | None = None,
+        limit: int = 100,
+    ) -> list[SourceQualitySnapshot]:
+        query = select(SourceQualitySnapshot)
+
+        if source_id:
+            query = query.where(SourceQualitySnapshot.source_id == source_id)
+        if run_type:
+            query = query.where(SourceQualitySnapshot.run_type == run_type)
+
+        query = query.order_by(SourceQualitySnapshot.created_at.desc()).limit(max(1, min(limit, 1000)))
+        return list(self.session.scalars(query))
 
 
 # ──────────────────────────────────────────────────────────────────────────────

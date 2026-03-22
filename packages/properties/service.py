@@ -243,3 +243,26 @@ def get_price_history_payload(*, repo: Any, property_id: str, limit: int) -> lis
         }
         for h in history
     ]
+
+
+def get_timeline_payload(*, repo: Any, property_id: str, limit: int) -> list[dict[str, Any]]:
+    history = repo.list_for_property(property_id, limit=limit)
+    return [
+        {
+            "id": str(event.id),
+            "event_type": event.event_type,
+            "occurred_at": event.occurred_at.isoformat() if event.occurred_at else None,
+            "price": float(event.price) if event.price is not None else None,
+            "price_change": float(event.price_change) if event.price_change is not None else None,
+            "price_change_pct": float(event.price_change_pct) if event.price_change_pct is not None else None,
+            "source_id": event.source_id,
+            "adapter_name": event.adapter_name,
+            "source_url": event.source_url,
+            "detection_method": event.detection_method,
+            "confidence_score": float(event.confidence_score) if event.confidence_score is not None else None,
+            "dedup_key": event.dedup_key,
+            "evidence": event.evidence or {},
+            "metadata": event.metadata_json or {},
+        }
+        for event in history
+    ]

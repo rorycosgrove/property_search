@@ -9,6 +9,7 @@ from packages.properties.service import (
     build_property_filters,
     get_price_history_payload,
     get_property_payload,
+    get_timeline_payload,
     list_properties_payload,
     property_to_dict,
 )
@@ -35,6 +36,14 @@ class _FakePriceHistoryRepo:
 
     def get_for_property(self, _property_id):
         return self._history
+
+
+class _FakeTimelineRepo:
+    def __init__(self, history):
+        self._history = history
+
+    def list_for_property(self, _property_id, limit=100):
+        return self._history[:limit]
 
 
 class TestBuildPropertyFilters:
@@ -205,3 +214,50 @@ class TestPropertyPayloads:
         assert len(payload) == 2
         assert payload[0]["id"] == "h-1"
         assert payload[1]["id"] == "h-2"
+
+    def test_get_timeline_payload_includes_provenance(self):
+        timeline = [
+            SimpleNamespace(
+                id="t-1",
+                event_type="asking_price_changed",
+                occurred_at=datetime(2026, 1, 1, tzinfo=UTC),
+                price=310000,
+                price_change=-5000,
+                price_change_pct=-1.59,
+                source_id="s-1",
+                adapter_name="daft",
+                source_url="https://example.com/p-1",
+                detection_method="worker_scrape_price_diff",
+                confidence_score=0.95,
+                dedup_key="price:310000.00",
+                evidence={"raw_id": "abc"},
+                metadata_json={"source_name": "Daft.ie"},
+            ),
+            SimpleNamespace(
+                id="t-2",
+                event_type="listing_discovered",
+                occurred_at=datetime(2026, 1, 2, tzinfo=UTC),
+                price=None,
+                price_change=None,
+                price_change_pct=None,
+                source_id="s-1",
+                adapter_name="daft",
+                source_url="https://example.com/p-1",
+                detection_method="worker_new_listing",
+                confidence_score=0.85,
+                dedup_key="listing:x-1",
+                evidence={},
+                metadata_json={"status": "new"},
+            ),
+        ]
+
+        repo = _FakeTimelineRepo(timeline)
+        payload = get_timeline_payload(repo=repo, property_id="p-1", limit=1)
+
+        assert len(payload) == 1
+        assert payload[0]["id"] == "t-1"
+        assert payload[0]["event_type"] == "asking_price_changed"
+        assert payload[0]["source_id"] == "s-1"
+        assert payload[0]["adapter_name"] == "daft"
+        assert payload[0]["confidence_score"] == pytest.approx(0.95)
+        assert payload[0]["metadata"]["source_name"] == "Daft.ie"

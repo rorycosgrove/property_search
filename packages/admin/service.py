@@ -4,6 +4,7 @@ import json
 import re
 import subprocess
 import sys
+from collections import defaultdict
 from datetime import UTC, datetime, timedelta
 from typing import Any
 from urllib.parse import urlparse
@@ -16,7 +17,13 @@ from sqlalchemy.orm import Session
 
 from packages.shared.constants import MIGRATION_STATUS_TIMEOUT_SECONDS, MIGRATION_TIMEOUT_SECONDS
 from packages.storage.models import BackendLog, Source
-from packages.storage.repositories import BackendLogRepository, PriceHistoryRepository, PropertyRepository, SourceRepository
+from packages.storage.repositories import (
+    BackendLogRepository,
+    PriceHistoryRepository,
+    PropertyRepository,
+    SourceQualitySnapshotRepository,
+    SourceRepository,
+)
 
 
 class AdminServiceError(Exception):
@@ -217,6 +224,303 @@ def list_discovery_activity(db: Session, *, limit: int = 5) -> list[dict[str, An
         }
         for row in rows
     ]
+
+
+def list_source_quality_activity(
+    db: Session,
+    *,
+    limit: int = 50,
+    source_id: str | None = None,
+    run_type: str | None = None,
+) -> list[dict[str, Any]]:
+    repo = SourceQualitySnapshotRepository(db)
+    rows = repo.list_recent(source_id=source_id, run_type=run_type, limit=limit)
+    return [
+        {
+            "id": row.id,
+            "created_at": row.created_at.isoformat() if row.created_at else None,
+            "source_id": row.source_id,
+            "source_name": row.source_name,
+            "adapter_name": row.adapter_name,
+            "run_type": row.run_type,
+            "total_fetched": row.total_fetched,
+            "parse_failed": row.parse_failed,
+            "new_count": row.new_count,
+            "updated_count": row.updated_count,
+            "price_unchanged_count": row.price_unchanged_count,
+            "dedup_conflicts": row.dedup_conflicts,
+            "candidates_scored": row.candidates_scored,
+            "created_count": row.created_count,
+            "auto_enabled_count": row.auto_enabled_count,
+            "pending_approval_count": row.pending_approval_count,
+            "existing_count": row.existing_count,
+            "skipped_invalid_count": row.skipped_invalid_count,
+            "skipped_invalid_config_count": row.skipped_invalid_config_count,
+            "score_avg": row.score_avg,
+            "score_max": row.score_max,
+            "dry_run": row.dry_run,
+            "follow_links": row.follow_links,
+            "details": row.details or {},
+        }
+        for row in rows
+    ]
+
+
+def source_quality_scorecards(
+    db: Session,
+    *,
+    lookback_hours: int = 168,
+    limit: int = 100,
+    min_samples: int = 3,
+) -> dict[str, Any]:
+    """Build rolling per-source quality scorecards from recent scrape snapshots."""
+    now = datetime.now(UTC)
+    cutoff = now - timedelta(hours=max(lookback_hours, 1))
+
+    quality_repo = SourceQualitySnapshotRepository(db)
+    source_repo = SourceRepository(db)
+
+    # Fetch a larger working set, then apply time/min-sample filtering in-process.
+    working_limit = max(limit * 25, 1000)
+    snapshots = quality_repo.list_recent(run_type="scrape", limit=min(working_limit, 5000))
+    snapshots = [s for s in snapshots if getattr(s, "created_at", None) and s.created_at >= cutoff]
+
+    governance_rows = quality_repo.list_recent(run_type="governance", limit=min(working_limit, 5000))
+    governance_rows = [
+        g for g in governance_rows if getattr(g, "source_id", None) and getattr(g, "created_at", None) and g.created_at >= cutoff
+    ]
+    latest_governance_by_source: dict[str, Any] = {}
+    for row in governance_rows:
+        sid = str(getattr(row, "source_id", "") or "").strip()
+        if not sid:
+            continue
+        current = latest_governance_by_source.get(sid)
+        if current is None or row.created_at > current.created_at:
+            latest_governance_by_source[sid] = row
+
+    by_source: dict[str, list[Any]] = defaultdict(list)
+    for snap in snapshots:
+        sid = str(getattr(snap, "source_id", "") or "").strip()
+        if sid:
+            by_source[sid].append(snap)
+
+    sources = source_repo.get_all(enabled_only=False)
+    source_by_id = {str(getattr(s, "id", "")): s for s in sources}
+
+    cards: list[dict[str, Any]] = []
+    dropped_min_samples = 0
+
+    for source_id, rows in by_source.items():
+        rows_sorted = sorted(rows, key=lambda r: getattr(r, "created_at", now), reverse=True)
+        samples = len(rows_sorted)
+        if samples < max(min_samples, 1):
+            dropped_min_samples += 1
+            continue
+
+        total_fetched = sum(int(getattr(r, "total_fetched", 0) or 0) for r in rows_sorted)
+        parse_failed = sum(int(getattr(r, "parse_failed", 0) or 0) for r in rows_sorted)
+        useful_changes = sum(
+            int(getattr(r, "new_count", 0) or 0) + int(getattr(r, "updated_count", 0) or 0)
+            for r in rows_sorted
+        )
+        dedup_conflicts = sum(int(getattr(r, "dedup_conflicts", 0) or 0) for r in rows_sorted)
+
+        avg_parse_fail_rate = (parse_failed / total_fetched) if total_fetched > 0 else None
+        latest = rows_sorted[0]
+        latest_fetched = int(getattr(latest, "total_fetched", 0) or 0)
+        latest_failed = int(getattr(latest, "parse_failed", 0) or 0)
+        latest_rate = (latest_failed / latest_fetched) if latest_fetched > 0 else None
+
+        baseline_rows = rows_sorted[1:]
+        baseline_fetched = sum(int(getattr(r, "total_fetched", 0) or 0) for r in baseline_rows)
+        baseline_failed = sum(int(getattr(r, "parse_failed", 0) or 0) for r in baseline_rows)
+        baseline_rate = (baseline_failed / baseline_fetched) if baseline_fetched > 0 else avg_parse_fail_rate
+        trend_delta = (latest_rate - baseline_rate) if (latest_rate is not None and baseline_rate is not None) else None
+
+        source = source_by_id.get(source_id)
+        tags = list(getattr(source, "tags", None) or []) if source else []
+        enabled = bool(getattr(source, "enabled", False)) if source else False
+        pending = "pending_approval" in tags
+
+        if avg_parse_fail_rate is None:
+            risk = "unknown"
+            recommendation = "monitor"
+        elif avg_parse_fail_rate >= 0.5:
+            risk = "high"
+            recommendation = "quarantine" if enabled else "monitor"
+        elif avg_parse_fail_rate >= 0.25:
+            risk = "medium"
+            recommendation = "monitor"
+        else:
+            risk = "low"
+            recommendation = "promote" if pending and useful_changes > 0 else "monitor"
+
+        cards.append(
+            {
+                "source_id": source_id,
+                "source_name": getattr(source, "name", None) or getattr(latest, "source_name", None),
+                "adapter_name": getattr(source, "adapter_name", None) or getattr(latest, "adapter_name", None),
+                "enabled": enabled,
+                "tags": tags,
+                "samples": samples,
+                "total_fetched": total_fetched,
+                "parse_failed": parse_failed,
+                "avg_parse_fail_rate": round(avg_parse_fail_rate, 4) if avg_parse_fail_rate is not None else None,
+                "latest_parse_fail_rate": round(latest_rate, 4) if latest_rate is not None else None,
+                "baseline_parse_fail_rate": round(baseline_rate, 4) if baseline_rate is not None else None,
+                "parse_fail_trend_delta": round(trend_delta, 4) if trend_delta is not None else None,
+                "useful_changes": useful_changes,
+                "dedup_conflicts": dedup_conflicts,
+                "risk_level": risk,
+                "recommendation": recommendation,
+                "last_observed_at": latest.created_at.isoformat() if getattr(latest, "created_at", None) else None,
+                "latest_governance_action": (
+                    (latest_governance_by_source.get(source_id).details or {}).get("action")
+                    if latest_governance_by_source.get(source_id)
+                    else None
+                ),
+                "latest_governance_reason": (
+                    (latest_governance_by_source.get(source_id).details or {}).get("reason")
+                    if latest_governance_by_source.get(source_id)
+                    else None
+                ),
+                "latest_governance_at": (
+                    latest_governance_by_source.get(source_id).created_at.isoformat()
+                    if latest_governance_by_source.get(source_id)
+                    and getattr(latest_governance_by_source.get(source_id), "created_at", None)
+                    else None
+                ),
+                "latest_governance_confidence": (
+                    _governance_confidence_for_scorecard(
+                        action=(latest_governance_by_source.get(source_id).details or {}).get("action"),
+                        avg_parse_fail_rate=avg_parse_fail_rate,
+                        thresholds=(latest_governance_by_source.get(source_id).details or {}).get("thresholds") or {},
+                    )
+                    if latest_governance_by_source.get(source_id)
+                    else None
+                ),
+            }
+        )
+
+    cards.sort(
+        key=lambda c: (
+            {"high": 0, "medium": 1, "low": 2, "unknown": 3}.get(c["risk_level"], 4),
+            -(c.get("samples") or 0),
+        )
+    )
+    cards = cards[: max(1, limit)]
+
+    return {
+        "generated_at": now.isoformat(),
+        "lookback_hours": int(max(lookback_hours, 1)),
+        "min_samples": int(max(min_samples, 1)),
+        "total_sources_seen": len(by_source),
+        "dropped_min_samples": dropped_min_samples,
+        "returned": len(cards),
+        "scorecards": cards,
+    }
+
+
+def _governance_confidence_for_scorecard(
+    *,
+    action: str | None,
+    avg_parse_fail_rate: float | None,
+    thresholds: dict[str, Any],
+) -> float | None:
+    """Estimate confidence in latest governance action from threshold distance."""
+    if avg_parse_fail_rate is None or action not in {"promote", "quarantine"}:
+        return None
+
+    promote_thr = float(thresholds.get("promote_parse_fail_rate", 0.1) or 0.1)
+    quarantine_thr = float(thresholds.get("quarantine_parse_fail_rate", 0.5) or 0.5)
+
+    if action == "promote":
+        denom = promote_thr if promote_thr > 0 else 0.1
+        score = (promote_thr - avg_parse_fail_rate) / denom
+    else:
+        denom = (1.0 - quarantine_thr) if quarantine_thr < 1.0 else 0.5
+        score = (avg_parse_fail_rate - quarantine_thr) / denom
+
+    return round(max(0.0, min(1.0, score)), 4)
+
+
+def explain_source_quality(
+    db: Session,
+    *,
+    source_id: str,
+    lookback_hours: int = 168,
+    min_samples: int = 3,
+    governance_limit: int = 20,
+    scrape_limit: int = 20,
+) -> dict[str, Any]:
+    """Return explainable quality and governance context for a single source."""
+    source_repo = SourceRepository(db)
+    source = source_repo.get_by_id(source_id)
+
+    scorecards_payload = source_quality_scorecards(
+        db,
+        lookback_hours=lookback_hours,
+        limit=500,
+        min_samples=min_samples,
+    )
+    scorecard = next(
+        (card for card in scorecards_payload.get("scorecards", []) if card.get("source_id") == source_id),
+        None,
+    )
+
+    quality_repo = SourceQualitySnapshotRepository(db)
+    governance_rows = quality_repo.list_recent(source_id=source_id, run_type="governance", limit=governance_limit)
+    scrape_rows = quality_repo.list_recent(source_id=source_id, run_type="scrape", limit=scrape_limit)
+
+    decisions = [
+        {
+            "created_at": row.created_at.isoformat() if row.created_at else None,
+            "action": (row.details or {}).get("action"),
+            "reason": (row.details or {}).get("reason"),
+            "thresholds": (row.details or {}).get("thresholds") or {},
+            "source_tags": (row.details or {}).get("source_tags") or [],
+            "parse_failed": row.parse_failed,
+            "total_fetched": row.total_fetched,
+            "new_count": row.new_count,
+            "updated_count": row.updated_count,
+        }
+        for row in governance_rows
+    ]
+
+    recent_scrape = [
+        {
+            "created_at": row.created_at.isoformat() if row.created_at else None,
+            "total_fetched": row.total_fetched,
+            "parse_failed": row.parse_failed,
+            "new_count": row.new_count,
+            "updated_count": row.updated_count,
+            "price_unchanged_count": row.price_unchanged_count,
+            "dedup_conflicts": row.dedup_conflicts,
+            "details": row.details or {},
+        }
+        for row in scrape_rows
+    ]
+
+    return {
+        "source_id": source_id,
+        "source_found": source is not None,
+        "source": {
+            "id": getattr(source, "id", None),
+            "name": getattr(source, "name", None),
+            "adapter_name": getattr(source, "adapter_name", None),
+            "enabled": bool(getattr(source, "enabled", False)) if source else False,
+            "tags": list(getattr(source, "tags", None) or []) if source else [],
+        },
+        "scorecard": scorecard,
+        "governance_decisions": decisions,
+        "recent_scrape_quality": recent_scrape,
+        "meta": {
+            "lookback_hours": int(max(lookback_hours, 1)),
+            "min_samples": int(max(min_samples, 1)),
+            "governance_limit": int(max(governance_limit, 1)),
+            "scrape_limit": int(max(scrape_limit, 1)),
+        },
+    }
 
 
 def list_backend_logs(

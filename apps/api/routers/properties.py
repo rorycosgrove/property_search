@@ -11,12 +11,13 @@ from packages.properties.service import (
     get_price_history_payload,
     get_property_payload,
     get_similar_payload,
+    get_timeline_payload,
     list_properties_payload,
 )
 from packages.shared.constants import DEFAULT_PAGE_SIZE, MAX_PAGE_SIZE
-from packages.shared.schemas import PropertyListResponse, PropertyResponse
+from packages.shared.schemas import PropertyListResponse, PropertyResponse, PropertyTimelineEventResponse
 from packages.storage.database import get_db_session
-from packages.storage.repositories import PriceHistoryRepository, PropertyRepository
+from packages.storage.repositories import PriceHistoryRepository, PropertyRepository, PropertyTimelineRepository
 
 router = APIRouter()
 
@@ -88,6 +89,17 @@ def get_price_history(
     """Get price history for a property."""
     repo = PriceHistoryRepository(db)
     return get_price_history_payload(repo=repo, property_id=property_id, limit=limit)
+
+
+@router.get("/{property_id}/timeline", response_model=list[PropertyTimelineEventResponse])
+def get_timeline(
+    property_id: str = Path(..., min_length=36, max_length=36),
+    limit: int = Query(100, ge=1, le=1000, description="Max number of timeline entries"),
+    db: Session = Depends(get_db_session),
+):
+    """Get unified timeline events for a property with provenance and confidence."""
+    repo = PropertyTimelineRepository(db)
+    return get_timeline_payload(repo=repo, property_id=property_id, limit=limit)
 
 
 @router.get("/{property_id}/similar")
