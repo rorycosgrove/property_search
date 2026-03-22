@@ -296,6 +296,74 @@ export async function getPropertyIntelligence(id: string): Promise<PropertyIntel
   return fetchJSON<PropertyIntelligence>(`/api/v1/properties/${id}/intelligence`);
 }
 
+// ── Discovery feed ───────────────────────────────────────────────────────────
+
+export type SignalType = 'price_drop' | 'high_value' | 'stale' | 'new_listing';
+
+export interface DiscoverySignal {
+  signal_type: SignalType;
+  severity: 'high' | 'medium' | 'low';
+  property_id: string;
+  title: string;
+  address: string;
+  county?: string;
+  price?: number;
+  url: string;
+  image_url?: string;
+  status: string;
+  created_at: string;
+  headline: string;
+  detail: string;
+  // signal-specific extras
+  value_score?: number;
+  days_on_market?: number;
+}
+
+export async function getDiscoveryFeed(limit = 20): Promise<DiscoverySignal[]> {
+  return fetchJSON<DiscoverySignal[]>(`/api/v1/discovery/feed?limit=${limit}`);
+}
+
+// ── Property brief ───────────────────────────────────────────────────────────
+
+export interface PropertyBrief {
+  property_id: string;
+  generated_at: string;
+  completeness_score: number;
+  listing: {
+    title?: string;
+    address?: string;
+    county?: string;
+    price?: number;
+    net_price?: number;
+    eligible_grants_total?: number;
+    bedrooms?: number;
+    bathrooms?: number;
+    floor_area_sqm?: number;
+    ber_rating?: string;
+    property_type?: string;
+    status?: string;
+    url?: string;
+  };
+  ai_analysis: {
+    summary?: string;
+    value_score?: number;
+    value_reasoning?: string;
+    pros: string[];
+    cons: string[];
+    neighbourhood_notes?: string;
+    investment_potential?: string;
+  };
+  price_history_summary: { date: string; price: number; change_pct: number }[];
+  timeline_event_count: number;
+  evidence_document_count: number;
+  risk_flags: string[];
+  data_sources: { price_history_entries: number; timeline_events: number; rag_documents: number };
+}
+
+export async function getPropertyBrief(id: string): Promise<PropertyBrief> {
+  return fetchJSON<PropertyBrief>(`/api/v1/properties/${id}/brief`);
+}
+
 // ── Sold Properties ─────────────────────────────────────────────────────────
 
 export interface SoldProperty {

@@ -356,3 +356,96 @@ def get_intelligence_payload(
             "rag_documents": len(documents),
         },
     }
+
+
+def get_brief_payload(
+    *,
+    property_repo: Any,
+    price_history_repo: Any,
+    timeline_repo: Any,
+    document_repo: Any,
+    property_id: str,
+) -> dict[str, Any]:
+    """Generate a structured decision brief for a single property.
+
+    Combines listing detail, price history, AI enrichment, and key risk flags
+    into a report format suited for saving or sharing.
+    """
+    intel = get_intelligence_payload(
+        property_repo=property_repo,
+        price_history_repo=price_history_repo,
+        timeline_repo=timeline_repo,
+        document_repo=document_repo,
+        property_id=property_id,
+    )
+    listing = intel["listing"]
+    enr = listing.get("enrichment") or {}
+    price_history = intel["price_history"]
+
+    # -- Price change summary --
+    price_change_summary: list[dict] = []
+    for h in price_history[:5]:
+        if h.get("price_change_pct"):
+            price_change_summary.append({
+                "date": h["recorded_at"],
+                "price": h["price"],
+                "change_pct": h["price_change_pct"],
+            })
+
+    # -- Risk flags --
+    risk_flags: list[str] = []
+    from datetime import datetime, timedelta, timezone
+    if listing.get("created_at"):
+        try:
+            listed_dt = datetime.fromisoformat(listing["created_at"].replace("Z", "+00:00"))
+            days_on = (datetime.now(timezone.utc) - listed_dt).days
+            if days_on > 90:
+                risk_flags.append(f"Listed for {days_on} days — may indicate reduced demand")
+        except ValueError:
+            pass
+
+    if not listing.get("ber_rating"):
+        risk_flags.append("BER rating not available — energy performance unknown")
+    if not listing.get("latitude"):
+        risk_flags.append("Geographic data incomplete — transport links unverifiable")
+    if len(price_history) > 0 and price_history[0].get("price_change_pct", 0) <= -5:
+        risk_flags.append(f"Recent price drop of {abs(price_history[0]['price_change_pct']):.1f}% — verify reason")
+
+    # -- Grant summary --
+    net_price = listing.get("net_price")
+    eligible_grants_total = listing.get("eligible_grants_total")
+
+    return {
+        "property_id": property_id,
+        "generated_at": datetime.now(timezone.utc).isoformat(),
+        "completeness_score": intel["completeness_score"],
+        "listing": {
+            "title": listing.get("title"),
+            "address": listing.get("address"),
+            "county": listing.get("county"),
+            "price": listing.get("price"),
+            "net_price": net_price,
+            "eligible_grants_total": eligible_grants_total,
+            "bedrooms": listing.get("bedrooms"),
+            "bathrooms": listing.get("bathrooms"),
+            "floor_area_sqm": listing.get("floor_area_sqm"),
+            "ber_rating": listing.get("ber_rating"),
+            "property_type": listing.get("property_type"),
+            "status": listing.get("status"),
+            "url": listing.get("url"),
+        },
+        "ai_analysis": {
+            "summary": enr.get("summary"),
+            "value_score": enr.get("value_score"),
+            "value_reasoning": enr.get("value_reasoning"),
+            "pros": enr.get("pros", []),
+            "cons": enr.get("cons", []),
+            "neighbourhood_notes": enr.get("neighbourhood_notes"),
+            "investment_potential": enr.get("investment_potential"),
+        },
+        "price_history_summary": price_change_summary,
+        "timeline_event_count": len(intel["timeline"]),
+        "evidence_document_count": len(intel["documents"]),
+        "risk_flags": risk_flags,
+        "data_sources": intel["data_sources"],
+    }

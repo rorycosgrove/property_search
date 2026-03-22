@@ -8,6 +8,7 @@ import {
   getPropertyIntelligence,
   triggerEnrichment,
 } from '@/lib/api';
+import { getPropertyBrief, type PropertyBrief } from '@/lib/api';
 import { useMapStore } from '@/lib/stores';
 import { berColor, formatDate, formatEur } from '@/lib/utils';
 
@@ -50,6 +51,8 @@ export default function PropertyDetail({ property: prop, onClose }: Props) {
   const [loadError, setLoadError] = useState<string | null>(null);
   const [enrichPending, setEnrichPending] = useState(false);
   const [activeTab, setActiveTab] = useState<'overview' | 'history' | 'evidence' | 'ai'>('overview');
+  const [brief, setBrief] = useState<PropertyBrief | null>(null);
+  const [briefLoading, setBriefLoading] = useState(false);
   const { comparedPropertyIds, toggleCompareProperty } = useMapStore();
   const inCompare = comparedPropertyIds.includes(prop.id);
 
@@ -215,6 +218,64 @@ export default function PropertyDetail({ property: prop, onClose }: Props) {
           >
             View listing
           </a>
+        </div>
+
+        {/* Brief generation */}
+        <div className="mt-2">
+          {!brief ? (
+            <button
+              type="button"
+              disabled={briefLoading}
+              onClick={async () => {
+                setBriefLoading(true);
+                try {
+                  const b = await getPropertyBrief(prop.id);
+                  setBrief(b);
+                } finally {
+                  setBriefLoading(false);
+                }
+              }}
+              className="w-full rounded-full border border-[var(--card-border)] py-1.5 text-xs font-medium text-[var(--muted)] transition-colors hover:border-[var(--accent)] hover:text-[var(--foreground)] disabled:opacity-50"
+            >
+              {briefLoading ? 'Generating brief…' : 'Generate decision brief'}
+            </button>
+          ) : (
+            <div className="rounded-2xl border border-[var(--card-border)] bg-[var(--card-bg)] p-3 text-xs">
+              <div className="flex items-center justify-between">
+                <p className="font-semibold">Decision Brief</p>
+                <button
+                  type="button"
+                  onClick={() => setBrief(null)}
+                  className="text-[var(--muted)] hover:text-[var(--foreground)]"
+                >
+                  ✕
+                </button>
+              </div>
+              {brief.risk_flags.length > 0 && (
+                <ul className="mt-2 space-y-1">
+                  {brief.risk_flags.map((flag, i) => (
+                    <li key={i} className="flex items-start gap-1.5 text-[var(--danger)]">
+                      <span className="mt-0.5 flex-shrink-0">⚠</span>
+                      <span className="leading-snug">{flag}</span>
+                    </li>
+                  ))}
+                </ul>
+              )}
+              {brief.ai_analysis.summary && (
+                <p className="mt-2 leading-relaxed text-[var(--muted)]">{brief.ai_analysis.summary}</p>
+              )}
+              {brief.ai_analysis.value_score != null && (
+                <p className="mt-1 font-medium">
+                  AI value score: <span className="text-[var(--success)]">{brief.ai_analysis.value_score.toFixed(1)}/10</span>
+                </p>
+              )}
+              <p className="mt-2 text-[var(--muted)]">
+                Data: {brief.data_sources.price_history_entries} price entries ·{' '}
+                {brief.data_sources.timeline_events} timeline events ·{' '}
+                {brief.data_sources.rag_documents} evidence docs
+              </p>
+            </div>
+          )}
         </div>
       </div>
 

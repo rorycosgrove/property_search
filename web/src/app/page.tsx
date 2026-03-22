@@ -1,4 +1,5 @@
 import Link from 'next/link';
+import DiscoveryFeed from '@/components/DiscoveryFeed';
 
 const SURFACES = [
   {
@@ -121,6 +122,11 @@ export default function HomePage() {
             </Link>
           ))}
         </div>
+      </section>
+
+      {/* Discovery feed */}
+      <section className="mt-6">
+        <DiscoveryFeed limit={12} />
       </section>
     </div>
   );

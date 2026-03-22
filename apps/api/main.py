@@ -24,6 +24,7 @@ from apps.api.routers import (
     sold,
     sources,
 )
+from apps.api.routers import discovery, events
 from packages.shared.config import settings
 from packages.shared.logging import get_logger, setup_logging
 
@@ -77,3 +78,5 @@ app.include_router(saved_searches.router, prefix="/api/v1/saved-searches", tags=
 app.include_router(llm.router, prefix="/api/v1/llm", tags=["LLM / AI"])
 app.include_router(grants.router, prefix="/api/v1/grants", tags=["Grants / Incentives"])
 app.include_router(admin.router, prefix="/api/v1/admin", tags=["Admin"])
+app.include_router(discovery.router, prefix="/api/v1/discovery", tags=["Discovery"])
+app.include_router(events.router, prefix="/api/v1/events", tags=["Events"])
