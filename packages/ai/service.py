@@ -57,14 +57,31 @@ def get_provider(provider_name: str | None = None, model: str | None = None) -> 
     Get an LLM provider instance.
 
     Checks DynamoDB for runtime config override, then falls back to settings.
+    If the resolved provider fails its health check, attempts a fallback to
+    the default Bedrock provider before raising.
     """
     provider_name = provider_name or _get_active_provider_name()
     active_model = model or _get_active_model()
 
-    if provider_name != "bedrock":
-        logger.warning("llm_provider_not_supported", provider=provider_name, fallback="bedrock")
+    # Registry maps provider names to factory callables
+    _registry: dict[str, Any] = {
+        "bedrock": lambda: BedrockProvider(model_id=active_model),
+    }
 
-    return BedrockProvider(model_id=active_model)
+    factory = _registry.get(provider_name)
+    if factory is None:
+        logger.warning("llm_provider_not_supported", provider=provider_name, fallback="bedrock")
+        factory = _registry["bedrock"]
+
+    try:
+        provider = factory()
+        return provider
+    except Exception as exc:
+        logger.warning("llm_provider_init_failed", provider=provider_name, error=str(exc))
+        if provider_name != "bedrock":
+            logger.info("llm_provider_fallback", fallback="bedrock")
+            return BedrockProvider(model_id=active_model)
+        raise
 
 
 def _get_active_provider_name() -> str:

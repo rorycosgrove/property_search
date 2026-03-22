@@ -283,3 +283,76 @@ def get_timeline_payload(*, repo: Any, property_id: str, limit: int) -> list[dic
         }
         for event in history
     ]
+
+
+def get_intelligence_payload(
+    *,
+    property_repo: Any,
+    price_history_repo: Any,
+    timeline_repo: Any,
+    document_repo: Any,
+    property_id: str,
+) -> dict[str, Any]:
+    """Consolidated intelligence payload for a single property.
+
+    Combines: listing detail, price history, timeline, RAG documents, and a
+    completeness score so the frontend can surface a single unified view.
+    """
+    prop = property_repo.get_by_id(property_id)
+    if not prop:
+        raise PropertyNotFoundError(property_id)
+
+    listing = property_to_dict(prop)
+
+    price_history = get_price_history_payload(
+        repo=price_history_repo,
+        property_id=property_id,
+        limit=50,
+    )
+
+    timeline = get_timeline_payload(
+        repo=timeline_repo,
+        property_id=property_id,
+        limit=50,
+    )
+
+    # Retrieve stored RAG documents for this property
+    documents = document_repo.list_for_property(property_id)
+    doc_summaries = [
+        {
+            "document_key": d.document_key,
+            "document_type": d.document_type,
+            "title": d.title,
+            "effective_at": d.effective_at.isoformat() if d.effective_at else None,
+            "county": d.county,
+        }
+        for d in documents
+    ]
+
+    # Simple completeness score: fraction of key data points present
+    checks = [
+        bool(prop.price),
+        bool(prop.bedrooms),
+        bool(prop.county),
+        bool(prop.latitude and prop.longitude),
+        bool(prop.ber_rating),
+        bool(prop.enrichment),
+        len(price_history) > 0,
+        len(timeline) > 0,
+        len(documents) > 0,
+    ]
+    completeness_score = round(sum(checks) / len(checks), 2)
+
+    return {
+        "property_id": property_id,
+        "listing": listing,
+        "price_history": price_history,
+        "timeline": timeline,
+        "documents": doc_summaries,
+        "completeness_score": completeness_score,
+        "data_sources": {
+            "price_history_entries": len(price_history),
+            "timeline_events": len(timeline),
+            "rag_documents": len(documents),
+        },
+    }

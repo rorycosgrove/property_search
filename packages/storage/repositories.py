@@ -1291,6 +1291,52 @@ class PropertyDocumentRepository:
         )
         return list(self.session.scalars(query))
 
+    def search_documents(
+        self,
+        query_terms: list[str],
+        *,
+        county: str | None = None,
+        property_id: str | None = None,
+        doc_types: list[str] | None = None,
+        limit: int = 20,
+    ) -> list[PropertyDocument]:
+        """Lexical keyword search across document content and title.
+
+        Returns documents ordered by a combined relevance+freshness score.
+        The caller is responsible for ranking/scoring if needed; this provides
+        a broad retrieval set filtered to the most relevant candidates.
+        """
+        stmt = select(PropertyDocument)
+
+        # Restrict by property or county scope
+        if property_id:
+            stmt = stmt.where(PropertyDocument.property_id == property_id)
+        if county:
+            stmt = stmt.where(PropertyDocument.county == county)
+        if doc_types:
+            stmt = stmt.where(PropertyDocument.document_type.in_(doc_types))
+
+        # Build keyword match condition across content + title (any term)
+        if query_terms:
+            term_conditions = []
+            for term in query_terms[:10]:  # cap at 10 terms to protect the query
+                pattern = f"%{term}%"
+                term_conditions.append(PropertyDocument.content.ilike(pattern))
+                term_conditions.append(PropertyDocument.title.ilike(pattern))
+            stmt = stmt.where(or_(*term_conditions))
+
+        # Order: non-expired first, then by most recent effective_at
+        now = datetime.now(UTC)
+        stmt = stmt.where(
+            or_(PropertyDocument.expires_at.is_(None), PropertyDocument.expires_at > now)
+        )
+        stmt = stmt.order_by(
+            PropertyDocument.effective_at.desc().nullslast(),
+            PropertyDocument.updated_at.desc(),
+        ).limit(limit)
+
+        return list(self.session.scalars(stmt))
+
 
 # ──────────────────────────────────────────────────────────────────────────────
 # BackendLogRepository

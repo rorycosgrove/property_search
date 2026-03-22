@@ -267,6 +267,34 @@ export async function getSimilarProperties(id: string, limit = 5): Promise<Prope
   return fetchJSON<Property[]>(`/api/v1/properties/${id}/similar?limit=${limit}`);
 }
 
+// ── Property Intelligence ────────────────────────────────────────────────────
+
+export interface PropertyDocumentSummary {
+  document_key: string;
+  document_type: string;
+  title: string | null;
+  effective_at: string | null;
+  county: string | null;
+}
+
+export interface PropertyIntelligence {
+  property_id: string;
+  listing: Property;
+  price_history: PriceHistoryEntry[];
+  timeline: PropertyTimelineEvent[];
+  documents: PropertyDocumentSummary[];
+  completeness_score: number;
+  data_sources: {
+    price_history_entries: number;
+    timeline_events: number;
+    rag_documents: number;
+  };
+}
+
+export async function getPropertyIntelligence(id: string): Promise<PropertyIntelligence> {
+  return fetchJSON<PropertyIntelligence>(`/api/v1/properties/${id}/intelligence`);
+}
+
 // ── Sold Properties ─────────────────────────────────────────────────────────
 
 export interface SoldProperty {
