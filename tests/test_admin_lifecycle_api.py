@@ -5,6 +5,7 @@ from unittest.mock import MagicMock, patch
 from fastapi.testclient import TestClient
 
 from apps.api.main import app
+from packages.shared.config import settings
 
 
 def _client() -> TestClient:
@@ -89,6 +90,7 @@ def test_execute_data_lifecycle_action_endpoint():
         mock_run.assert_called_once_with(
             mock_session,
             action="archive_properties",
+            queue_settings=settings,
             dry_run=True,
             property_archive_days=365,
             backend_log_archive_days=90,

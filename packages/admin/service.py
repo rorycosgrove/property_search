@@ -278,6 +278,7 @@ def run_data_lifecycle_action(
     db: Session,
     *,
     action: str,
+    queue_settings: Any | None = None,
     dry_run: bool = True,
     property_archive_days: int = 365,
     backend_log_archive_days: int = 90,
@@ -285,8 +286,8 @@ def run_data_lifecycle_action(
 ) -> dict[str, Any]:
     """Execute a lifecycle action in dry-run mode and emit an audit log.
 
-    Safety guard: non-dry-run execution is intentionally blocked until
-    dedicated archival/rollup jobs with rollback strategy are introduced.
+    Safety guard: non-dry-run execution requires explicit feature enablement
+    and a rollback-plan identifier before execution can be considered.
     """
     allowed_actions = {
         "archive_properties": "property_archive",
@@ -300,9 +301,26 @@ def run_data_lifecycle_action(
             f"invalid action '{normalized}'. expected one of: {', '.join(allowed_actions)}"
         )
 
+    destructive_enabled = bool(getattr(queue_settings, "lifecycle_destructive_execution_enabled", False))
+    rollback_plan_id = str(getattr(queue_settings, "lifecycle_rollback_plan_id", "") or "").strip()
+    destructive_ready = destructive_enabled and bool(rollback_plan_id)
+
+    if not dry_run and not destructive_enabled:
+        raise AdminServiceError(
+            "non-dry-run lifecycle execution requires lifecycle_destructive_execution_enabled=true"
+        )
+    if not dry_run and not rollback_plan_id:
+        raise AdminServiceError(
+            "non-dry-run lifecycle execution requires lifecycle_rollback_plan_id to be configured"
+        )
+    if not dry_run and not destructive_ready:
+        raise AdminServiceError(
+            "non-dry-run lifecycle execution is not ready; verify feature flag and rollback-plan controls"
+        )
+
     if not dry_run:
         raise AdminServiceError(
-            "non-dry-run lifecycle execution is disabled. pass dry_run=true"
+            "non-dry-run lifecycle execution path is gated and not yet available for this action"
         )
 
     report = data_lifecycle_report(
@@ -323,6 +341,11 @@ def run_data_lifecycle_action(
         "status": "dry_run_completed",
         "action": normalized,
         "dry_run": True,
+        "execution_mode": {
+            "destructive_enabled": destructive_enabled,
+            "rollback_plan_id_configured": bool(rollback_plan_id),
+            "destructive_ready": destructive_ready,
+        },
         "executed_at": datetime.now(UTC).isoformat(),
         "affected_candidates": affected,
         "report": report,
@@ -716,12 +739,23 @@ def data_lifecycle_schedule_metadata(
     )
     last_run = recent_runs[0] if recent_runs else None
 
+    destructive_enabled = bool(getattr(queue_settings, "lifecycle_destructive_execution_enabled", False))
+    rollback_plan_id = str(getattr(queue_settings, "lifecycle_rollback_plan_id", "") or "").strip()
+    destructive_ready = destructive_enabled and bool(rollback_plan_id)
+
     return {
         "checked_at": datetime.now(UTC).isoformat(),
         "execution_mode": {
-            "destructive_enabled": False,
-            "dry_run_only": True,
-            "note": "Destructive lifecycle execution remains disabled until feature-flag and rollback controls are implemented.",
+            "destructive_enabled": destructive_enabled,
+            "rollback_plan_id_configured": bool(rollback_plan_id),
+            "destructive_ready": destructive_ready,
+            "dry_run_only": not destructive_ready,
+            "note": (
+                "Dry-run only: set lifecycle_destructive_execution_enabled=true and configure "
+                "lifecycle_rollback_plan_id to arm destructive execution controls."
+                if not destructive_ready
+                else "Destructive execution controls are armed; endpoint policy still applies per-action safeguards."
+            ),
         },
         "cadence": {
             "source_scrape_interval_seconds": int(getattr(queue_settings, "scrape_poll_interval_seconds", 0) or 0),

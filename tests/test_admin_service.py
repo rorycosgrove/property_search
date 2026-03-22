@@ -9,6 +9,7 @@ from packages.admin.service import (
     MigrationCommandFailedError,
     MigrationCommandTimedOutError,
     data_lifecycle_report,
+    data_lifecycle_schedule_metadata,
     explain_source_quality,
     get_migration_status,
     list_source_quality_activity,
@@ -478,9 +479,89 @@ def test_run_data_lifecycle_action_rejects_non_dry_run():
         def flush(self):
             raise AssertionError("flush should not be called")
 
-    with pytest.raises(AdminServiceError, match="dry_run"):
+    with pytest.raises(AdminServiceError, match="lifecycle_destructive_execution_enabled"):
         run_data_lifecycle_action(
             FakeDB(),
             action="archive_properties",
             dry_run=False,
         )
+
+
+def test_run_data_lifecycle_action_rejects_non_dry_run_without_flag_enabled():
+    class FakeDB:
+        def query(self, _model):
+            class _Q:
+                def filter(self, *_args, **_kwargs):
+                    return self
+
+                def count(self):
+                    return 0
+
+            return _Q()
+
+    settings = SimpleNamespace(
+        lifecycle_destructive_execution_enabled=False,
+        lifecycle_rollback_plan_id="rollbacks/2026-03-lifecycle",
+    )
+
+    with pytest.raises(AdminServiceError, match="lifecycle_destructive_execution_enabled"):
+        run_data_lifecycle_action(
+            FakeDB(),
+            action="archive_properties",
+            queue_settings=settings,
+            dry_run=False,
+        )
+
+
+def test_run_data_lifecycle_action_rejects_non_dry_run_without_rollback_plan():
+    class FakeDB:
+        def query(self, _model):
+            class _Q:
+                def filter(self, *_args, **_kwargs):
+                    return self
+
+                def count(self):
+                    return 0
+
+            return _Q()
+
+    settings = SimpleNamespace(
+        lifecycle_destructive_execution_enabled=True,
+        lifecycle_rollback_plan_id="",
+    )
+
+    with pytest.raises(AdminServiceError, match="lifecycle_rollback_plan_id"):
+        run_data_lifecycle_action(
+            FakeDB(),
+            action="archive_properties",
+            queue_settings=settings,
+            dry_run=False,
+        )
+
+
+def test_data_lifecycle_schedule_metadata_exposes_execution_readiness():
+    class FakeRepo:
+        def __init__(self, _db):
+            pass
+
+        def list_recent(self, **_kwargs):
+            return []
+
+    with pytest.MonkeyPatch.context() as m:
+        m.setattr("packages.admin.service.BackendLogRepository", FakeRepo)
+        payload = data_lifecycle_schedule_metadata(
+            SimpleNamespace(),
+            queue_settings=SimpleNamespace(
+                scrape_poll_interval_seconds=21600,
+                rss_poll_interval_seconds=3600,
+                ppr_poll_interval_seconds=86400,
+                backend_log_retention_days=7,
+                lifecycle_destructive_execution_enabled=True,
+                lifecycle_rollback_plan_id="rollbacks/2026-03-lifecycle",
+            ),
+        )
+
+    assert payload["execution_mode"]["destructive_enabled"] is True
+    assert payload["execution_mode"]["rollback_plan_id_configured"] is True
+    assert payload["execution_mode"]["destructive_ready"] is True
+    assert payload["execution_mode"]["dry_run_only"] is False

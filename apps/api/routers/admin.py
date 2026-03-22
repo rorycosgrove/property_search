@@ -100,10 +100,10 @@ def get_data_lifecycle_report(
     )
 
 
-@router.post("/data-lifecycle/actions/{action}", summary="Execute lifecycle action (dry-run only)")
+@router.post("/data-lifecycle/actions/{action}", summary="Execute lifecycle action (guarded; dry-run by default)")
 def execute_data_lifecycle_action(
     action: str,
-    dry_run: bool = Query(True, description="Must be true. non-dry-run is intentionally disabled"),
+    dry_run: bool = Query(True, description="Defaults to true. non-dry-run requires feature flag + rollback controls."),
     property_archive_days: int = Query(365, ge=30, le=3650),
     backend_log_archive_days: int = Query(90, ge=7, le=3650),
     rollup_days: int = Query(180, ge=30, le=3650),
@@ -113,6 +113,7 @@ def execute_data_lifecycle_action(
         return run_data_lifecycle_action(
             db,
             action=action,
+            queue_settings=settings,
             dry_run=dry_run,
             property_archive_days=property_archive_days,
             backend_log_archive_days=backend_log_archive_days,

@@ -91,6 +91,10 @@ class Settings(BaseSettings):
     enable_tracing: bool = False
     backend_log_retention_days: int = 7
 
+    # ── Admin lifecycle execution controls ────────
+    lifecycle_destructive_execution_enabled: bool = False
+    lifecycle_rollback_plan_id: str = ""
+
     # ── Product quality gates (Phase 0) ───────────
     quality_gate_chat_citation_coverage_min: float = 0.8
     quality_gate_chat_p95_latency_ms_max: int = 4500

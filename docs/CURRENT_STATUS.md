@@ -59,3 +59,8 @@ Progress update:
 - Completed scheduled execution metadata visibility:
   - `GET /api/v1/admin/data-lifecycle/schedule`
   - Admin UI now shows cadence and policy metadata (scrape/RSS/PPR intervals, log retention, execution mode).
+- Added lifecycle execution safety contract (feature-flag + rollback prerequisites):
+  - Config settings: `lifecycle_destructive_execution_enabled`, `lifecycle_rollback_plan_id`.
+  - Lifecycle action execution now enforces both controls before any non-dry-run request is considered.
+  - Schedule metadata now exposes `destructive_enabled`, `rollback_plan_id_configured`, and `destructive_ready` for operator readiness checks.
+  - Regression coverage added in admin service + API lifecycle tests for the new guardrails.
