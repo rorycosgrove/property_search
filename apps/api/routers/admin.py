@@ -12,17 +12,21 @@ from packages.admin.service import (
     backend_health_summary,
     backend_logs_summary,
     diagnose_listing_by_external_id,
+    explain_source_quality,
     get_migration_status,
     list_backend_logs,
     list_discovery_activity,
     list_feed_activity,
     list_recent_errors,
+    list_source_quality_activity,
     list_source_status,
     run_database_migrations,
+    source_quality_scorecards,
     source_freshness_report,
 )
 from packages.shared.config import settings
 from packages.shared.logging import get_logger
+from packages.shared.queue import QueueDispatchError, dispatch_or_inline
 from packages.storage.database import get_db_session
 
 logger = get_logger(__name__)
@@ -82,6 +86,89 @@ def get_discovery_activity(
     db: Session = Depends(get_db_session),
 ):
     return list_discovery_activity(db, limit=limit)
+
+
+@router.get("/logs/source-quality", summary="Recent source quality snapshots")
+def get_source_quality_activity(
+    limit: int = Query(50, ge=1, le=500),
+    source_id: str | None = Query(None, min_length=36, max_length=36),
+    run_type: str | None = Query(None, pattern="^(scrape|discovery|governance)$"),
+    db: Session = Depends(get_db_session),
+):
+    return list_source_quality_activity(
+        db,
+        limit=limit,
+        source_id=source_id,
+        run_type=run_type,
+    )
+
+
+@router.get("/logs/source-quality/scorecards", summary="Rolling source quality scorecards")
+def get_source_quality_scorecards(
+    lookback_hours: int = Query(168, ge=1, le=720),
+    limit: int = Query(100, ge=1, le=500),
+    min_samples: int = Query(3, ge=1, le=50),
+    db: Session = Depends(get_db_session),
+):
+    return source_quality_scorecards(
+        db,
+        lookback_hours=lookback_hours,
+        limit=limit,
+        min_samples=min_samples,
+    )
+
+
+@router.get("/logs/source-quality/{source_id}/explain", summary="Explain quality/governance for one source")
+def get_source_quality_explain(
+    source_id: str,
+    lookback_hours: int = Query(168, ge=1, le=720),
+    min_samples: int = Query(3, ge=1, le=50),
+    governance_limit: int = Query(20, ge=1, le=200),
+    scrape_limit: int = Query(20, ge=1, le=200),
+    db: Session = Depends(get_db_session),
+):
+    return explain_source_quality(
+        db,
+        source_id=source_id,
+        lookback_hours=lookback_hours,
+        min_samples=min_samples,
+        governance_limit=governance_limit,
+        scrape_limit=scrape_limit,
+    )
+
+
+@router.post("/sources/quality-governance/evaluate", summary="Run source quality governance")
+def run_source_quality_governance(
+    recent_limit: int = Query(200, ge=10, le=2000),
+    min_samples: int = Query(3, ge=1, le=20),
+    quarantine_parse_fail_rate: float = Query(0.5, ge=0.1, le=1.0),
+    promote_parse_fail_rate: float = Query(0.1, ge=0.0, le=0.5),
+):
+    """Evaluate source quality snapshots and apply promotion/quarantine rules."""
+    from apps.worker.tasks import evaluate_source_quality_governance
+
+    payload = {
+        "recent_limit": recent_limit,
+        "min_samples": min_samples,
+        "quarantine_parse_fail_rate": quarantine_parse_fail_rate,
+        "promote_parse_fail_rate": promote_parse_fail_rate,
+    }
+    try:
+        return dispatch_or_inline(
+            "scrape",
+            "evaluate_source_quality_governance",
+            payload,
+            lambda **kwargs: evaluate_source_quality_governance(**kwargs),
+        )
+    except QueueDispatchError as exc:
+        raise HTTPException(
+            status_code=503,
+            detail={
+                "code": "source_quality_governance_dispatch_failed",
+                "message": "Failed to dispatch source quality governance task.",
+                "error": str(exc.error)[:300],
+            },
+        ) from exc
 
 
 @router.get("/backend-logs", summary="Query backend logs")

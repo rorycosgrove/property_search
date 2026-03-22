@@ -256,6 +256,147 @@ class TestAdminLogsEndpoint:
         finally:
             app.dependency_overrides.clear()
 
+    def test_get_source_quality_activity(self, client):
+        from packages.storage.database import get_db_session
+
+        mock_session = MagicMock()
+        app.dependency_overrides[get_db_session] = lambda: mock_session
+
+        try:
+            with patch(
+                "apps.api.routers.admin.list_source_quality_activity",
+                return_value=[
+                    {
+                        "id": "sq-1",
+                        "run_type": "scrape",
+                        "source_id": "source-1",
+                        "source_name": "Daft.ie",
+                        "parse_failed": 2,
+                        "total_fetched": 100,
+                        "details": {"geocode_success_rate": 96.0},
+                    }
+                ],
+            ) as mock_list:
+                resp = client.get("/api/v1/admin/logs/source-quality?limit=10&run_type=scrape")
+
+                assert resp.status_code == 200
+                data = resp.json()
+                assert len(data) == 1
+                assert data[0]["id"] == "sq-1"
+                assert data[0]["run_type"] == "scrape"
+                assert data[0]["details"]["geocode_success_rate"] == 96.0
+                mock_list.assert_called_once_with(
+                    mock_session,
+                    limit=10,
+                    source_id=None,
+                    run_type="scrape",
+                )
+        finally:
+            app.dependency_overrides.clear()
+
+    def test_get_source_quality_scorecards(self, client):
+        from packages.storage.database import get_db_session
+
+        mock_session = MagicMock()
+        app.dependency_overrides[get_db_session] = lambda: mock_session
+
+        try:
+            with patch(
+                "apps.api.routers.admin.source_quality_scorecards",
+                return_value={
+                    "generated_at": "2026-03-21T00:00:00+00:00",
+                    "lookback_hours": 48,
+                    "returned": 1,
+                    "scorecards": [
+                        {
+                            "source_id": "source-1",
+                            "risk_level": "high",
+                            "recommendation": "quarantine",
+                        }
+                    ],
+                },
+            ) as mock_cards:
+                resp = client.get(
+                    "/api/v1/admin/logs/source-quality/scorecards?lookback_hours=48&limit=20&min_samples=2"
+                )
+
+                assert resp.status_code == 200
+                data = resp.json()
+                assert data["returned"] == 1
+                assert data["scorecards"][0]["recommendation"] == "quarantine"
+                mock_cards.assert_called_once_with(
+                    mock_session,
+                    lookback_hours=48,
+                    limit=20,
+                    min_samples=2,
+                )
+        finally:
+            app.dependency_overrides.clear()
+
+    def test_get_source_quality_explain(self, client):
+        from packages.storage.database import get_db_session
+
+        mock_session = MagicMock()
+        app.dependency_overrides[get_db_session] = lambda: mock_session
+
+        try:
+            with patch(
+                "apps.api.routers.admin.explain_source_quality",
+                return_value={
+                    "source_id": "source-1",
+                    "source_found": True,
+                    "scorecard": {"risk_level": "low", "recommendation": "promote"},
+                    "governance_decisions": [{"action": "promote"}],
+                    "recent_scrape_quality": [{"total_fetched": 100}],
+                },
+            ) as mock_explain:
+                resp = client.get(
+                    "/api/v1/admin/logs/source-quality/source-1/explain"
+                    "?lookback_hours=24&min_samples=2&governance_limit=5&scrape_limit=7"
+                )
+
+                assert resp.status_code == 200
+                data = resp.json()
+                assert data["source_id"] == "source-1"
+                assert data["governance_decisions"][0]["action"] == "promote"
+                mock_explain.assert_called_once_with(
+                    mock_session,
+                    source_id="source-1",
+                    lookback_hours=24,
+                    min_samples=2,
+                    governance_limit=5,
+                    scrape_limit=7,
+                )
+        finally:
+            app.dependency_overrides.clear()
+
+    def test_run_source_quality_governance(self, client):
+        with patch("apps.api.routers.admin.dispatch_or_inline") as mock_dispatch:
+            mock_dispatch.return_value = {
+                "status": "processed_inline",
+                "result": {
+                    "reviewed_sources": 3,
+                    "quarantined_count": 1,
+                    "promoted_count": 1,
+                },
+            }
+
+            resp = client.post(
+                "/api/v1/admin/sources/quality-governance/evaluate"
+                "?recent_limit=120&min_samples=4&quarantine_parse_fail_rate=0.6&promote_parse_fail_rate=0.05"
+            )
+
+            assert resp.status_code == 200
+            data = resp.json()
+            assert data["status"] == "processed_inline"
+            assert data["result"]["quarantined_count"] == 1
+
+            args = mock_dispatch.call_args.args
+            assert args[0] == "scrape"
+            assert args[1] == "evaluate_source_quality_governance"
+            assert args[2]["recent_limit"] == 120
+            assert args[2]["min_samples"] == 4
+
     def test_diagnose_listing_endpoint(self, client):
         from packages.storage.database import get_db_session
 

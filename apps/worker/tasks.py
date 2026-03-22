@@ -128,6 +128,29 @@ def _materialize_property_documents_safe(db: Any, property_id: str | None) -> No
         )
 
 
+def _add_timeline_event_safe(timeline_repo: Any, **kwargs: Any) -> None:
+    """Best-effort timeline write; never fail ingestion for enrichment telemetry."""
+    try:
+        timeline_repo.add_event(**kwargs)
+    except Exception as exc:
+        logger.warning(
+            "timeline_event_write_failed",
+            property_id=kwargs.get("property_id"),
+            event_type=kwargs.get("event_type"),
+            error=str(exc)[:300],
+        )
+
+
+def _record_source_quality_snapshot_safe(repo: Any, **kwargs: Any) -> None:
+    """Best-effort quality snapshot write used for corpus learning metrics."""
+    if repo is None:
+        return
+    try:
+        repo.create_snapshot(**kwargs)
+    except Exception as exc:
+        logger.warning("source_quality_snapshot_failed", error=str(exc)[:300], run_type=kwargs.get("run_type"))
+
+
 def _build_daft_cursor_payload(raw_listings: list[Any], max_recent_ids: int = 600) -> dict[str, Any]:
     """Build a compact per-source Daft cursor from fetched raw listings."""
     seen: set[str] = set()
@@ -319,7 +342,9 @@ def scrape_source(source_id: str, force: bool = False) -> dict[str, Any]:
     from packages.storage.database import get_session
     from packages.storage.repositories import (
         PriceHistoryRepository,
+        PropertyTimelineRepository,
         PropertyRepository,
+        SourceQualitySnapshotRepository,
         SourceRepository,
     )
 
@@ -374,6 +399,8 @@ def scrape_source(source_id: str, force: bool = False) -> dict[str, Any]:
 
         property_repo = PropertyRepository(db)
         price_repo = PriceHistoryRepository(db)
+        timeline_repo = PropertyTimelineRepository(db)
+        quality_repo = SourceQualitySnapshotRepository(db) if hasattr(db, "add") else None
         normalizer = PropertyNormalizer()
 
         try:
@@ -431,6 +458,21 @@ def scrape_source(source_id: str, force: bool = False) -> dict[str, Any]:
                     continue
 
                 record = normalizer.normalize(parsed)
+                source_url = str(
+                    record.get("url")
+                    or getattr(parsed, "source_url", "")
+                    or getattr(source, "url", "")
+                )
+                source_poll_interval = int(getattr(source, "poll_interval_seconds", 0) or 0)
+                base_timeline_context = {
+                    "source_id": source_id,
+                    "adapter_name": source.adapter_name,
+                    "source_url": source_url,
+                    "metadata_json": {
+                        "source_name": source.name,
+                        "source_poll_interval_seconds": source_poll_interval,
+                    },
+                }
                 existing = None
                 external_id = record.get("external_id")
                 if external_id:
@@ -451,6 +493,12 @@ def scrape_source(source_id: str, force: bool = False) -> dict[str, Any]:
                                 price=new_price,
                                 price_change=change,
                                 price_change_pct=change_pct,
+                                timeline_event_type="asking_price_changed",
+                                timeline_context={
+                                    **base_timeline_context,
+                                    "detection_method": "worker_scrape_price_diff",
+                                    "confidence_score": 0.95,
+                                },
                             )
                             property_repo.update(
                                 str(existing.id),
@@ -464,6 +512,23 @@ def scrape_source(source_id: str, force: bool = False) -> dict[str, Any]:
                             price_unchanged_count += 1
                     elif old_price is not None and new_price is None:
                         # Edge case: priced listing transitions to POA/no numeric price.
+                        _add_timeline_event_safe(
+                            timeline_repo,
+                            property_id=str(existing.id),
+                            event_type="asking_price_removed",
+                            price=old_price,
+                            source_id=source_id,
+                            adapter_name=source.adapter_name,
+                            source_url=source_url,
+                            detection_method="worker_scrape_poa_transition",
+                            confidence_score=0.9,
+                            dedup_key=f"poa:{float(old_price):.2f}",
+                            metadata_json={
+                                "source_name": source.name,
+                                "old_price": old_price,
+                                "new_price": None,
+                            },
+                        )
                         property_repo.update(
                             str(existing.id),
                             price=None,
@@ -479,6 +544,12 @@ def scrape_source(source_id: str, force: bool = False) -> dict[str, Any]:
                             price=new_price,
                             price_change=None,
                             price_change_pct=None,
+                            timeline_event_type="asking_price_set",
+                            timeline_context={
+                                **base_timeline_context,
+                                "detection_method": "worker_scrape_poa_to_price",
+                                "confidence_score": 0.95,
+                            },
                         )
                         property_repo.update(
                             str(existing.id),
@@ -520,6 +591,23 @@ def scrape_source(source_id: str, force: bool = False) -> dict[str, Any]:
                         with _nested_tx_or_noop(db):
                             created_property = property_repo.create(**record)
                             created_property_id = str(created_property.id) if getattr(created_property, "id", None) else None
+                            if created_property_id:
+                                _add_timeline_event_safe(
+                                    timeline_repo,
+                                    property_id=created_property_id,
+                                    event_type="listing_discovered",
+                                    source_id=source_id,
+                                    adapter_name=source.adapter_name,
+                                    source_url=source_url,
+                                    detection_method="worker_new_listing",
+                                    confidence_score=0.85,
+                                    dedup_key=f"listing:{str(record.get('external_id') or created_property_id)}",
+                                    metadata_json={
+                                        "source_name": source.name,
+                                        "external_id": record.get("external_id"),
+                                        "status": "new",
+                                    },
+                                )
                             _materialize_property_documents_safe(db, created_property_id)
                         new_count += 1
                         new_ext_id = record.get("external_id")
@@ -562,6 +650,24 @@ def scrape_source(source_id: str, force: bool = False) -> dict[str, Any]:
             }
 
             logger.info(f"Scrape complete: {result}")
+            _record_source_quality_snapshot_safe(
+                quality_repo,
+                source_id=source_id,
+                source_name=source.name,
+                adapter_name=source.adapter_name,
+                run_type="scrape",
+                total_fetched=int(result["total_fetched"]),
+                parse_failed=int(result["parse_failed"]),
+                new_count=int(result["new"]),
+                updated_count=int(result["updated"]),
+                price_unchanged_count=int(result["price_unchanged"]),
+                dedup_conflicts=int(result["dedup_conflicts"]),
+                details={
+                    "geocode_attempts": int(result["geocode_attempts"]),
+                    "geocode_successes": int(result["geocode_successes"]),
+                    "geocode_success_rate": float(result["geocode_success_rate"]),
+                },
+            )
             _record_backend_log(
                 level="INFO",
                 event_type="scrape_source_complete",
@@ -1086,7 +1192,7 @@ def discover_all_sources(
     from packages.sources.registry import get_adapter_names
     from packages.sources.service import validate_discovery_candidate
     from packages.storage.database import get_session
-    from packages.storage.repositories import SourceRepository
+    from packages.storage.repositories import SourceQualitySnapshotRepository, SourceRepository
 
     run_at = datetime.now(UTC).isoformat()
     adapter_names = set(get_adapter_names())
@@ -1095,6 +1201,7 @@ def discover_all_sources(
         use_crawler=True,
         follow_links=follow_links,
     )
+    scored_values = [float(sc.score) for sc in scored]
 
     property_stats: dict[str, Any] = {
         "candidates_scored": len(scored),
@@ -1213,6 +1320,34 @@ def discover_all_sources(
         "limit": limit,
     }
 
+    with get_session() as db:
+        quality_repo = SourceQualitySnapshotRepository(db) if hasattr(db, "add") else None
+        _record_source_quality_snapshot_safe(
+            quality_repo,
+            source_id=None,
+            source_name="unified_discovery",
+            adapter_name=None,
+            run_type="discovery",
+            candidates_scored=int(property_stats.get("candidates_scored") or 0),
+            created_count=int(len(property_stats.get("created") or [])),
+            auto_enabled_count=int(property_stats.get("auto_enabled") or 0),
+            pending_approval_count=int(property_stats.get("pending_approval") or 0),
+            existing_count=int(property_stats.get("existing") or 0),
+            skipped_invalid_count=int(property_stats.get("skipped_invalid") or 0),
+            skipped_invalid_config_count=int(property_stats.get("skipped_invalid_config") or 0),
+            score_avg=(sum(scored_values) / len(scored_values)) if scored_values else None,
+            score_max=max(scored_values) if scored_values else None,
+            dry_run=bool(dry_run),
+            follow_links=bool(follow_links),
+            details={
+                "limit": int(limit),
+                "grant_discovery": {
+                    "included": bool(include_grants),
+                    "status": "ok" if "error" not in (grant_stats or {}) else "error",
+                },
+            },
+        )
+
     logger.info("discover_all_sources_complete", **{
         k: v for k, v in result.items() if not isinstance(v, (dict, list))
     })
@@ -1292,3 +1427,163 @@ def check_source_freshness() -> dict[str, Any]:
         logger.info("source_freshness_ok", healthy_count=len(healthy))
 
     return result
+
+
+def evaluate_source_quality_governance(
+    *,
+    recent_limit: int = 200,
+    min_samples: int = 3,
+    quarantine_parse_fail_rate: float = 0.5,
+    promote_parse_fail_rate: float = 0.1,
+) -> dict[str, Any]:
+    """Apply simple governance rules from recent source-quality snapshots.
+
+    Rules:
+    - Quarantine source when mean parse_fail_rate >= quarantine_parse_fail_rate.
+    - Promote pending source when mean parse_fail_rate <= promote_parse_fail_rate
+      and it has observed useful changes (new+updated > 0).
+    """
+    from collections import defaultdict
+
+    from packages.storage.database import get_session
+    from packages.storage.repositories import SourceQualitySnapshotRepository, SourceRepository
+
+    with get_session() as db:
+        quality_repo = SourceQualitySnapshotRepository(db)
+        source_repo = SourceRepository(db)
+
+        snapshots = quality_repo.list_recent(run_type="scrape", limit=recent_limit)
+        by_source: dict[str, list[Any]] = defaultdict(list)
+        for snap in snapshots:
+            if snap.source_id:
+                by_source[str(snap.source_id)].append(snap)
+
+        quarantined: list[str] = []
+        promoted: list[str] = []
+        decisions: list[dict[str, Any]] = []
+        reviewed = 0
+
+        for source_id, items in by_source.items():
+            if len(items) < min_samples:
+                continue
+
+            reviewed += 1
+            parse_rates: list[float] = []
+            useful_changes = 0
+            for item in items:
+                fetched = int(item.total_fetched or 0)
+                failed = int(item.parse_failed or 0)
+                if fetched > 0:
+                    parse_rates.append(failed / fetched)
+                useful_changes += int(item.new_count or 0) + int(item.updated_count or 0)
+
+            if not parse_rates:
+                continue
+
+            avg_parse_fail_rate = sum(parse_rates) / len(parse_rates)
+            source = source_repo.get_by_id(source_id)
+            if not source:
+                continue
+
+            tags = list(getattr(source, "tags", None) or [])
+            is_pending = "pending_approval" in tags
+            action = "monitor"
+            reason_parts = [
+                f"avg_parse_fail_rate={avg_parse_fail_rate:.4f}",
+                f"samples={len(items)}",
+                f"useful_changes={useful_changes}",
+            ]
+
+            if avg_parse_fail_rate >= quarantine_parse_fail_rate and bool(getattr(source, "enabled", False)):
+                if "quality_quarantined" not in tags:
+                    tags.append("quality_quarantined")
+                source_repo.update(source_id, enabled=False, tags=tags)
+                quarantined.append(source_id)
+                action = "quarantine"
+                reason_parts.append(
+                    f"threshold_exceeded={quarantine_parse_fail_rate:.4f}"
+                )
+            elif is_pending and avg_parse_fail_rate <= promote_parse_fail_rate and useful_changes > 0:
+                tags = [t for t in tags if t != "pending_approval"]
+                if "quality_promoted" not in tags:
+                    tags.append("quality_promoted")
+                source_repo.update(source_id, enabled=True, tags=tags)
+                promoted.append(source_id)
+                action = "promote"
+                reason_parts.append(
+                    f"threshold_met={promote_parse_fail_rate:.4f}"
+                )
+                reason_parts.append("pending_approval_removed=true")
+            elif avg_parse_fail_rate >= quarantine_parse_fail_rate:
+                reason_parts.append("already_disabled=true")
+            elif is_pending and avg_parse_fail_rate <= promote_parse_fail_rate and useful_changes <= 0:
+                reason_parts.append("promotion_blocked=no_useful_changes")
+
+            decision = {
+                "source_id": source_id,
+                "source_name": getattr(source, "name", None),
+                "adapter_name": getattr(source, "adapter_name", None),
+                "action": action,
+                "avg_parse_fail_rate": round(avg_parse_fail_rate, 4),
+                "samples": len(items),
+                "useful_changes": useful_changes,
+                "reason": "; ".join(reason_parts),
+                "thresholds": {
+                    "quarantine_parse_fail_rate": quarantine_parse_fail_rate,
+                    "promote_parse_fail_rate": promote_parse_fail_rate,
+                },
+            }
+            decisions.append(decision)
+
+            _record_source_quality_snapshot_safe(
+                quality_repo,
+                source_id=source_id,
+                source_name=getattr(source, "name", None),
+                adapter_name=getattr(source, "adapter_name", None),
+                run_type="governance",
+                total_fetched=sum(int(getattr(i, "total_fetched", 0) or 0) for i in items),
+                parse_failed=sum(int(getattr(i, "parse_failed", 0) or 0) for i in items),
+                new_count=sum(int(getattr(i, "new_count", 0) or 0) for i in items),
+                updated_count=sum(int(getattr(i, "updated_count", 0) or 0) for i in items),
+                dedup_conflicts=sum(int(getattr(i, "dedup_conflicts", 0) or 0) for i in items),
+                details={
+                    "action": action,
+                    "reason": decision["reason"],
+                    "thresholds": decision["thresholds"],
+                    "source_tags": list(getattr(source, "tags", None) or []),
+                },
+            )
+
+        result = {
+            "reviewed_sources": reviewed,
+            "quarantined_count": len(quarantined),
+            "promoted_count": len(promoted),
+            "quarantined_source_ids": quarantined,
+            "promoted_source_ids": promoted,
+            "min_samples": int(min_samples),
+            "decisions": decisions,
+        }
+
+        _record_source_quality_snapshot_safe(
+            quality_repo,
+            source_id=None,
+            source_name="source_quality_governance",
+            adapter_name=None,
+            run_type="governance",
+            details={
+                "reviewed_sources": reviewed,
+                "quarantined_count": len(quarantined),
+                "promoted_count": len(promoted),
+                "thresholds": {
+                    "quarantine_parse_fail_rate": quarantine_parse_fail_rate,
+                    "promote_parse_fail_rate": promote_parse_fail_rate,
+                },
+            },
+        )
+        _record_backend_log(
+            level="INFO",
+            event_type="source_quality_governance_complete",
+            message="Source quality governance evaluation completed",
+            context=result,
+        )
+        return result

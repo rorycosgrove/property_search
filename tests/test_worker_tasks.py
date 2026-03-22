@@ -7,6 +7,7 @@ import pytest
 from apps.worker.tasks import (
     _build_daft_cursor_payload,
     discover_all_sources,
+    evaluate_source_quality_governance,
     evaluate_alerts,
     enrich_batch_llm,
     enrich_property_llm,
@@ -1078,3 +1079,93 @@ def test_scrape_source_persists_daft_cursor_config(monkeypatch):
     assert len(updated_configs) == 1
     assert updated_configs[0]["recent_listing_ids"] == ["6437639"]
     assert updated_configs[0]["last_publish_ts_ms"] == 1700000900000
+
+
+def test_evaluate_source_quality_governance_promotes_and_quarantines(monkeypatch):
+    class FakeQualityRepo:
+        def __init__(self, _db):
+            self.created = []
+
+        def list_recent(self, *, run_type=None, limit=100):
+            assert run_type == "scrape"
+            assert limit == 50
+            return [
+                SimpleNamespace(source_id="s-good", total_fetched=100, parse_failed=1, new_count=2, updated_count=1),
+                SimpleNamespace(source_id="s-good", total_fetched=120, parse_failed=3, new_count=1, updated_count=1),
+                SimpleNamespace(source_id="s-good", total_fetched=80, parse_failed=2, new_count=0, updated_count=1),
+                SimpleNamespace(source_id="s-bad", total_fetched=100, parse_failed=80, new_count=0, updated_count=0),
+                SimpleNamespace(source_id="s-bad", total_fetched=120, parse_failed=70, new_count=0, updated_count=0),
+                SimpleNamespace(source_id="s-bad", total_fetched=90, parse_failed=60, new_count=0, updated_count=0),
+            ]
+
+        def create_snapshot(self, **kwargs):
+            self.created.append(kwargs)
+            return kwargs
+
+    class FakeSourceRepo:
+        def __init__(self, _db):
+            self.updated = []
+
+        def get_by_id(self, source_id):
+            if source_id == "s-good":
+                return SimpleNamespace(id="s-good", enabled=False, tags=["pending_approval"])
+            if source_id == "s-bad":
+                return SimpleNamespace(id="s-bad", enabled=True, tags=[])
+            return None
+
+        def update(self, source_id, **kwargs):
+            self.updated.append((source_id, kwargs))
+            return kwargs
+
+    class FakeSessionCtx:
+        def __enter__(self):
+            return object()
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+    repo_holder = {}
+    quality_holder = {}
+
+    def _source_repo_factory(db):
+        repo = FakeSourceRepo(db)
+        repo_holder["repo"] = repo
+        return repo
+
+    def _quality_repo_factory(db):
+        repo = FakeQualityRepo(db)
+        quality_holder["repo"] = repo
+        return repo
+
+    monkeypatch.setattr("packages.storage.database.get_session", lambda: FakeSessionCtx())
+    monkeypatch.setattr("packages.storage.repositories.SourceQualitySnapshotRepository", _quality_repo_factory)
+    monkeypatch.setattr("packages.storage.repositories.SourceRepository", _source_repo_factory)
+    monkeypatch.setattr("apps.worker.tasks._record_backend_log", lambda **_kwargs: None)
+
+    result = evaluate_source_quality_governance(recent_limit=50, min_samples=3)
+
+    assert result["promoted_count"] == 1
+    assert result["quarantined_count"] == 1
+    assert "s-good" in result["promoted_source_ids"]
+    assert "s-bad" in result["quarantined_source_ids"]
+    assert len(result["decisions"]) == 2
+    decisions = {d["source_id"]: d for d in result["decisions"]}
+    assert decisions["s-good"]["action"] == "promote"
+    assert "threshold_met" in decisions["s-good"]["reason"]
+    assert decisions["s-bad"]["action"] == "quarantine"
+    assert "threshold_exceeded" in decisions["s-bad"]["reason"]
+
+    updates = repo_holder["repo"].updated
+    promoted = [u for u in updates if u[0] == "s-good"]
+    quarantined = [u for u in updates if u[0] == "s-bad"]
+    assert promoted and promoted[0][1]["enabled"] is True
+    assert "quality_promoted" in promoted[0][1]["tags"]
+    assert quarantined and quarantined[0][1]["enabled"] is False
+    assert "quality_quarantined" in quarantined[0][1]["tags"]
+
+    snapshots = quality_holder["repo"].created
+    assert len(snapshots) >= 3
+    governance_rows = [s for s in snapshots if s.get("run_type") == "governance"]
+    assert governance_rows
+    assert any((s.get("details") or {}).get("action") == "promote" for s in governance_rows)
+    assert any((s.get("details") or {}).get("action") == "quarantine" for s in governance_rows)

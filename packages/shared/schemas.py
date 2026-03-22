@@ -193,6 +193,25 @@ class PriceHistoryResponse(BaseModel):
     model_config = {"from_attributes": True}
 
 
+class PropertyTimelineEventResponse(BaseModel):
+    id: str
+    event_type: str
+    occurred_at: datetime
+    price: float | None = None
+    price_change: float | None = None
+    price_change_pct: float | None = None
+    source_id: str | None = None
+    adapter_name: str | None = None
+    source_url: str | None = None
+    detection_method: str | None = None
+    confidence_score: float | None = None
+    dedup_key: str | None = None
+    evidence: dict[str, Any] = Field(default_factory=dict)
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+    model_config = {"from_attributes": True}
+
+
 # ── Sold Property Schemas ─────────────────────────────────────────────────────
 
 class SoldPropertyResponse(BaseModel):
