@@ -19,6 +19,7 @@ from packages.admin.service import (
     list_discovery_activity,
     list_feed_activity,
     list_recent_errors,
+    run_data_lifecycle_action,
     list_source_quality_activity,
     list_source_status,
     run_database_migrations,
@@ -95,6 +96,28 @@ def get_data_lifecycle_report(
         backend_log_archive_days=backend_log_archive_days,
         rollup_days=rollup_days,
     )
+
+
+@router.post("/data-lifecycle/actions/{action}", summary="Execute lifecycle action (dry-run only)")
+def execute_data_lifecycle_action(
+    action: str,
+    dry_run: bool = Query(True, description="Must be true. non-dry-run is intentionally disabled"),
+    property_archive_days: int = Query(365, ge=30, le=3650),
+    backend_log_archive_days: int = Query(90, ge=7, le=3650),
+    rollup_days: int = Query(180, ge=30, le=3650),
+    db: Session = Depends(get_db_session),
+):
+    try:
+        return run_data_lifecycle_action(
+            db,
+            action=action,
+            dry_run=dry_run,
+            property_archive_days=property_archive_days,
+            backend_log_archive_days=backend_log_archive_days,
+            rollup_days=rollup_days,
+        )
+    except AdminServiceError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
 @router.get("/logs/discovery", summary="Recent discovery activity")

@@ -5,12 +5,14 @@ from types import SimpleNamespace
 import pytest
 
 from packages.admin.service import (
+    AdminServiceError,
     MigrationCommandFailedError,
     MigrationCommandTimedOutError,
     data_lifecycle_report,
     explain_source_quality,
     get_migration_status,
     list_source_quality_activity,
+    run_data_lifecycle_action,
     source_quality_scorecards,
     run_database_migrations,
 )
@@ -408,3 +410,77 @@ def test_data_lifecycle_report_returns_candidate_counts():
     assert payload["candidates"]["price_history_rollup"] == 1042
     assert payload["candidates"]["timeline_rollup"] == 980
     assert payload["actions"][0]["dry_run"] is True
+
+
+def test_run_data_lifecycle_action_dry_run_writes_audit_log():
+    from packages.storage.models import BackendLog, Property, PropertyPriceHistory, PropertyTimelineEvent
+
+    counts = {
+        Property: 5,
+        BackendLog: 100,
+        PropertyPriceHistory: 40,
+        PropertyTimelineEvent: 60,
+    }
+
+    class FakeQuery:
+        def __init__(self, model):
+            self.model = model
+
+        def filter(self, *_args, **_kwargs):
+            return self
+
+        def count(self):
+            return counts.get(self.model, 0)
+
+    class FakeDB:
+        def __init__(self):
+            self.added = []
+
+        def query(self, model):
+            return FakeQuery(model)
+
+        def add(self, row):
+            self.added.append(row)
+
+        def flush(self):
+            return None
+
+    db = FakeDB()
+    payload = run_data_lifecycle_action(
+        db,
+        action="archive_properties",
+        dry_run=True,
+    )
+
+    assert payload["status"] == "dry_run_completed"
+    assert payload["affected_candidates"] == 5
+    assert len(db.added) == 1
+    log = db.added[0]
+    assert log.event_type == "admin_data_lifecycle_action"
+    assert log.context_json["action"] == "archive_properties"
+
+
+def test_run_data_lifecycle_action_rejects_non_dry_run():
+    class FakeDB:
+        def query(self, _model):
+            class _Q:
+                def filter(self, *_args, **_kwargs):
+                    return self
+
+                def count(self):
+                    return 0
+
+            return _Q()
+
+        def add(self, _row):
+            raise AssertionError("add should not be called")
+
+        def flush(self):
+            raise AssertionError("flush should not be called")
+
+    with pytest.raises(AdminServiceError, match="dry_run"):
+        run_data_lifecycle_action(
+            FakeDB(),
+            action="archive_properties",
+            dry_run=False,
+        )

@@ -9,6 +9,7 @@ import {
   getGrants,
   getHealth,
   getProperties,
+  runDataLifecycleAction,
   getSavedSearches,
   getSoldProperties,
   getSources,
@@ -76,6 +77,8 @@ const ADMIN_CARDS = [
 
 export default function AdminPage() {
   const [lifecycleSummary, setLifecycleSummary] = useState<string>('Loading lifecycle candidates...');
+  const [lifecycleActionStatus, setLifecycleActionStatus] = useState<string>('No lifecycle dry-run executed yet.');
+  const [lifecycleActionBusy, setLifecycleActionBusy] = useState<string | null>(null);
   const [checks, setChecks] = useState<EndpointCheck[]>([
     { key: 'health', label: 'Platform health', route: '/admin', state: 'loading', detail: 'Checking...' },
     { key: 'properties', label: 'Properties domain', route: '/workspace', state: 'loading', detail: 'Checking...' },
@@ -218,6 +221,22 @@ export default function AdminPage() {
     return { ok, errored, total: checks.length };
   }, [checks]);
 
+  const runLifecycleDryRun = async (
+    action: 'archive_properties' | 'archive_backend_logs' | 'rollup_price_and_timeline',
+  ) => {
+    setLifecycleActionBusy(action);
+    try {
+      const result = await runDataLifecycleAction(action, { dryRun: true });
+      setLifecycleActionStatus(
+        `${result.action} dry-run complete: ${result.affected_candidates.toLocaleString()} candidates.`
+      );
+    } catch {
+      setLifecycleActionStatus(`${action} dry-run failed. Check backend logs.`);
+    } finally {
+      setLifecycleActionBusy(null);
+    }
+  };
+
   return (
     <div className="page-shell page-shell-wide rise-in">
       <section className="page-hero">
@@ -277,6 +296,33 @@ export default function AdminPage() {
         <p className="text-[11px] uppercase tracking-[0.14em] text-[var(--muted)]">Lifecycle preview</p>
         <h2 className="mt-1 text-2xl">Retention dry-run snapshot</h2>
         <p className="mt-2 max-w-4xl text-sm leading-6 text-[var(--muted)]">{lifecycleSummary}</p>
+        <p className="mt-2 text-xs text-[var(--muted)]">{lifecycleActionStatus}</p>
+        <div className="mt-3 flex flex-wrap gap-2">
+          <button
+            type="button"
+            onClick={() => runLifecycleDryRun('archive_properties')}
+            disabled={lifecycleActionBusy !== null}
+            className="rounded-full border border-[var(--card-border)] bg-[var(--card-bg)] px-3 py-1.5 text-xs font-medium text-[var(--foreground)] transition-colors hover:border-[var(--accent)] disabled:opacity-60"
+          >
+            {lifecycleActionBusy === 'archive_properties' ? 'Running…' : 'Dry-run archive properties'}
+          </button>
+          <button
+            type="button"
+            onClick={() => runLifecycleDryRun('archive_backend_logs')}
+            disabled={lifecycleActionBusy !== null}
+            className="rounded-full border border-[var(--card-border)] bg-[var(--card-bg)] px-3 py-1.5 text-xs font-medium text-[var(--foreground)] transition-colors hover:border-[var(--accent)] disabled:opacity-60"
+          >
+            {lifecycleActionBusy === 'archive_backend_logs' ? 'Running…' : 'Dry-run archive logs'}
+          </button>
+          <button
+            type="button"
+            onClick={() => runLifecycleDryRun('rollup_price_and_timeline')}
+            disabled={lifecycleActionBusy !== null}
+            className="rounded-full border border-[var(--card-border)] bg-[var(--card-bg)] px-3 py-1.5 text-xs font-medium text-[var(--foreground)] transition-colors hover:border-[var(--accent)] disabled:opacity-60"
+          >
+            {lifecycleActionBusy === 'rollup_price_and_timeline' ? 'Running…' : 'Dry-run rollup history'}
+          </button>
+        </div>
         <Link href="/settings#data-lifecycle" className="mt-3 inline-flex text-sm font-medium text-[var(--accent-strong)] hover:underline">
           Open lifecycle settings
         </Link>

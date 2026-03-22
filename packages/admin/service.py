@@ -274,6 +274,79 @@ def data_lifecycle_report(
     }
 
 
+def run_data_lifecycle_action(
+    db: Session,
+    *,
+    action: str,
+    dry_run: bool = True,
+    property_archive_days: int = 365,
+    backend_log_archive_days: int = 90,
+    rollup_days: int = 180,
+) -> dict[str, Any]:
+    """Execute a lifecycle action in dry-run mode and emit an audit log.
+
+    Safety guard: non-dry-run execution is intentionally blocked until
+    dedicated archival/rollup jobs with rollback strategy are introduced.
+    """
+    allowed_actions = {
+        "archive_properties": "property_archive",
+        "archive_backend_logs": "backend_log_archive",
+        "rollup_price_and_timeline": None,
+    }
+
+    normalized = str(action or "").strip()
+    if normalized not in allowed_actions:
+        raise AdminServiceError(
+            f"invalid action '{normalized}'. expected one of: {', '.join(allowed_actions)}"
+        )
+
+    if not dry_run:
+        raise AdminServiceError(
+            "non-dry-run lifecycle execution is disabled. pass dry_run=true"
+        )
+
+    report = data_lifecycle_report(
+        db,
+        property_archive_days=property_archive_days,
+        backend_log_archive_days=backend_log_archive_days,
+        rollup_days=rollup_days,
+    )
+    candidates = report.get("candidates", {})
+
+    if normalized == "rollup_price_and_timeline":
+        affected = int(candidates.get("price_history_rollup", 0)) + int(candidates.get("timeline_rollup", 0))
+    else:
+        candidate_key = allowed_actions[normalized]
+        affected = int(candidates.get(candidate_key or "", 0))
+
+    payload = {
+        "status": "dry_run_completed",
+        "action": normalized,
+        "dry_run": True,
+        "executed_at": datetime.now(UTC).isoformat(),
+        "affected_candidates": affected,
+        "report": report,
+    }
+
+    db.add(
+        BackendLog(
+            level="INFO",
+            event_type="admin_data_lifecycle_action",
+            component="api",
+            message=f"Lifecycle action dry-run executed: {normalized}",
+            context_json={
+                "action": normalized,
+                "dry_run": True,
+                "affected_candidates": affected,
+                "cutoffs": report.get("cutoffs", {}),
+            },
+        )
+    )
+    db.flush()
+
+    return payload
+
+
 def list_discovery_activity(db: Session, *, limit: int = 5) -> list[dict[str, Any]]:
     rows = (
         db.query(BackendLog)

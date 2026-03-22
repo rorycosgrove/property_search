@@ -899,6 +899,15 @@ export interface DataLifecycleReport {
   }>;
 }
 
+export interface DataLifecycleActionResult {
+  status: string;
+  action: string;
+  dry_run: boolean;
+  executed_at: string;
+  affected_candidates: number;
+  report: DataLifecycleReport;
+}
+
 export interface BackendLogEntry {
   id: string;
   timestamp?: string;
@@ -970,6 +979,32 @@ export async function getDataLifecycleReport(options?: {
     ? `/api/v1/admin/data-lifecycle/report?${suffix}`
     : '/api/v1/admin/data-lifecycle/report';
   return fetchJSON<DataLifecycleReport>(path);
+}
+
+export async function runDataLifecycleAction(
+  action: 'archive_properties' | 'archive_backend_logs' | 'rollup_price_and_timeline',
+  options?: {
+    dryRun?: boolean;
+    propertyArchiveDays?: number;
+    backendLogArchiveDays?: number;
+    rollupDays?: number;
+  },
+): Promise<DataLifecycleActionResult> {
+  const params = new URLSearchParams();
+  params.set('dry_run', String(options?.dryRun ?? true));
+  if (options?.propertyArchiveDays !== undefined) {
+    params.set('property_archive_days', String(options.propertyArchiveDays));
+  }
+  if (options?.backendLogArchiveDays !== undefined) {
+    params.set('backend_log_archive_days', String(options.backendLogArchiveDays));
+  }
+  if (options?.rollupDays !== undefined) {
+    params.set('rollup_days', String(options.rollupDays));
+  }
+  return fetchJSON<DataLifecycleActionResult>(
+    `/api/v1/admin/data-lifecycle/actions/${action}?${params.toString()}`,
+    { method: 'POST' },
+  );
 }
 
 export async function getBackendRecentErrors(
