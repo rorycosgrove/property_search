@@ -1,0 +1,1 @@
+"""Sold-property domain services."""

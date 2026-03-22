@@ -10,7 +10,8 @@ This release stabilizes the LLM analysis flow and modernizes the map workspace U
   - `apps/worker/tasks.py`
 - Added explicit API behavior for disabled/misconfigured LLM dispatch:
   - `503` when LLM is disabled
-  - `503` when `LLM_QUEUE_URL` is missing
+  - inline fallback when queue URL is unconfigured
+  - `503` on unexpected queue runtime dispatch failures
 - Hardened Bedrock provider with categorized invocation errors and invalid JSON handling in `packages/ai/bedrock_provider.py`.
 - Improved LLM observability by including `enabled` status and disabled reason in `/api/v1/llm/health`.
 
@@ -45,3 +46,29 @@ This release stabilizes the LLM analysis flow and modernizes the map workspace U
 - Added `scripts/dev/cleanup-local.ps1` to clear stale API/frontend listeners and orphaned dev processes.
 - Added `stop-local.cmd` as a one-command local cleanup entry point.
 - Updated `start-api-llm.cmd` and `web/start-dev.cmd` to run targeted cleanup before startup.
+
+## Reliability Hardening Milestone (Mar 9, 2026)
+
+### What Landed
+- Queue dispatch contract unified across source and LLM trigger paths via `dispatch_or_inline` and typed `QueueDispatchError` handling.
+- API error classification hardened so inline task failures are no longer mislabeled as queue dispatch failures.
+- Worker orchestration ownership clarified: canonical implementations remain in `apps/worker/tasks.py`; `packages/worker/service.py` is explicit compatibility shim.
+- Backend log operational APIs expanded:
+  - `GET /api/v1/admin/backend-logs`
+  - `GET /api/v1/admin/backend-logs/summary`
+  - Existing `logs/*` admin diagnostics retained and validated.
+- Health response expanded with backend signal: `backend_errors_last_hour`.
+- Migration safety covered for `alembic/versions/007_backend_logs.py` with dedicated metadata/upgrade/downgrade tests.
+- Repository-level coverage added for backend log querying and summaries.
+- Worker observability extended with explicit backend log events for alert and LLM task outcomes.
+- Focused reliability coverage command added: `make test-cov-plan`.
+
+### Validation Snapshot
+- Full suite reached green after hardening iterations: `151 passed`.
+- Focused reliability workflow validated:
+  - `make test-cov-plan`
+- Key regression areas explicitly tested:
+  - queue dispatch failure mapping
+  - inline failure propagation
+  - backend log filtering/summary paths
+  - worker task observability event branches

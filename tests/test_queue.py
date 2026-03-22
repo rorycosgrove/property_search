@@ -4,7 +4,13 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from packages.shared.queue import _build_deduplication_id, _resolve_queue_url, send_task
+from packages.shared.queue import (
+    QueueDispatchError,
+    _build_deduplication_id,
+    _resolve_queue_url,
+    dispatch_or_inline,
+    send_task,
+)
 
 
 class TestSendTask:
@@ -74,3 +80,43 @@ class TestDeduplicationId:
         a = _build_deduplication_id("scrape_source", {"source_id": "x"})
         b = _build_deduplication_id("scrape_source", {"source_id": "y"})
         assert a != b
+
+
+class TestDispatchOrInline:
+    def test_dispatch_or_inline_returns_dispatched(self):
+        with patch.dict("os.environ", {"LOCAL_USE_SQS": "1"}, clear=False):
+            with patch("packages.shared.queue.send_task", return_value="msg-123"):
+                result = dispatch_or_inline("llm", "enrich_property_llm", {"property_id": "p1"}, lambda **_k: {})
+
+        assert result == {"status": "dispatched", "task_id": "msg-123"}
+
+    def test_dispatch_or_inline_defaults_to_inline_locally(self):
+        with patch.dict("os.environ", {"LOCAL_USE_SQS": "", "FORCE_INLINE_TASKS": ""}, clear=False):
+            result = dispatch_or_inline("llm", "enrich_property_llm", {"property_id": "p1"}, lambda **_k: {})
+
+        assert result["status"] == "processed_inline"
+
+    def test_dispatch_or_inline_falls_back_for_unconfigured_queue(self):
+        with patch(
+            "packages.shared.queue.send_task",
+            side_effect=ValueError("No queue URL configured for 'llm'. Set the env var."),
+        ):
+            result = dispatch_or_inline(
+                "llm",
+                "enrich_property_llm",
+                {"property_id": "p1"},
+                lambda property_id: {"property_id": property_id, "enriched": True},
+            )
+
+        assert result["status"] == "processed_inline"
+        assert result["result"]["property_id"] == "p1"
+
+    def test_dispatch_or_inline_raises_queue_dispatch_error_for_runtime_dispatch_failures(self):
+        with patch.dict("os.environ", {"LOCAL_USE_SQS": "1"}, clear=False):
+            with patch("packages.shared.queue.send_task", side_effect=RuntimeError("SQS unavailable")):
+                with pytest.raises(QueueDispatchError) as exc_info:
+                    dispatch_or_inline("llm", "enrich_property_llm", {"property_id": "p1"}, lambda **_k: {})
+
+        assert exc_info.value.queue_name == "llm"
+        assert exc_info.value.task_type == "enrich_property_llm"
+        assert isinstance(exc_info.value.cause, RuntimeError)

@@ -34,6 +34,434 @@ class TestHealthEndpoint:
                 assert resp.status_code == 200
                 data = resp.json()
                 assert data["status"] in ("healthy", "degraded")
+                assert "backend_errors_last_hour" in data
+        finally:
+            app.dependency_overrides.clear()
+
+    def test_health_reports_backend_error_count_value(self, client):
+        from packages.storage.database import get_db_session
+
+        mock_session = MagicMock()
+        mock_session.execute.return_value = None
+        app.dependency_overrides[get_db_session] = lambda: mock_session
+
+        try:
+            mock_boto3 = MagicMock()
+            with patch.dict("sys.modules", {"boto3": mock_boto3}):
+                mock_client = MagicMock()
+                mock_client.list_foundation_models.return_value = {
+                    "modelSummaries": [{"modelId": "amazon.titan-text-express-v1"}]
+                }
+                mock_boto3.client.return_value = mock_client
+
+                with patch("apps.api.routers.health.BackendLogRepository") as MockRepo:
+                    MockRepo.return_value.count_recent_errors.return_value = 4
+
+                    resp = client.get("/health")
+
+                assert resp.status_code == 200
+                data = resp.json()
+                assert data["backend_errors_last_hour"] == 4
+        finally:
+            app.dependency_overrides.clear()
+
+
+class TestAdminLogsEndpoint:
+    def test_get_backend_logs(self, client):
+        from packages.storage.database import get_db_session
+
+        mock_session = MagicMock()
+        app.dependency_overrides[get_db_session] = lambda: mock_session
+
+        try:
+            with patch(
+                "apps.api.routers.admin.list_backend_logs",
+                return_value=[
+                    {
+                        "id": "log-1",
+                        "timestamp": "2026-03-09T00:00:00",
+                        "level": "INFO",
+                        "event_type": "scrape_source_complete",
+                        "component": "worker.tasks",
+                        "source_id": "source-1",
+                        "message": "done",
+                        "context": {"new": 1},
+                    }
+                ],
+            ) as mock_list:
+
+                resp = client.get("/api/v1/admin/backend-logs?hours=12&limit=5")
+
+                assert resp.status_code == 200
+                data = resp.json()
+                assert len(data) == 1
+                assert data[0]["id"] == "log-1"
+                assert data[0]["event_type"] == "scrape_source_complete"
+                assert data[0]["context"]["new"] == 1
+                mock_list.assert_called_once_with(
+                    mock_session,
+                    hours=12,
+                    limit=5,
+                    level=None,
+                    event_type=None,
+                )
+        finally:
+            app.dependency_overrides.clear()
+
+    def test_get_backend_logs_summary(self, client):
+        from packages.storage.database import get_db_session
+
+        mock_session = MagicMock()
+        app.dependency_overrides[get_db_session] = lambda: mock_session
+
+        try:
+            with patch("apps.api.routers.admin.backend_logs_summary") as mock_summary:
+                mock_summary.return_value = {
+                    "hours": 24,
+                    "total": 3,
+                    "by_level": [{"level": "ERROR", "count": 1}],
+                    "by_event_type": [{"event_type": "scrape_source_failed", "count": 1}],
+                }
+
+                resp = client.get("/api/v1/admin/backend-logs/summary?hours=24")
+
+                assert resp.status_code == 200
+                data = resp.json()
+                assert data["total"] == 3
+                assert data["by_level"][0]["level"] == "ERROR"
+                mock_summary.assert_called_once_with(mock_session, hours=24)
+        finally:
+            app.dependency_overrides.clear()
+
+    def test_get_backend_logs_uses_real_repository_path(self, client):
+        from packages.storage.database import get_db_session
+
+        class FakeSession:
+            def __init__(self):
+                self.scalars_called = False
+
+            def scalars(self, _query):
+                self.scalars_called = True
+                return [
+                    MagicMock(
+                        id="log-real-1",
+                        created_at=datetime(2026, 3, 9),
+                        level="WARNING",
+                        event_type="llm_batch_skipped",
+                        component="worker.tasks",
+                        source_id=None,
+                        message="skipped",
+                        context_json={"reason": "llm_queue_unconfigured"},
+                    )
+                ]
+
+        fake_session = FakeSession()
+        app.dependency_overrides[get_db_session] = lambda: fake_session
+
+        try:
+            resp = client.get("/api/v1/admin/backend-logs?hours=6&limit=10&level=warning")
+            assert resp.status_code == 200
+            data = resp.json()
+            assert len(data) == 1
+            assert data[0]["id"] == "log-real-1"
+            assert data[0]["level"] == "WARNING"
+            assert data[0]["context"]["reason"] == "llm_queue_unconfigured"
+            assert fake_session.scalars_called is True
+        finally:
+            app.dependency_overrides.clear()
+
+    def test_get_backend_logs_event_type_filter_uses_real_repository_query(self, client):
+        from packages.storage.database import get_db_session
+
+        class FakeSession:
+            def __init__(self):
+                self.last_query = None
+
+            def scalars(self, query):
+                self.last_query = query
+                return [
+                    MagicMock(
+                        id="log-real-2",
+                        created_at=datetime(2026, 3, 9),
+                        level="ERROR",
+                        event_type="scrape_source_failed",
+                        component="worker.tasks",
+                        source_id="source-1",
+                        message="failed",
+                        context_json={"error": "boom"},
+                    )
+                ]
+
+        fake_session = FakeSession()
+        app.dependency_overrides[get_db_session] = lambda: fake_session
+
+        try:
+            resp = client.get(
+                "/api/v1/admin/backend-logs?hours=24&limit=10&event_type=scrape_source_failed"
+            )
+            assert resp.status_code == 200
+            data = resp.json()
+            assert len(data) == 1
+            assert data[0]["event_type"] == "scrape_source_failed"
+
+            compiled = fake_session.last_query.compile()
+            query_text = str(compiled).lower()
+            params = compiled.params
+            assert "backend_logs.event_type" in query_text
+            assert "scrape_source_failed" in params.values()
+        finally:
+            app.dependency_overrides.clear()
+
+    def test_get_backend_logs_summary_uses_real_repository_path(self, client):
+        from packages.storage.database import get_db_session
+
+        class _Result:
+            def __init__(self, rows):
+                self._rows = rows
+
+            def all(self):
+                return self._rows
+
+        class FakeSession:
+            def __init__(self):
+                self.execute_calls = 0
+
+            def execute(self, _query):
+                self.execute_calls += 1
+                if self.execute_calls == 1:
+                    return _Result(
+                        [
+                            MagicMock(level="ERROR", total=2),
+                            MagicMock(level="WARNING", total=1),
+                        ]
+                    )
+                return _Result(
+                    [
+                        MagicMock(event_type="scrape_source_failed", total=2),
+                        MagicMock(event_type="llm_enrichment_failed", total=1),
+                    ]
+                )
+
+        fake_session = FakeSession()
+        app.dependency_overrides[get_db_session] = lambda: fake_session
+
+        try:
+            resp = client.get("/api/v1/admin/backend-logs/summary?hours=24")
+            assert resp.status_code == 200
+            data = resp.json()
+            assert data["total"] == 3
+            assert data["by_level"][0]["level"] == "ERROR"
+            assert data["by_event_type"][0]["event_type"] == "scrape_source_failed"
+            assert fake_session.execute_calls == 2
+        finally:
+            app.dependency_overrides.clear()
+
+    def test_get_source_quality_activity(self, client):
+        from packages.storage.database import get_db_session
+
+        mock_session = MagicMock()
+        app.dependency_overrides[get_db_session] = lambda: mock_session
+
+        try:
+            with patch(
+                "apps.api.routers.admin.list_source_quality_activity",
+                return_value=[
+                    {
+                        "id": "sq-1",
+                        "run_type": "scrape",
+                        "source_id": "source-1",
+                        "source_name": "Daft.ie",
+                        "parse_failed": 2,
+                        "total_fetched": 100,
+                        "details": {"geocode_success_rate": 96.0},
+                    }
+                ],
+            ) as mock_list:
+                resp = client.get("/api/v1/admin/logs/source-quality?limit=10&run_type=scrape")
+
+                assert resp.status_code == 200
+                data = resp.json()
+                assert len(data) == 1
+                assert data[0]["id"] == "sq-1"
+                assert data[0]["run_type"] == "scrape"
+                assert data[0]["details"]["geocode_success_rate"] == 96.0
+                mock_list.assert_called_once_with(
+                    mock_session,
+                    limit=10,
+                    source_id=None,
+                    run_type="scrape",
+                )
+        finally:
+            app.dependency_overrides.clear()
+
+    def test_get_source_quality_scorecards(self, client):
+        from packages.storage.database import get_db_session
+
+        mock_session = MagicMock()
+        app.dependency_overrides[get_db_session] = lambda: mock_session
+
+        try:
+            with patch(
+                "apps.api.routers.admin.source_quality_scorecards",
+                return_value={
+                    "generated_at": "2026-03-21T00:00:00+00:00",
+                    "lookback_hours": 48,
+                    "returned": 1,
+                    "scorecards": [
+                        {
+                            "source_id": "source-1",
+                            "risk_level": "high",
+                            "recommendation": "quarantine",
+                        }
+                    ],
+                },
+            ) as mock_cards:
+                resp = client.get(
+                    "/api/v1/admin/logs/source-quality/scorecards?lookback_hours=48&limit=20&min_samples=2"
+                )
+
+                assert resp.status_code == 200
+                data = resp.json()
+                assert data["returned"] == 1
+                assert data["scorecards"][0]["recommendation"] == "quarantine"
+                mock_cards.assert_called_once_with(
+                    mock_session,
+                    lookback_hours=48,
+                    limit=20,
+                    min_samples=2,
+                )
+        finally:
+            app.dependency_overrides.clear()
+
+    def test_get_source_quality_explain(self, client):
+        from packages.storage.database import get_db_session
+
+        mock_session = MagicMock()
+        app.dependency_overrides[get_db_session] = lambda: mock_session
+
+        try:
+            with patch(
+                "apps.api.routers.admin.explain_source_quality",
+                return_value={
+                    "source_id": "source-1",
+                    "source_found": True,
+                    "scorecard": {"risk_level": "low", "recommendation": "promote"},
+                    "governance_decisions": [{"action": "promote"}],
+                    "recent_scrape_quality": [{"total_fetched": 100}],
+                },
+            ) as mock_explain:
+                resp = client.get(
+                    "/api/v1/admin/logs/source-quality/source-1/explain"
+                    "?lookback_hours=24&min_samples=2&governance_limit=5&scrape_limit=7"
+                )
+
+                assert resp.status_code == 200
+                data = resp.json()
+                assert data["source_id"] == "source-1"
+                assert data["governance_decisions"][0]["action"] == "promote"
+                mock_explain.assert_called_once_with(
+                    mock_session,
+                    source_id="source-1",
+                    lookback_hours=24,
+                    min_samples=2,
+                    governance_limit=5,
+                    scrape_limit=7,
+                )
+        finally:
+            app.dependency_overrides.clear()
+
+    def test_run_source_quality_governance(self, client):
+        with patch("apps.api.routers.admin.dispatch_or_inline") as mock_dispatch:
+            mock_dispatch.return_value = {
+                "status": "processed_inline",
+                "result": {
+                    "reviewed_sources": 3,
+                    "quarantined_count": 1,
+                    "promoted_count": 1,
+                },
+            }
+
+            resp = client.post(
+                "/api/v1/admin/sources/quality-governance/evaluate"
+                "?recent_limit=120&min_samples=4&quarantine_parse_fail_rate=0.6&promote_parse_fail_rate=0.05"
+            )
+
+            assert resp.status_code == 200
+            data = resp.json()
+            assert data["status"] == "processed_inline"
+            assert data["result"]["quarantined_count"] == 1
+
+            args = mock_dispatch.call_args.args
+            assert args[0] == "scrape"
+            assert args[1] == "evaluate_source_quality_governance"
+            assert args[2]["recent_limit"] == 120
+            assert args[2]["min_samples"] == 4
+
+    def test_diagnose_listing_endpoint(self, client):
+        from packages.storage.database import get_db_session
+
+        mock_session = MagicMock()
+        app.dependency_overrides[get_db_session] = lambda: mock_session
+
+        try:
+            with patch("apps.api.routers.admin.diagnose_listing_by_external_id") as mock_diagnose:
+                mock_diagnose.return_value = {
+                    "external_id": "6437639",
+                    "adapter_name": "daft",
+                    "diagnosis": {"status": "found_live_missing_from_store"},
+                }
+
+                resp = client.get("/api/v1/admin/listings/6437639/diagnose?adapter_name=daft&hours=72&max_probe_sources=12")
+
+                assert resp.status_code == 200
+                data = resp.json()
+                assert data["external_id"] == "6437639"
+                assert data["diagnosis"]["status"] == "found_live_missing_from_store"
+                mock_diagnose.assert_called_once_with(
+                    mock_session,
+                    external_id="6437639",
+                    adapter_name="daft",
+                    listing_url=None,
+                    similar_ids=None,
+                    repair=False,
+                    hours=72,
+                    max_probe_sources=12,
+                    probe_max_pages=25,
+                )
+        finally:
+            app.dependency_overrides.clear()
+
+    def test_repair_listing_endpoint(self, client):
+        from packages.storage.database import get_db_session
+
+        mock_session = MagicMock()
+        app.dependency_overrides[get_db_session] = lambda: mock_session
+
+        try:
+            with patch("apps.api.routers.admin.diagnose_listing_by_external_id") as mock_diagnose:
+                mock_diagnose.return_value = {
+                    "external_id": "6437639",
+                    "adapter_name": "daft",
+                    "diagnosis": {"status": "repaired"},
+                    "repair": {"status": "created_property"},
+                }
+
+                resp = client.post("/api/v1/admin/listings/6437639/repair?max_probe_sources=8")
+
+                assert resp.status_code == 200
+                data = resp.json()
+                assert data["repair"]["status"] == "created_property"
+                mock_diagnose.assert_called_once_with(
+                    mock_session,
+                    external_id="6437639",
+                    adapter_name="daft",
+                    listing_url=None,
+                    similar_ids=None,
+                    repair=True,
+                    hours=168,
+                    max_probe_sources=8,
+                    probe_max_pages=25,
+                )
         finally:
             app.dependency_overrides.clear()
 
@@ -54,6 +482,98 @@ class TestPropertiesEndpoint:
                 data = resp.json()
                 assert "items" in data
                 assert "total" in data
+        finally:
+            app.dependency_overrides.clear()
+
+    def test_list_properties_net_price_sort_uses_grant_aware_path(self, client):
+        from packages.storage.database import get_db_session
+
+        mock_session = MagicMock()
+        app.dependency_overrides[get_db_session] = lambda: mock_session
+
+        try:
+            with patch("apps.api.routers.properties.PropertyRepository") as MockRepo:
+                instance = MockRepo.return_value
+                instance.list_properties_with_eligible_grants.return_value = ([], 0, {})
+
+                resp = client.get("/api/v1/properties?sort_by=net_price&sort_dir=asc")
+
+                assert resp.status_code == 200
+                instance.list_properties_with_eligible_grants.assert_called_once()
+        finally:
+            app.dependency_overrides.clear()
+
+    def test_list_properties_eligible_only_uses_grant_aware_path(self, client):
+        from packages.storage.database import get_db_session
+
+        mock_session = MagicMock()
+        app.dependency_overrides[get_db_session] = lambda: mock_session
+
+        try:
+            with patch("apps.api.routers.properties.PropertyRepository") as MockRepo:
+                instance = MockRepo.return_value
+                instance.list_properties_with_eligible_grants.return_value = ([], 0, {})
+
+                resp = client.get("/api/v1/properties?eligible_only=true")
+
+                assert resp.status_code == 200
+                instance.list_properties_with_eligible_grants.assert_called_once()
+        finally:
+            app.dependency_overrides.clear()
+
+    def test_list_properties_min_eligible_grants_total_uses_grant_aware_path(self, client):
+        from packages.storage.database import get_db_session
+
+        mock_session = MagicMock()
+        app.dependency_overrides[get_db_session] = lambda: mock_session
+
+        try:
+            with patch("apps.api.routers.properties.PropertyRepository") as MockRepo:
+                instance = MockRepo.return_value
+                instance.list_properties_with_eligible_grants.return_value = ([], 0, {})
+
+                resp = client.get("/api/v1/properties?min_eligible_grants_total=10000")
+
+                assert resp.status_code == 200
+                instance.list_properties_with_eligible_grants.assert_called_once()
+        finally:
+            app.dependency_overrides.clear()
+
+    def test_health_reports_backend_error_count_through_real_repository(self, client):
+        from packages.storage.database import get_db_session
+
+        class FakeSession:
+            def __init__(self):
+                self.execute_called = False
+                self.scalar_called = False
+
+            def execute(self, _query):
+                self.execute_called = True
+                return None
+
+            def scalar(self, _query):
+                self.scalar_called = True
+                return 2
+
+        fake_session = FakeSession()
+        app.dependency_overrides[get_db_session] = lambda: fake_session
+
+        try:
+            mock_boto3 = MagicMock()
+            with patch.dict("sys.modules", {"boto3": mock_boto3}):
+                mock_client = MagicMock()
+                mock_client.list_foundation_models.return_value = {
+                    "modelSummaries": [{"modelId": "amazon.titan-text-express-v1"}]
+                }
+                mock_boto3.client.return_value = mock_client
+
+                resp = client.get("/health")
+
+            assert resp.status_code == 200
+            data = resp.json()
+            assert data["backend_errors_last_hour"] == 2
+            assert fake_session.execute_called is True
+            assert fake_session.scalar_called is True
         finally:
             app.dependency_overrides.clear()
 
@@ -139,6 +659,45 @@ class TestSourcesEndpoint:
         finally:
             app.dependency_overrides.clear()
 
+    def test_trigger_source_returns_503_when_queue_dispatch_fails_unexpectedly(self, client):
+        from packages.storage.database import get_db_session
+
+        mock_session = MagicMock()
+        app.dependency_overrides[get_db_session] = lambda: mock_session
+
+        try:
+            with patch("apps.api.routers.sources.SourceRepository") as MockRepo:
+                repo = MockRepo.return_value
+                repo.get_by_id.return_value = MagicMock(id="source-1")
+
+                with patch("packages.shared.queue.send_task", side_effect=RuntimeError("SQS access denied")):
+                    resp = client.post("/api/v1/sources/source-1/trigger")
+
+                assert resp.status_code == 503
+                body = resp.json()
+                assert body["detail"]["code"] == "scrape_dispatch_failed"
+                assert "dispatch scrape task" in body["detail"]["message"].lower()
+        finally:
+            app.dependency_overrides.clear()
+
+    def test_trigger_source_inline_failure_is_not_reported_as_dispatch_failure(self, client):
+        from packages.storage.database import get_db_session
+
+        mock_session = MagicMock()
+        app.dependency_overrides[get_db_session] = lambda: mock_session
+
+        try:
+            with patch("apps.api.routers.sources.SourceRepository") as MockRepo:
+                repo = MockRepo.return_value
+                repo.get_by_id.return_value = MagicMock(id="source-1")
+
+                with patch("packages.shared.queue.send_task", side_effect=ValueError("No queue URL configured")):
+                    with patch("apps.worker.tasks.scrape_source", side_effect=RuntimeError("inline scrape failed")):
+                        with pytest.raises(RuntimeError, match="inline scrape failed"):
+                            client.post("/api/v1/sources/source-1/trigger")
+        finally:
+            app.dependency_overrides.clear()
+
     def test_trigger_full_organic_search_dispatches_all_steps(self, client):
         from packages.storage.database import get_db_session
 
@@ -206,6 +765,37 @@ class TestSourcesEndpoint:
         finally:
             app.dependency_overrides.clear()
 
+    def test_trigger_full_organic_search_returns_503_on_unexpected_dispatch_failure(self, client):
+        from packages.storage.database import get_db_session
+
+        mock_session = MagicMock()
+        app.dependency_overrides[get_db_session] = lambda: mock_session
+
+        try:
+            with patch("packages.shared.queue.send_task", side_effect=RuntimeError("SQS permissions invalid")):
+                resp = client.post("/api/v1/sources/trigger-all")
+
+            assert resp.status_code == 503
+            body = resp.json()
+            assert body["detail"]["code"] == "pipeline_dispatch_failed"
+            assert body["detail"]["task_type"] == "scrape_all_sources"
+        finally:
+            app.dependency_overrides.clear()
+
+    def test_trigger_full_organic_search_inline_failure_is_not_reported_as_dispatch_failure(self, client):
+        from packages.storage.database import get_db_session
+
+        mock_session = MagicMock()
+        app.dependency_overrides[get_db_session] = lambda: mock_session
+
+        try:
+            with patch("packages.shared.queue.send_task", side_effect=ValueError("No queue URL configured")):
+                with patch("apps.worker.tasks.scrape_all_sources", side_effect=RuntimeError("inline pipeline failed")):
+                    with pytest.raises(RuntimeError, match="inline pipeline failed"):
+                        client.post("/api/v1/sources/trigger-all")
+        finally:
+            app.dependency_overrides.clear()
+
     def test_trigger_full_organic_search_history(self, client):
         from datetime import UTC, datetime
         from packages.storage.database import get_db_session
@@ -266,9 +856,9 @@ class TestSourcesEndpoint:
                             adapter_type="scraper",
                             adapter_name="daft",
                             config={},
-                            enabled=True,
+                            enabled=False,
                             poll_interval_seconds=21600,
-                            tags=["auto_discovered"],
+                            tags=["auto_discovered", "pending_approval"],
                             last_polled_at=None,
                             last_success_at=None,
                             last_error=None,
@@ -285,7 +875,7 @@ class TestSourcesEndpoint:
             data = resp.json()
             assert len(data["created"]) == 1
             assert data["created"][0]["id"] == "source-new"
-            assert data["auto_enable"] is True
+            assert data["auto_enable"] is False
         finally:
             app.dependency_overrides.clear()
 
@@ -404,6 +994,155 @@ class TestSourcesEndpoint:
         finally:
             app.dependency_overrides.clear()
 
+    def test_discover_sources_full_returns_503_on_dispatch_failure(self, client):
+        from packages.storage.database import get_db_session
+
+        mock_session = MagicMock()
+        app.dependency_overrides[get_db_session] = lambda: mock_session
+
+        try:
+            with patch("packages.shared.queue.send_task", side_effect=RuntimeError("SQS down")):
+                resp = client.post("/api/v1/sources/discover-full")
+
+            assert resp.status_code == 503
+            detail = resp.json()["detail"]
+            assert detail["code"] == "discovery_dispatch_failed"
+            assert "full discovery task" in detail["message"].lower()
+        finally:
+            app.dependency_overrides.clear()
+
+    def test_create_source_rejects_canonical_duplicate_url(self, client):
+        from packages.storage.database import get_db_session
+
+        mock_session = MagicMock()
+        app.dependency_overrides[get_db_session] = lambda: mock_session
+
+        existing_source = MagicMock(
+            id="existing-1",
+            name="Daft Dublin",
+            url="https://www.daft.ie/property-for-sale/dublin",
+            adapter_type="scraper",
+            adapter_name="daft",
+            config={},
+            enabled=True,
+            poll_interval_seconds=21600,
+            tags=[],
+            last_polled_at=None,
+            last_success_at=None,
+            last_error=None,
+            error_count=0,
+            total_listings=0,
+            created_at=None,
+            updated_at=None,
+        )
+
+        try:
+            with patch("apps.api.routers.sources.get_adapter_names", return_value=["daft"]):
+                with patch("apps.api.routers.sources.SourceRepository") as MockRepo:
+                    repo = MockRepo.return_value
+                    repo.get_all.return_value = [existing_source]
+
+                    payload = {
+                        "name": "Daft Dublin duplicate",
+                        "url": "https://www.daft.ie/property-for-sale/dublin/?utm=abc",
+                        "adapter_type": "scraper",
+                        "adapter_name": "daft",
+                        "config": {},
+                        "enabled": True,
+                        "poll_interval_seconds": 21600,
+                    }
+                    resp = client.post("/api/v1/sources", json=payload)
+
+            assert resp.status_code == 409
+            assert "canonical url" in resp.text.lower()
+        finally:
+            app.dependency_overrides.clear()
+
+    def test_update_source_rejects_canonical_duplicate_url(self, client):
+        from packages.storage.database import get_db_session
+
+        mock_session = MagicMock()
+        app.dependency_overrides[get_db_session] = lambda: mock_session
+
+        source_to_update = MagicMock(
+            id="source-1",
+            name="My source",
+            url="https://example.ie/path-a",
+            adapter_type="scraper",
+            adapter_name="daft",
+            config={},
+            enabled=True,
+            poll_interval_seconds=21600,
+            tags=[],
+            last_polled_at=None,
+            last_success_at=None,
+            last_error=None,
+            error_count=0,
+            total_listings=0,
+            created_at=None,
+            updated_at=None,
+        )
+        existing_other = MagicMock(
+            id="source-2",
+            name="Existing",
+            url="https://www.daft.ie/property-for-sale/dublin",
+            adapter_type="scraper",
+            adapter_name="daft",
+            config={},
+            enabled=True,
+            poll_interval_seconds=21600,
+            tags=[],
+            last_polled_at=None,
+            last_success_at=None,
+            last_error=None,
+            error_count=0,
+            total_listings=0,
+            created_at=None,
+            updated_at=None,
+        )
+
+        try:
+            with patch("apps.api.routers.sources.SourceRepository") as MockRepo:
+                repo = MockRepo.return_value
+                repo.get_by_id.return_value = source_to_update
+                repo.get_all.return_value = [source_to_update, existing_other]
+
+                resp = client.patch(
+                    "/api/v1/sources/source-1",
+                    json={"url": "https://www.daft.ie/property-for-sale/dublin/?x=1"},
+                )
+
+            assert resp.status_code == 409
+            assert "canonical url" in resp.text.lower()
+        finally:
+            app.dependency_overrides.clear()
+
+    def test_preview_discovery_candidates_filters_by_score(self, client):
+        candidate_low = MagicMock(
+            candidate={"name": "Low", "url": "https://low", "adapter_name": "daft", "adapter_type": "scraper"},
+            score=0.2,
+            activation="reject",
+            reasons=["low confidence"],
+        )
+        candidate_high = MagicMock(
+            candidate={"name": "High", "url": "https://high", "adapter_name": "daft", "adapter_type": "scraper"},
+            score=0.9,
+            activation="enable",
+            reasons=["strong signal"],
+        )
+
+        with patch(
+            "apps.api.routers.sources.load_all_discovery_candidates",
+            return_value=[candidate_low, candidate_high],
+        ):
+            resp = client.get("/api/v1/sources/discover-full/preview?min_score=0.5&limit=10")
+
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["total"] == 1
+        assert data["shown"] == 1
+        assert data["candidates"][0]["name"] == "High"
+
 
 class TestGrantsEndpoint:
     def test_list_grants(self, client):
@@ -413,12 +1152,11 @@ class TestGrantsEndpoint:
         app.dependency_overrides[get_db_session] = lambda: mock_session
 
         try:
-            with patch("apps.api.routers.grants.GrantProgramRepository") as MockRepo:
-                instance = MockRepo.return_value
-                instance.list_programs.return_value = []
+            with patch("apps.api.routers.grants.grants_list", return_value=[]) as mock_list:
                 resp = client.get("/api/v1/grants")
                 assert resp.status_code == 200
                 assert resp.json() == []
+                mock_list.assert_called_once_with(mock_session, country=None, active_only=True)
         finally:
             app.dependency_overrides.clear()
 
@@ -441,6 +1179,68 @@ class TestGrantsEndpoint:
                 assert data["property_id"] == "prop-1"
                 assert data["matches"] == 2
                 assert data["status"] == "evaluated"
+        finally:
+            app.dependency_overrides.clear()
+
+    def test_get_property_grants(self, client):
+        from packages.storage.database import get_db_session
+
+        mock_session = MagicMock()
+        app.dependency_overrides[get_db_session] = lambda: mock_session
+
+        try:
+            with patch("apps.api.routers.grants.grants_property", return_value=[]) as mock_grants_property:
+                resp = client.get("/api/v1/grants/property/prop-1")
+
+                assert resp.status_code == 200
+                assert resp.json() == []
+                mock_grants_property.assert_called_once_with(mock_session, "prop-1")
+        finally:
+            app.dependency_overrides.clear()
+
+    def test_discover_grant_programs(self, client):
+        with patch(
+            "apps.api.routers.grants.grants_discover",
+            return_value={"candidates_found": 3, "created": 1, "existing": 2, "dry_run": True},
+        ) as mock_discover:
+            resp = client.post("/api/v1/grants/discover?dry_run=true")
+
+            assert resp.status_code == 200
+            assert resp.json()["candidates_found"] == 3
+            mock_discover.assert_called_once_with(dry_run=True)
+
+    def test_list_discovered_grants(self, client):
+        from packages.storage.database import get_db_session
+
+        mock_session = MagicMock()
+        app.dependency_overrides[get_db_session] = lambda: mock_session
+
+        try:
+            with patch("apps.api.routers.grants.grants_list_discovered", return_value=[]) as mock_list:
+                resp = client.get("/api/v1/grants/discovered/pending")
+
+                assert resp.status_code == 200
+                assert resp.json() == []
+                mock_list.assert_called_once_with(mock_session)
+        finally:
+            app.dependency_overrides.clear()
+
+    def test_activate_discovered_grant_404(self, client):
+        from packages.grants.service import GrantNotFoundError
+        from packages.storage.database import get_db_session
+
+        mock_session = MagicMock()
+        app.dependency_overrides[get_db_session] = lambda: mock_session
+
+        try:
+            with patch(
+                "apps.api.routers.grants.grants_activate_discovered",
+                side_effect=GrantNotFoundError("g-404"),
+            ):
+                resp = client.post("/api/v1/grants/g-404/activate")
+
+                assert resp.status_code == 404
+                assert "Grant not found" in resp.text
         finally:
             app.dependency_overrides.clear()
 
@@ -592,6 +1392,83 @@ class TestLLMCompareSetEndpoint:
                             assert data["ranking_mode"] == "hybrid"
                             assert len(data["properties"]) == 2
                             assert data["analysis"]["headline"] == "Value result"
+        finally:
+            app.dependency_overrides.clear()
+
+    def test_compare_set_net_price_mode_prefers_lower_net_price(self, client):
+        from packages.storage.database import get_db_session
+
+        mock_session = MagicMock()
+        app.dependency_overrides[get_db_session] = lambda: mock_session
+
+        try:
+            with patch("apps.api.routers.llm.PropertyRepository") as MockPropRepo:
+                with patch("apps.api.routers.llm.LLMEnrichmentRepository") as MockEnrichRepo:
+                    with patch("apps.api.routers.llm.PropertyGrantMatchRepository") as MockGrantRepo:
+                        with patch("apps.api.routers.llm.PropertyDocumentRepository") as MockDocRepo:
+                            with patch("packages.ai.service.get_provider") as mock_get_provider:
+                                prop_repo = MockPropRepo.return_value
+                                enrich_repo = MockEnrichRepo.return_value
+                                grant_repo = MockGrantRepo.return_value
+                                doc_repo = MockDocRepo.return_value
+
+                                prop_repo.get_by_id.side_effect = [
+                                    MagicMock(
+                                        id="p1",
+                                        title="Home 1",
+                                        address="Addr 1",
+                                        county="Dublin",
+                                        url="https://example.com/1",
+                                        price=450000,
+                                        floor_area_sqm=100,
+                                        bedrooms=3,
+                                        bathrooms=2,
+                                        ber_rating="B2",
+                                        images=[],
+                                    ),
+                                    MagicMock(
+                                        id="p2",
+                                        title="Home 2",
+                                        address="Addr 2",
+                                        county="Cork",
+                                        url="https://example.com/2",
+                                        price=430000,
+                                        floor_area_sqm=95,
+                                        bedrooms=3,
+                                        bathrooms=2,
+                                        ber_rating="C1",
+                                        images=[],
+                                    ),
+                                ]
+
+                                enrich_repo.get_by_property_id.side_effect = [
+                                    MagicMock(value_score=6.5),
+                                    MagicMock(value_score=6.0),
+                                ]
+                                grant_repo.list_for_property.side_effect = [
+                                    [MagicMock(status="eligible", estimated_benefit=10000)],
+                                    [MagicMock(status="eligible", estimated_benefit=5000)],
+                                ]
+                                doc_repo.list_for_property.return_value = []
+
+                                mock_provider = MagicMock()
+                                mock_provider.generate = AsyncMock(return_value=MagicMock(
+                                    content='{"headline":"Net price","recommendation":"p1","key_tradeoffs":[],"confidence":"medium"}'
+                                ))
+                                mock_get_provider.return_value = mock_provider
+
+                                resp = client.post(
+                                    "/api/v1/llm/compare-set",
+                                    json={
+                                        "property_ids": ["p1", "p2"],
+                                        "ranking_mode": "net_price",
+                                    },
+                                )
+
+                                assert resp.status_code == 200
+                                data = resp.json()
+                                assert data["ranking_mode"] == "net_price"
+                                assert data["winner_property_id"] == "p2"
         finally:
             app.dependency_overrides.clear()
 
@@ -985,7 +1862,7 @@ class TestLLMEnrichmentDispatch:
         finally:
             app.dependency_overrides.clear()
 
-    def test_enrich_queue_misconfigured_returns_503(self, client):
+    def test_enrich_queue_misconfigured_falls_back_inline(self, client):
         from packages.storage.database import get_db_session
 
         mock_session = MagicMock()
@@ -995,9 +1872,64 @@ class TestLLMEnrichmentDispatch:
             with patch("apps.api.routers.llm.settings.llm_enabled", True):
                 with patch("apps.api.routers.llm.settings.llm_queue_url", ""):
                     with patch("apps.api.routers.llm.os.environ", {}):
+                        with patch("apps.api.routers.llm.PropertyRepository") as MockRepo:
+                            repo = MockRepo.return_value
+                            repo.get_by_id.return_value = MagicMock(id="p-1")
+                            with patch("packages.shared.queue.send_task", side_effect=ValueError("No queue URL configured for 'llm'. Set the env var.")):
+                                with patch("apps.worker.tasks.enrich_property_llm", return_value={"property_id": "p-1", "enriched": True}):
+                                    resp = client.post("/api/v1/llm/enrich/p-1")
+
+                        assert resp.status_code == 200
+                        body = resp.json()
+                        assert body["status"] == "processed_inline"
+                        assert body["result"]["property_id"] == "p-1"
+        finally:
+            app.dependency_overrides.clear()
+
+    def test_enrich_dispatch_failure_returns_503(self, client):
+        from packages.storage.database import get_db_session
+
+        mock_session = MagicMock()
+        app.dependency_overrides[get_db_session] = lambda: mock_session
+
+        try:
+            with patch("apps.api.routers.llm.settings.llm_enabled", True):
+                with patch("apps.api.routers.llm.PropertyRepository") as MockRepo:
+                    repo = MockRepo.return_value
+                    repo.get_by_id.return_value = MagicMock(id="p-1")
+                    with patch("packages.shared.queue.send_task", side_effect=RuntimeError("SQS access denied")):
                         resp = client.post("/api/v1/llm/enrich/p-1")
-                        assert resp.status_code == 503
-                        assert "queue" in resp.text.lower()
+
+                    assert resp.status_code == 503
+                    body = resp.json()
+                    assert body["detail"]["code"] == "llm_dispatch_failed"
+                    assert body["detail"]["task_type"] == "enrich_property_llm"
+        finally:
+            app.dependency_overrides.clear()
+
+    def test_enrich_inline_failure_is_not_reported_as_dispatch_failure(self, client):
+        from packages.storage.database import get_db_session
+
+        mock_session = MagicMock()
+        app.dependency_overrides[get_db_session] = lambda: mock_session
+
+        try:
+            with patch("apps.api.routers.llm.settings.llm_enabled", True):
+                with patch("apps.api.routers.llm.settings.llm_queue_url", ""):
+                    with patch("apps.api.routers.llm.os.environ", {}):
+                        with patch("apps.api.routers.llm.PropertyRepository") as MockRepo:
+                            repo = MockRepo.return_value
+                            repo.get_by_id.return_value = MagicMock(id="p-1")
+                            with patch(
+                                "packages.shared.queue.send_task",
+                                side_effect=ValueError("No queue URL configured for 'llm'. Set the env var."),
+                            ):
+                                with patch(
+                                    "apps.worker.tasks.enrich_property_llm",
+                                    side_effect=RuntimeError("inline task failed"),
+                                ):
+                                    with pytest.raises(RuntimeError, match="inline task failed"):
+                                        client.post("/api/v1/llm/enrich/p-1")
         finally:
             app.dependency_overrides.clear()
 
@@ -1022,3 +1954,28 @@ class TestLLMEnrichmentDispatch:
                             assert data["status"] == "dispatched"
         finally:
             app.dependency_overrides.clear()
+
+    def test_enrich_batch_queue_misconfigured_falls_back_inline(self, client):
+        with patch("apps.api.routers.llm.settings.llm_enabled", True):
+            with patch("apps.api.routers.llm.settings.llm_queue_url", ""):
+                with patch("apps.api.routers.llm.os.environ", {}):
+                    with patch("packages.shared.queue.send_task", side_effect=ValueError("No queue URL configured for 'llm'. Set the env var.")):
+                        with patch("apps.worker.tasks.enrich_batch_llm", return_value={"dispatched": 3}):
+                            resp = client.post("/api/v1/llm/enrich-batch?limit=3")
+
+                    assert resp.status_code == 200
+                    body = resp.json()
+                    assert body["status"] == "processed_inline"
+                    assert body["result"]["dispatched"] == 3
+                    assert body["limit"] == 3
+
+    def test_enrich_batch_dispatch_failure_returns_503(self, client):
+        with patch("apps.api.routers.llm.settings.llm_enabled", True):
+            with patch("apps.api.routers.llm.settings.llm_queue_url", "https://sqs.example/llm"):
+                with patch("packages.shared.queue.send_task", side_effect=RuntimeError("SQS permissions invalid")):
+                    resp = client.post("/api/v1/llm/enrich-batch?limit=5")
+
+                assert resp.status_code == 503
+                body = resp.json()
+                assert body["detail"]["code"] == "llm_dispatch_failed"
+                assert body["detail"]["task_type"] == "enrich_batch_llm"

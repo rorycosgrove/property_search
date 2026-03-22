@@ -2,7 +2,19 @@
 
 from types import SimpleNamespace
 
-from apps.worker.tasks import scrape_all_sources, scrape_source
+import pytest
+
+from apps.worker.tasks import (
+    _build_daft_cursor_payload,
+    discover_all_sources,
+    evaluate_source_quality_governance,
+    evaluate_alerts,
+    enrich_batch_llm,
+    enrich_property_llm,
+    materialize_reference_documents_task,
+    scrape_all_sources,
+    scrape_source,
+)
 
 
 class _SessionCtx:
@@ -18,6 +30,7 @@ class _SessionCtx:
 def test_scrape_all_sources_falls_back_inline_when_scrape_queue_missing(monkeypatch):
     """When SCRAPE_QUEUE_URL is absent, sources should be processed inline."""
     monkeypatch.delenv("SCRAPE_QUEUE_URL", raising=False)
+    monkeypatch.setenv("REFERENCE_DOCUMENT_REFRESH_ON_SCRAPE", "0")
 
     fake_sources = [
         SimpleNamespace(id="source-1", enabled=True, tags=[], error_count=0),
@@ -83,6 +96,7 @@ def test_scrape_all_sources_falls_back_inline_when_scrape_queue_missing(monkeypa
 def test_scrape_all_sources_uses_sqs_dispatch_when_queue_configured(monkeypatch):
     """When SCRAPE_QUEUE_URL is present, tasks should be dispatched via SQS."""
     monkeypatch.setenv("SCRAPE_QUEUE_URL", "https://example.com/sqs/scrape")
+    monkeypatch.setenv("REFERENCE_DOCUMENT_REFRESH_ON_SCRAPE", "0")
 
     fake_sources = [
         SimpleNamespace(id="source-1", enabled=True, tags=[], error_count=0),
@@ -145,6 +159,48 @@ def test_scrape_all_sources_uses_sqs_dispatch_when_queue_configured(monkeypatch)
     assert len(send_calls) == 2
     assert send_calls[0][0] == ("scrape", "scrape_source", {"source_id": "source-1"})
     assert send_calls[1][0] == ("scrape", "scrape_source", {"source_id": "source-2"})
+
+
+def test_scrape_all_sources_dispatches_reference_refresh_when_enabled(monkeypatch):
+    """When enabled, scrape dispatch should enqueue reference document refresh once."""
+    monkeypatch.setenv("SCRAPE_QUEUE_URL", "https://example.com/sqs/scrape")
+    monkeypatch.setenv("REFERENCE_DOCUMENT_REFRESH_ON_SCRAPE", "1")
+
+    fake_sources = [SimpleNamespace(id="source-1", enabled=True, tags=[], error_count=0)]
+
+    class FakeSourceRepository:
+        def __init__(self, _db):
+            pass
+
+        def get_all(self, enabled_only=True):
+            assert enabled_only is False
+            return fake_sources
+
+    send_calls: list[tuple[tuple, dict]] = []
+
+    monkeypatch.setattr("packages.storage.database.get_session", lambda: _SessionCtx())
+    monkeypatch.setattr("packages.storage.repositories.SourceRepository", FakeSourceRepository)
+    monkeypatch.setattr(
+        "apps.worker.tasks.discover_sources",
+        lambda **_kwargs: {
+            "created": 0,
+            "existing": 1,
+            "skipped_invalid": 0,
+            "auto_enable": False,
+        },
+    )
+    monkeypatch.setattr(
+        "packages.shared.queue.send_task",
+        lambda *args, **kwargs: send_calls.append((args, kwargs)) or "msg-id",
+    )
+
+    result = scrape_all_sources()
+
+    assert result["dispatched"] == 1
+    assert [c[0] for c in send_calls] == [
+        ("scrape", "scrape_source", {"source_id": "source-1"}),
+        ("scrape", "materialize_reference_documents", {}),
+    ]
 
 
 def test_scrape_source_skips_alert_enqueue_when_alert_queue_missing(monkeypatch):
@@ -335,9 +391,49 @@ def test_scrape_source_skips_when_source_lock_not_acquired(monkeypatch):
     assert result["reason"] == "source_in_flight"
 
 
+def test_materialize_reference_documents_task_materializes_and_returns_counts(monkeypatch):
+    class FakeSessionCtx:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+        def commit(self):
+            return None
+
+    calls: list[tuple] = []
+
+    def fake_materialize_reference_documents(db, *, county=None, include_incentives=True, active_grants_only=False):
+        calls.append((db, county, include_incentives, active_grants_only))
+        return {
+            "market_documents": 4,
+            "incentive_documents": 2,
+            "total_documents": 6,
+        }
+
+    monkeypatch.setattr("packages.storage.database.get_session", lambda: FakeSessionCtx())
+    monkeypatch.setattr(
+        "packages.ai.retrieval_documents.materialize_reference_documents",
+        fake_materialize_reference_documents,
+    )
+
+    result = materialize_reference_documents_task(
+        county="Dublin",
+        include_incentives=True,
+        active_grants_only=True,
+    )
+
+    assert calls[0][1:] == ("Dublin", True, True)
+    assert result["market_documents"] == 4
+    assert result["incentive_documents"] == 2
+    assert result["total_documents"] == 6
+
+
 def test_scrape_all_sources_discovers_but_only_scrapes_enabled_snapshot(monkeypatch):
     """Discovery during scrape should report created sources while scraping enabled set."""
     monkeypatch.setenv("SCRAPE_QUEUE_URL", "https://example.com/sqs/scrape")
+    monkeypatch.setenv("REFERENCE_DOCUMENT_REFRESH_ON_SCRAPE", "0")
 
     # Source snapshot from DB remains enabled-only list for this cycle.
     fake_sources = [SimpleNamespace(id="enabled-source-1", enabled=True, tags=[], error_count=0)]
@@ -381,6 +477,7 @@ def test_scrape_all_sources_can_disable_discovery_via_env(monkeypatch):
     """Discovery hook can be disabled and scrape dispatch should still run."""
     monkeypatch.setenv("SCRAPE_QUEUE_URL", "https://example.com/sqs/scrape")
     monkeypatch.setenv("DISCOVERY_DURING_SCRAPE_ENABLED", "false")
+    monkeypatch.setenv("REFERENCE_DOCUMENT_REFRESH_ON_SCRAPE", "0")
 
     fake_sources = [SimpleNamespace(id="source-1", enabled=True, tags=[], error_count=0)]
 
@@ -425,6 +522,7 @@ def test_scrape_all_sources_can_disable_discovery_via_env(monkeypatch):
 def test_scrape_all_sources_continues_when_discovery_fails(monkeypatch):
     """Discovery failure should be non-fatal and scraping should continue."""
     monkeypatch.setenv("SCRAPE_QUEUE_URL", "https://example.com/sqs/scrape")
+    monkeypatch.setenv("REFERENCE_DOCUMENT_REFRESH_ON_SCRAPE", "0")
 
     fake_sources = [
         SimpleNamespace(id="source-1", enabled=True, tags=[], error_count=0),
@@ -457,10 +555,617 @@ def test_scrape_all_sources_continues_when_discovery_fails(monkeypatch):
     assert result["dispatched"] == 2
     assert result["dispatch_mode"] == "sqs"
     assert result["discovery_during_scrape"]["enabled"] is True
-    assert result["discovery_during_scrape"]["auto_enable"] is True
+    assert result["discovery_during_scrape"]["auto_enable"] is False
     assert result["discovery_during_scrape"]["error"] == "discovery exploded"
     assert result["source_summary"]["enabled"] == 2
     assert send_calls == [
         (("scrape", "scrape_source", {"source_id": "source-1"}), {}),
         (("scrape", "scrape_source", {"source_id": "source-2"}), {}),
     ]
+
+
+def test_evaluate_alerts_records_backend_log(monkeypatch):
+    class FakeSession:
+        def __init__(self):
+            self.committed = False
+
+        def commit(self):
+            self.committed = True
+
+    class FakeSessionCtx:
+        def __init__(self):
+            self.db = FakeSession()
+
+        def __enter__(self):
+            return self.db
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+    class FakeAlertEngine:
+        def __init__(self, _db):
+            pass
+
+        def evaluate_all(self):
+            return 2
+
+        def check_price_changes(self):
+            return 1
+
+    events: list[dict] = []
+
+    monkeypatch.setattr("packages.storage.database.get_session", lambda: FakeSessionCtx())
+    monkeypatch.setattr("packages.alerts.engine.AlertEngine", FakeAlertEngine)
+    monkeypatch.setattr("apps.worker.tasks._record_backend_log", lambda **kwargs: events.append(kwargs))
+
+    result = evaluate_alerts()
+
+    assert result == {"search_alerts": 2, "price_alerts": 1}
+    assert len(events) == 1
+    assert events[0]["event_type"] == "alert_evaluation_complete"
+    assert events[0]["context"]["search_alerts"] == 2
+    assert events[0]["context"]["price_alerts"] == 1
+
+
+def test_enrich_property_llm_records_success_backend_log(monkeypatch):
+    class FakeSession:
+        def commit(self):
+            return None
+
+    class FakeSessionCtx:
+        def __enter__(self):
+            return FakeSession()
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+    prop = SimpleNamespace(
+        id="prop-1",
+        title="Test Home",
+        address="1 Main St",
+        county="Dublin",
+        price=350000.0,
+        property_type="house",
+        bedrooms=3,
+        bathrooms=2,
+        floor_area_sqm=95,
+        ber_rating="B2",
+        description="Nice",
+        latitude=53.3,
+        longitude=-6.2,
+    )
+
+    class FakePropertyRepo:
+        def __init__(self, _db):
+            pass
+
+        def get_by_id(self, _property_id):
+            return prop
+
+    class FakeSoldRepo:
+        def __init__(self, _db):
+            pass
+
+        def get_nearby_sold(self, **_kwargs):
+            return [SimpleNamespace(address="Sold A", price=300000, sale_date=None)]
+
+    class FakeEnrichmentRepo:
+        def __init__(self, _db):
+            self.upsert_calls = []
+
+        def upsert(self, property_id, **payload):
+            self.upsert_calls.append((property_id, payload))
+
+    events: list[dict] = []
+
+    monkeypatch.setattr("packages.storage.database.get_session", lambda: FakeSessionCtx())
+    monkeypatch.setattr("packages.storage.repositories.PropertyRepository", FakePropertyRepo)
+    monkeypatch.setattr("packages.storage.repositories.SoldPropertyRepository", FakeSoldRepo)
+    enrichment_repo = FakeEnrichmentRepo(None)
+    monkeypatch.setattr("packages.storage.repositories.LLMEnrichmentRepository", lambda _db: enrichment_repo)
+    def _fake_run_async_success(coro):
+        coro.close()
+        return {"summary": "ok"}
+
+    monkeypatch.setattr("apps.worker.tasks._run_async", _fake_run_async_success)
+    monkeypatch.setattr("apps.worker.tasks._record_backend_log", lambda **kwargs: events.append(kwargs))
+    monkeypatch.setattr("apps.worker.tasks.settings.llm_enabled", True)
+
+    result = enrich_property_llm("prop-1")
+
+    assert result == {"property_id": "prop-1", "enriched": True}
+    assert enrichment_repo.upsert_calls == [("prop-1", {"summary": "ok"})]
+    assert any(e["event_type"] == "llm_enrichment_complete" for e in events)
+
+
+def test_enrich_property_llm_records_failure_backend_log(monkeypatch):
+    class FakeSession:
+        def commit(self):
+            return None
+
+    class FakeSessionCtx:
+        def __enter__(self):
+            return FakeSession()
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+    prop = SimpleNamespace(
+        id="prop-1",
+        title="Test Home",
+        address="1 Main St",
+        county="Dublin",
+        price=350000.0,
+        property_type="house",
+        bedrooms=3,
+        bathrooms=2,
+        floor_area_sqm=95,
+        ber_rating="B2",
+        description="Nice",
+        latitude=None,
+        longitude=None,
+    )
+
+    class FakePropertyRepo:
+        def __init__(self, _db):
+            pass
+
+        def get_by_id(self, _property_id):
+            return prop
+
+    class FakeSoldRepo:
+        def __init__(self, _db):
+            pass
+
+    class FakeEnrichmentRepo:
+        def __init__(self, _db):
+            pass
+
+        def upsert(self, _property_id, **_payload):
+            return None
+
+    events: list[dict] = []
+
+    monkeypatch.setattr("packages.storage.database.get_session", lambda: FakeSessionCtx())
+    monkeypatch.setattr("packages.storage.repositories.PropertyRepository", FakePropertyRepo)
+    monkeypatch.setattr("packages.storage.repositories.SoldPropertyRepository", FakeSoldRepo)
+    monkeypatch.setattr("packages.storage.repositories.LLMEnrichmentRepository", FakeEnrichmentRepo)
+    def _fake_run_async_fail(coro):
+        coro.close()
+        raise RuntimeError("llm failed")
+
+    monkeypatch.setattr("apps.worker.tasks._run_async", _fake_run_async_fail)
+    monkeypatch.setattr("apps.worker.tasks._record_backend_log", lambda **kwargs: events.append(kwargs))
+    monkeypatch.setattr("apps.worker.tasks.settings.llm_enabled", True)
+
+    with pytest.raises(RuntimeError, match="llm failed"):
+        enrich_property_llm("prop-1")
+
+    assert any(e["event_type"] == "llm_enrichment_failed" for e in events)
+
+
+def test_enrich_batch_llm_records_skip_backend_log_when_queue_unconfigured(monkeypatch):
+    events: list[dict] = []
+
+    monkeypatch.setattr("apps.worker.tasks.settings.llm_enabled", True)
+    monkeypatch.setattr("apps.worker.tasks._is_queue_configured", lambda _queue_name: False)
+    monkeypatch.setattr("apps.worker.tasks._record_backend_log", lambda **kwargs: events.append(kwargs))
+
+    result = enrich_batch_llm(limit=11)
+
+    assert result == {"dispatched": 0, "reason": "llm_queue_unconfigured"}
+    assert len(events) == 1
+    assert events[0]["event_type"] == "llm_batch_skipped"
+    assert events[0]["context"]["reason"] == "llm_queue_unconfigured"
+
+
+def test_enrich_property_llm_records_skip_backend_log_when_disabled(monkeypatch):
+    events: list[dict] = []
+
+    monkeypatch.setattr("apps.worker.tasks.settings.llm_enabled", False)
+    monkeypatch.setattr("apps.worker.tasks._record_backend_log", lambda **kwargs: events.append(kwargs))
+
+    result = enrich_property_llm("prop-disabled")
+
+    assert result == {
+        "property_id": "prop-disabled",
+        "enriched": False,
+        "reason": "llm_disabled",
+    }
+    assert len(events) == 1
+    assert events[0]["event_type"] == "llm_enrichment_skipped"
+
+
+def test_enrich_property_llm_records_property_not_found_backend_log(monkeypatch):
+    class FakeSession:
+        def commit(self):
+            return None
+
+    class FakeSessionCtx:
+        def __enter__(self):
+            return FakeSession()
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+    class FakePropertyRepo:
+        def __init__(self, _db):
+            pass
+
+        def get_by_id(self, _property_id):
+            return None
+
+    class FakeSoldRepo:
+        def __init__(self, _db):
+            pass
+
+    class FakeEnrichmentRepo:
+        def __init__(self, _db):
+            pass
+
+    events: list[dict] = []
+
+    monkeypatch.setattr("packages.storage.database.get_session", lambda: FakeSessionCtx())
+    monkeypatch.setattr("packages.storage.repositories.PropertyRepository", FakePropertyRepo)
+    monkeypatch.setattr("packages.storage.repositories.SoldPropertyRepository", FakeSoldRepo)
+    monkeypatch.setattr("packages.storage.repositories.LLMEnrichmentRepository", FakeEnrichmentRepo)
+    monkeypatch.setattr("apps.worker.tasks._record_backend_log", lambda **kwargs: events.append(kwargs))
+    monkeypatch.setattr("apps.worker.tasks.settings.llm_enabled", True)
+
+    result = enrich_property_llm("missing-prop")
+
+    assert result == {"error": "Property not found"}
+    assert len(events) == 1
+    assert events[0]["event_type"] == "llm_enrichment_property_not_found"
+    assert events[0]["context"]["property_id"] == "missing-prop"
+
+
+def test_enrich_batch_llm_records_dispatched_backend_log(monkeypatch):
+    class _IdField:
+        def in_(self, _subquery):
+            return self
+
+        def desc(self):
+            return self
+
+        def __invert__(self):
+            return self
+
+    class FakeQuery:
+        def __init__(self, rows):
+            self._rows = rows
+
+        def subquery(self):
+            return object()
+
+        def filter(self, *_args, **_kwargs):
+            return self
+
+        def order_by(self, *_args, **_kwargs):
+            return self
+
+        def limit(self, *_args, **_kwargs):
+            return self
+
+        def all(self):
+            return self._rows
+
+    class FakeSession:
+        def __init__(self):
+            self.calls = 0
+
+        def query(self, *_args, **_kwargs):
+            self.calls += 1
+            if self.calls == 1:
+                return FakeQuery([])
+            return FakeQuery([SimpleNamespace(id="p1"), SimpleNamespace(id="p2")])
+
+    class FakeSessionCtx:
+        def __enter__(self):
+            return FakeSession()
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+    class FakeLLMEnrichment:
+        property_id = _IdField()
+
+    class FakeProperty:
+        id = _IdField()
+        first_listed_at = _IdField()
+
+    send_calls: list[tuple] = []
+    events: list[dict] = []
+
+    monkeypatch.setattr("packages.storage.database.get_session", lambda: FakeSessionCtx())
+    monkeypatch.setattr("packages.storage.models.LLMEnrichment", FakeLLMEnrichment)
+    monkeypatch.setattr("packages.storage.models.Property", FakeProperty)
+    monkeypatch.setattr("packages.shared.queue.send_task", lambda *args, **kwargs: send_calls.append((args, kwargs)) or "msg")
+    monkeypatch.setattr("apps.worker.tasks._record_backend_log", lambda **kwargs: events.append(kwargs))
+    monkeypatch.setattr("apps.worker.tasks.settings.llm_enabled", True)
+    monkeypatch.setattr("apps.worker.tasks._is_queue_configured", lambda _queue_name: True)
+
+    result = enrich_batch_llm(limit=3)
+
+    assert result == {"dispatched": 2}
+    assert len(send_calls) == 2
+    assert len(events) == 1
+    assert events[0]["event_type"] == "llm_batch_dispatched"
+    assert events[0]["context"]["dispatched"] == 2
+
+
+def test_discover_all_sources_skips_invalid_adapter_config(monkeypatch):
+    class FakeRepo:
+        def __init__(self, _db):
+            self.created = []
+
+        def get_all(self, enabled_only=False):
+            return []
+
+        def create(self, **kwargs):
+            self.created.append(kwargs)
+            return kwargs
+
+    class FakeSession:
+        def commit(self):
+            return None
+
+    class FakeSessionCtx:
+        def __enter__(self):
+            return FakeSession()
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+    class FakeAdapter:
+        def validate_config(self, config):
+            if isinstance(config.get("areas"), list):
+                return []
+            return ["config.areas must be type 'array'"]
+
+    repo_holder = {}
+
+    def _repo_factory(db):
+        repo = FakeRepo(db)
+        repo_holder["repo"] = repo
+        return repo
+
+    monkeypatch.setattr("packages.storage.database.get_session", lambda: FakeSessionCtx())
+    monkeypatch.setattr("packages.storage.repositories.SourceRepository", _repo_factory)
+    monkeypatch.setattr("packages.sources.registry.get_adapter_names", lambda: ["daft"])
+    monkeypatch.setattr("packages.sources.registry.get_adapter", lambda _name: FakeAdapter())
+    monkeypatch.setattr(
+        "packages.sources.discovery.load_all_discovery_candidates",
+        lambda **_kwargs: [
+            SimpleNamespace(
+                candidate={
+                    "name": "Broken Candidate",
+                    "url": "https://www.daft.ie/property-for-sale/dublin",
+                    "adapter_name": "daft",
+                    "adapter_type": "api",
+                    "config": {"areas": "dublin"},
+                },
+                score=0.8,
+                activation="auto_enable",
+                should_auto_enable=True,
+                reasons=["known_adapter:daft"],
+            )
+        ],
+    )
+    monkeypatch.setattr("apps.worker.tasks._record_backend_log", lambda **_kwargs: None)
+
+    result = discover_all_sources(limit=20, dry_run=False, follow_links=False, include_grants=False)
+
+    assert result["property_sources"]["skipped_invalid_config"] == 1
+    assert result["property_sources"]["auto_enabled"] == 0
+    assert repo_holder["repo"].created == []
+
+
+def test_build_daft_cursor_payload_collects_recent_ids_and_latest_publish():
+    raw_listings = [
+        SimpleNamespace(raw_data={"id": 1001, "publishDate": 1700000000000}),
+        SimpleNamespace(raw_data={"id": 1002, "publishDate": 1700000500000}),
+        SimpleNamespace(raw_data={"id": 1001, "publishDate": 1700000100000}),
+    ]
+
+    payload = _build_daft_cursor_payload(raw_listings, max_recent_ids=10)
+
+    assert payload["recent_listing_ids"] == ["1001", "1002"]
+    assert payload["last_publish_ts_ms"] == 1700000500000
+    assert isinstance(payload["cursor_updated_at"], str)
+
+
+def test_scrape_source_persists_daft_cursor_config(monkeypatch):
+    source_obj = SimpleNamespace(
+        id="daft-source-id",
+        enabled=True,
+        adapter_name="daft",
+        name="Daft.ie Cork",
+        config={"areas": ["cork"], "max_pages": 2},
+    )
+
+    class FakeSourceRepository:
+        def __init__(self, _db):
+            self.updated_configs: list[dict] = []
+
+        def get_by_id(self, source_id):
+            assert source_id == "daft-source-id"
+            return source_obj
+
+        def mark_poll_success(self, source_id, processed_count):
+            assert source_id == "daft-source-id"
+            assert processed_count == 1
+
+        def mark_poll_error(self, source_id, _error):
+            raise AssertionError(f"mark_poll_error should not be called for {source_id}")
+
+        def should_skip_poll(self, _source):
+            return False
+
+        def try_acquire_scrape_lock(self, _source_id):
+            return True
+
+        def update(self, source_id, **kwargs):
+            assert source_id == "daft-source-id"
+            self.updated_configs.append(kwargs.get("config") or {})
+            return source_obj
+
+    class FakePropertyRepository:
+        def __init__(self, _db):
+            pass
+
+        def get_by_external_id_and_source(self, _source_id, _external_id):
+            return None
+
+        def get_by_content_hash(self, _content_hash):
+            return None
+
+        def create(self, **_kwargs):
+            return None
+
+    class FakePriceHistoryRepository:
+        def __init__(self, _db):
+            pass
+
+    class FakeNormalizer:
+        def normalize(self, _parsed):
+            return {
+                "content_hash": "hash-1",
+                "address": "1 Main Street",
+                "county": "Cork",
+                "latitude": 53.0,
+                "longitude": -8.0,
+                "price": 250000.0,
+                "external_id": "6437639",
+                "url": "https://www.daft.ie/for-sale/house-lighthouse-ballydesmond-co-cork/6437639",
+                "raw_data": {},
+            }
+
+    class FakeAdapter:
+        async def fetch_listings(self, _config):
+            return [
+                SimpleNamespace(
+                    raw_data={"id": 6437639, "publishDate": 1700000900000},
+                    source_url="https://www.daft.ie/for-sale/house-lighthouse-ballydesmond-co-cork/6437639",
+                )
+            ]
+
+        def parse_listing(self, _raw):
+            return SimpleNamespace(raw_data={})
+
+    repo_holder: dict[str, FakeSourceRepository] = {}
+
+    def _repo_factory(db):
+        repo = FakeSourceRepository(db)
+        repo_holder["repo"] = repo
+        return repo
+
+    monkeypatch.setattr("packages.storage.database.get_session", lambda: _SessionCtx())
+    monkeypatch.setattr("packages.storage.repositories.SourceRepository", _repo_factory)
+    monkeypatch.setattr("packages.storage.repositories.PropertyRepository", FakePropertyRepository)
+    monkeypatch.setattr(
+        "packages.storage.repositories.PriceHistoryRepository",
+        FakePriceHistoryRepository,
+    )
+    monkeypatch.setattr("packages.normalizer.normalizer.PropertyNormalizer", FakeNormalizer)
+    monkeypatch.setattr("packages.sources.registry.get_adapter", lambda _name: FakeAdapter())
+    monkeypatch.setattr("apps.worker.tasks._record_backend_log", lambda **_kwargs: None)
+
+    result = scrape_source("daft-source-id")
+
+    assert result["source_id"] == "daft-source-id"
+    assert result["new"] == 1
+    updated_configs = repo_holder["repo"].updated_configs
+    assert len(updated_configs) == 1
+    assert updated_configs[0]["recent_listing_ids"] == ["6437639"]
+    assert updated_configs[0]["last_publish_ts_ms"] == 1700000900000
+
+
+def test_evaluate_source_quality_governance_promotes_and_quarantines(monkeypatch):
+    class FakeQualityRepo:
+        def __init__(self, _db):
+            self.created = []
+
+        def list_recent(self, *, run_type=None, limit=100):
+            assert run_type == "scrape"
+            assert limit == 50
+            return [
+                SimpleNamespace(source_id="s-good", total_fetched=100, parse_failed=1, new_count=2, updated_count=1),
+                SimpleNamespace(source_id="s-good", total_fetched=120, parse_failed=3, new_count=1, updated_count=1),
+                SimpleNamespace(source_id="s-good", total_fetched=80, parse_failed=2, new_count=0, updated_count=1),
+                SimpleNamespace(source_id="s-bad", total_fetched=100, parse_failed=80, new_count=0, updated_count=0),
+                SimpleNamespace(source_id="s-bad", total_fetched=120, parse_failed=70, new_count=0, updated_count=0),
+                SimpleNamespace(source_id="s-bad", total_fetched=90, parse_failed=60, new_count=0, updated_count=0),
+            ]
+
+        def create_snapshot(self, **kwargs):
+            self.created.append(kwargs)
+            return kwargs
+
+    class FakeSourceRepo:
+        def __init__(self, _db):
+            self.updated = []
+
+        def get_by_id(self, source_id):
+            if source_id == "s-good":
+                return SimpleNamespace(id="s-good", enabled=False, tags=["pending_approval"])
+            if source_id == "s-bad":
+                return SimpleNamespace(id="s-bad", enabled=True, tags=[])
+            return None
+
+        def update(self, source_id, **kwargs):
+            self.updated.append((source_id, kwargs))
+            return kwargs
+
+    class FakeSessionCtx:
+        def __enter__(self):
+            return object()
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+    repo_holder = {}
+    quality_holder = {}
+
+    def _source_repo_factory(db):
+        repo = FakeSourceRepo(db)
+        repo_holder["repo"] = repo
+        return repo
+
+    def _quality_repo_factory(db):
+        repo = FakeQualityRepo(db)
+        quality_holder["repo"] = repo
+        return repo
+
+    monkeypatch.setattr("packages.storage.database.get_session", lambda: FakeSessionCtx())
+    monkeypatch.setattr("packages.storage.repositories.SourceQualitySnapshotRepository", _quality_repo_factory)
+    monkeypatch.setattr("packages.storage.repositories.SourceRepository", _source_repo_factory)
+    monkeypatch.setattr("apps.worker.tasks._record_backend_log", lambda **_kwargs: None)
+
+    result = evaluate_source_quality_governance(recent_limit=50, min_samples=3)
+
+    assert result["promoted_count"] == 1
+    assert result["quarantined_count"] == 1
+    assert "s-good" in result["promoted_source_ids"]
+    assert "s-bad" in result["quarantined_source_ids"]
+    assert len(result["decisions"]) == 2
+    decisions = {d["source_id"]: d for d in result["decisions"]}
+    assert decisions["s-good"]["action"] == "promote"
+    assert "threshold_met" in decisions["s-good"]["reason"]
+    assert decisions["s-bad"]["action"] == "quarantine"
+    assert "threshold_exceeded" in decisions["s-bad"]["reason"]
+
+    updates = repo_holder["repo"].updated
+    promoted = [u for u in updates if u[0] == "s-good"]
+    quarantined = [u for u in updates if u[0] == "s-bad"]
+    assert promoted and promoted[0][1]["enabled"] is True
+    assert "quality_promoted" in promoted[0][1]["tags"]
+    assert quarantined and quarantined[0][1]["enabled"] is False
+    assert "quality_quarantined" in quarantined[0][1]["tags"]
+
+    snapshots = quality_holder["repo"].created
+    assert len(snapshots) >= 3
+    governance_rows = [s for s in snapshots if s.get("run_type") == "governance"]
+    assert governance_rows
+    assert any((s.get("details") or {}).get("action") == "promote" for s in governance_rows)
+    assert any((s.get("details") or {}).get("action") == "quarantine" for s in governance_rows)

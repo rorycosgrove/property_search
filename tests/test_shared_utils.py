@@ -2,6 +2,7 @@
 from packages.shared.utils import (
     NI_COUNTIES,
     REPUBLIC_COUNTIES,
+    canonical_property_id,
     content_hash,
     extract_county,
     extract_eircode,
@@ -102,6 +103,21 @@ class TestContentHash:
         h1 = content_hash("a", 100, 2, "source1")
         h2 = content_hash("b", 200, 3, "source2")
         assert h1 != h2
+
+
+class TestCanonicalPropertyId:
+    def test_uses_eircode_when_available(self):
+        c1 = canonical_property_id("1 Main Street, Dublin", county="Dublin", eircode="D02 XY45")
+        c2 = canonical_property_id("Different Address", county="Dublin", eircode="D02XY45")
+        assert c1 == c2
+
+    def test_falls_back_to_address_and_county(self):
+        c1 = canonical_property_id("1 Main Street, Co. Dublin", county="Dublin")
+        c2 = canonical_property_id("1 Main Street, Co. Dublin", county="Dublin")
+        assert c1 == c2
+
+    def test_returns_none_without_identity(self):
+        assert canonical_property_id("", county=None, eircode=None) is None
 
 
 class TestCountyLists:

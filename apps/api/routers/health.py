@@ -5,10 +5,13 @@ from sqlalchemy import text
 from sqlalchemy.orm import Session
 
 from packages.shared.config import settings
+from packages.shared.logging import get_logger
 from packages.shared.schemas import HealthResponse
+from packages.storage.repositories import BackendLogRepository
 from packages.storage.database import get_db_session
 
 router = APIRouter()
+logger = get_logger(__name__)
 
 
 @router.get("/health", response_model=HealthResponse)
@@ -18,8 +21,8 @@ def health_check(db: Session = Depends(get_db_session)):
     try:
         db.execute(text("SELECT 1"))
         db_ok = True
-    except Exception:
-        pass
+    except Exception as exc:
+        logger.warning("health_db_check_failed", error=str(exc))
 
     # Check Bedrock availability with bounded latency.
     # When LLM is disabled we consider Bedrock non-blocking for health checks.
@@ -36,12 +39,20 @@ def health_check(db: Session = Depends(get_db_session)):
             )
             response = client.list_foundation_models(byProvider="Amazon")
             bedrock_ok = len(response.get("modelSummaries", [])) > 0
-        except Exception:
+        except Exception as exc:
+            logger.warning("health_bedrock_check_failed", error=str(exc))
             bedrock_ok = False
+
+    backend_errors_last_hour: int | None = None
+    try:
+        backend_errors_last_hour = BackendLogRepository(db).count_recent_errors(hours=1)
+    except Exception as exc:
+        logger.warning("health_backend_log_check_failed", error=str(exc))
 
     all_ok = db_ok and bedrock_ok
     return HealthResponse(
         status="healthy" if all_ok else "degraded",
         database="connected" if db_ok else "disconnected",
         bedrock="available" if bedrock_ok else "unavailable",
+        backend_errors_last_hour=backend_errors_last_hour,
     )

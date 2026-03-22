@@ -8,7 +8,7 @@ Irish Property Research Dashboard follows a **modular monolith** architecture de
 
 ```
 ┌─────────────────┐     ┌─────────────────────────┐     ┌──────────────────┐
-│  Next.js 14     │────▶│  API Gateway (HTTP API)  │────▶│  RDS PostgreSQL  │
+│  Next.js        │────▶│  API Gateway (HTTP API)  │────▶│  RDS PostgreSQL  │
 │  (AWS Amplify)  │     │  → Lambda (FastAPI)      │     │  16 + PostGIS    │
 └─────────────────┘     └──────────┬──────────────┘     └──────────────────┘
                                    │                              ▲
@@ -57,7 +57,7 @@ Configuration (Pydantic Settings), structured logging (structlog), Pydantic requ
 **Depends on:** Nothing (leaf module)
 
 ### packages/storage
-SQLAlchemy 2.0 ORM models (7 tables), Repository classes, database session management. Uses PostGIS for spatial queries. Lambda-aware connection pooling (NullPool in Lambda, standard pool locally).
+SQLAlchemy 2.0 ORM models and repository classes, plus database session management. Uses PostGIS for spatial queries. Lambda-aware connection pooling (NullPool in Lambda, standard pool locally).
 
 **Depends on:** `shared` (config, logging)
 
@@ -84,7 +84,7 @@ Alert evaluation engine. Matches new properties against saved searches, detects 
 ### packages/ai
 Amazon Bedrock LLM integration. `BedrockProvider` implements the abstract `LLMProvider` interface using Bedrock Runtime. Service layer handles provider config (stored in DynamoDB), prompt management, and response parsing. Supports property enrichment (summary, value score, pros/cons), market analysis, and property comparison.
 
-Supported models: Amazon Titan Text Express, Amazon Titan Text Lite, Amazon Nova Micro, Amazon Nova Lite, Amazon Nova Pro.
+Supported models are configured by deployment/runtime settings (for example Bedrock Nova family model IDs).
 
 **Depends on:** `shared` (config), `storage` (repositories)
 
@@ -101,7 +101,7 @@ Two Lambda handler modules:
 **Depends on:** All packages
 
 ### web/
-Next.js 14 frontend deployed on AWS Amplify. TypeScript, Tailwind CSS dark theme, Zustand state management. Components: interactive Leaflet map, property feed, filter bar, detail panel, analytics dashboard, alerts page, sources management, settings.
+Next.js frontend deployed on AWS Amplify. TypeScript, Tailwind CSS, and Zustand state management. Components include interactive Leaflet map views, property feed/search flows, analytics, alerts, and source-management interfaces.
 
 **Depends on:** API only (HTTP via API Gateway)
 
@@ -147,7 +147,7 @@ User triggers via API → send_task("llm", "enrich_property_llm", {property_id})
 
 1. **Modular Monolith** — Simpler than microservices, clear boundaries, shared database. Can extract to services later.
 2. **Repository Pattern** — Decouples ORM from business logic. Testable via mock repositories.
-3. **Content Hash Dedup** — Each property gets a deterministic hash from URL. Updates detected via price/status changes.
+3. **Content Hash + Canonical Identity Dedup** — Listings are deduped with deterministic content hashes and canonical property identity to reconcile cross-source records.
 4. **SQS Queue Separation** — Three queues (scrape, llm, alert) isolate workloads with independent concurrency and retry settings.
 5. **Amazon Bedrock** — No API keys needed, uses IAM credentials. Free tier models (Titan, Nova) for property enrichment.
 6. **DynamoDB Config Cache** — Replaces Redis for runtime LLM configuration storage. Serverless, pay-per-use, always-on.

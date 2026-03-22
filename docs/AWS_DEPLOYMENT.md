@@ -10,8 +10,9 @@ The Irish Property Research Dashboard runs entirely on AWS serverless infrastruc
 2. **AWS CLI** installed and configured: `aws configure`
 3. **Node.js 20+** (for CDK)
 4. **Python 3.12+** (for Lambda packaging)
-5. **Docker** (for building Lambda container images)
-6. **Amazon Bedrock** model access enabled in your region (eu-west-1 by default)
+5. **uv** package manager (used by project commands/scripts)
+6. **Docker** (for building Lambda container images)
+7. **Amazon Bedrock** model access enabled in your region (eu-west-1 by default)
 
 ### Enable Bedrock Model Access
 
@@ -36,6 +37,21 @@ All infrastructure is defined in `infra/lib/`:
 | Frontend | `frontend-stack.ts` | Amplify app for Next.js SSR |
 
 ## Deployment
+
+### Automation vs Manual Steps
+
+What `python deploy.py` automates:
+- Prerequisite checks and dependency setup
+- CDK bootstrap (when needed) and stack deployment
+- Migration and initial seed flow
+
+What remains manual:
+- Bedrock model access enablement in AWS Console
+- Optional Amplify repository connection for CI/CD from your own Git repo
+
+Deployment ease assessment:
+- Repeat deployments are straightforward once AWS account and Bedrock access are configured.
+- First deployment is moderate effort due to AWS setup and required console steps.
 
 ### First-Time Setup
 
@@ -90,6 +106,26 @@ make destroy
 ```
 
 > **Warning:** This deletes all resources including the RDS database. Data will be lost.
+
+## Post-Deploy Verification
+
+After deployment completes:
+
+1. Confirm stack outputs are available (API URL and frontend URL).
+2. Check API health:
+
+```bash
+curl https://<api-gateway-url>/health
+```
+
+3. Confirm migration status:
+
+```bash
+curl https://<api-gateway-url>/api/v1/admin/migrate/status
+```
+
+4. Confirm backend log signal is present in health response (`backend_errors_last_hour`).
+5. Open frontend URL and verify it can fetch from the deployed API.
 
 ## Environment Variables
 

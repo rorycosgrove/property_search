@@ -1,8 +1,8 @@
 'use client';
 
 import { useEffect, useState } from 'react';
-import type { LLMEnrichment, PriceHistoryEntry, Property, PropertyGrantMatch } from '@/lib/api';
-import { getEnrichment, getPriceHistory, getPropertyGrantMatches, triggerEnrichment } from '@/lib/api';
+import type { LLMEnrichment, PriceHistoryEntry, Property, PropertyGrantMatch, PropertyTimelineEvent } from '@/lib/api';
+import { getEnrichment, getPriceHistory, getPropertyGrantMatches, getPropertyTimeline, triggerEnrichment } from '@/lib/api';
 import { useMapStore } from '@/lib/stores';
 import { formatEur, formatDate, berColor } from '@/lib/utils';
 
@@ -14,19 +14,38 @@ interface Props {
 export default function PropertyDetail({ property: prop, onClose }: Props) {
   const [enrichment, setEnrichment] = useState<LLMEnrichment | null>(null);
   const [priceHistory, setPriceHistory] = useState<PriceHistoryEntry[]>([]);
+  const [timeline, setTimeline] = useState<PropertyTimelineEvent[]>([]);
   const [grants, setGrants] = useState<PropertyGrantMatch[]>([]);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
+  const [autoEnrichAttempted, setAutoEnrichAttempted] = useState(false);
+  const [autoEnrichPending, setAutoEnrichPending] = useState(false);
   const { comparedPropertyIds, toggleCompareProperty } = useMapStore();
+  const inCompare = comparedPropertyIds.includes(prop.id);
+  const quickStats = [
+    prop.bedrooms != null ? { label: 'Beds', value: String(prop.bedrooms) } : null,
+    prop.bathrooms != null ? { label: 'Baths', value: String(prop.bathrooms) } : null,
+    prop.floor_area_sqm != null ? { label: 'm2', value: String(prop.floor_area_sqm) } : null,
+    prop.ber_rating ? { label: 'BER', value: prop.ber_rating, color: berColor(prop.ber_rating) } : null,
+  ].filter((item): item is { label: string; value: string; color?: string } => item !== null);
 
   useEffect(() => {
+    setAutoEnrichAttempted(false);
+    setAutoEnrichPending(false);
+    setEnrichment(null);
+    setPriceHistory([]);
+    setTimeline([]);
+    setGrants([]);
+    setLoadError(null);
+
     let isMounted = true;
 
     const load = async () => {
       const errors: string[] = [];
-      const [enrichmentResult, historyResult, grantsResult] = await Promise.allSettled([
+      const [enrichmentResult, historyResult, timelineResult, grantsResult] = await Promise.allSettled([
         getEnrichment(prop.id),
         getPriceHistory(prop.id),
+        getPropertyTimeline(prop.id),
         getPropertyGrantMatches(prop.id),
       ]);
 
@@ -37,13 +56,19 @@ export default function PropertyDetail({ property: prop, onClose }: Props) {
       if (enrichmentResult.status === 'fulfilled') {
         setEnrichment(enrichmentResult.value);
       } else {
-        errors.push('AI analysis');
+        setEnrichment(null);
       }
 
       if (historyResult.status === 'fulfilled') {
         setPriceHistory(historyResult.value);
       } else {
         errors.push('price history');
+      }
+
+      if (timelineResult.status === 'fulfilled') {
+        setTimeline(timelineResult.value);
+      } else {
+        errors.push('timeline');
       }
 
       if (grantsResult.status === 'fulfilled') {
@@ -61,6 +86,52 @@ export default function PropertyDetail({ property: prop, onClose }: Props) {
       isMounted = false;
     };
   }, [prop.id]);
+
+  useEffect(() => {
+    if (enrichment || autoEnrichAttempted || autoEnrichPending) {
+      return;
+    }
+
+    let cancelled = false;
+    setAutoEnrichAttempted(true);
+    setAutoEnrichPending(true);
+
+    const runAutoEnrich = async () => {
+      try {
+        await triggerEnrichment(prop.id);
+        window.setTimeout(async () => {
+          if (cancelled) {
+            return;
+          }
+          try {
+            const data = await getEnrichment(prop.id);
+            if (!cancelled) {
+              setEnrichment(data);
+              setLoadError(null);
+            }
+          } catch {
+            if (!cancelled) {
+              setLoadError((prev) => prev || 'AI summary is queued and may take a little longer to appear.');
+            }
+          } finally {
+            if (!cancelled) {
+              setAutoEnrichPending(false);
+            }
+          }
+        }, 3500);
+      } catch {
+        if (!cancelled) {
+          setAutoEnrichPending(false);
+        }
+      }
+    };
+
+    void runAutoEnrich();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [prop.id, enrichment, autoEnrichAttempted, autoEnrichPending]);
 
   const handleEnrich = async () => {
     setLoading(true);
@@ -84,208 +155,229 @@ export default function PropertyDetail({ property: prop, onClose }: Props) {
 
   return (
     <div className="p-4">
-      {/* Header */}
-      <div className="flex items-start justify-between mb-4">
-        <div className="flex-1">
-          <div className="text-2xl font-bold text-[var(--accent)] mb-1">
-            {formatEur(prop.price)}
+      <div className="mb-4 rounded-2xl border border-[var(--card-border)] bg-[var(--card-bg)]/92 p-4 shadow-[0_10px_30px_rgba(27,36,48,0.05)]">
+        <div className="mb-4 flex items-start justify-between gap-3">
+          <div className="flex-1">
+            <p className="text-[11px] uppercase tracking-[0.16em] text-[var(--muted)]">Property detail</p>
+            <div className="mt-1 text-2xl font-bold text-[var(--accent)]">{formatEur(prop.price)}</div>
+            {prop.net_price != null ? (
+              <p className="mt-1 text-sm font-medium text-emerald-300">Net after grants: {formatEur(prop.net_price)}</p>
+            ) : null}
+            {prop.eligible_grants_total != null && prop.eligible_grants_total > 0 ? (
+              <p className="mt-0.5 text-xs text-[var(--muted)]">Eligible grants total: {formatEur(prop.eligible_grants_total)}</p>
+            ) : null}
+            <h2 className="mt-1 text-base font-semibold leading-tight">{prop.title}</h2>
+            <p className="mt-0.5 text-sm text-[var(--muted)]">{prop.address}</p>
           </div>
-          <h2 className="text-base font-semibold leading-tight">{prop.title}</h2>
-          <p className="text-sm text-[var(--muted)] mt-0.5">{prop.address}</p>
+          <button
+            onClick={onClose}
+            className="rounded-full border border-[var(--card-border)] px-2.5 py-1 text-xs transition-colors hover:bg-[var(--background)]"
+          >
+            Close
+          </button>
         </div>
-        <button
-          onClick={onClose}
-          className="ml-2 p-1 hover:bg-[var(--card-border)] rounded transition-colors"
-        >
-          ✕
-        </button>
-      </div>
 
-      {/* Hero image */}
-      <div className="mb-4 rounded-lg overflow-hidden border border-[var(--card-border)] bg-neutral-900 h-44">
-        {prop.images?.[0]?.url ? (
-          // eslint-disable-next-line @next/next/no-img-element
-          <img src={prop.images[0].url} alt={prop.title} className="w-full h-full object-cover" />
-        ) : (
-          <div className="w-full h-full flex items-center justify-center text-sm text-[var(--muted)]">
-            No listing image available
-          </div>
-        )}
-      </div>
-
-      <div className="mb-4 flex gap-2">
-        <button
-          onClick={() => toggleCompareProperty(prop.id)}
-          className={[
-            'px-3 py-1.5 text-xs rounded border transition-colors',
-            comparedPropertyIds.includes(prop.id)
-              ? 'border-[var(--accent)] text-[var(--accent)] bg-cyan-900/10'
-              : 'border-[var(--card-border)] hover:bg-[var(--card-border)]',
-          ].join(' ')}
-        >
-          {comparedPropertyIds.includes(prop.id) ? 'In comparison dock' : 'Add to comparison dock'}
-        </button>
-      </div>
-
-      {/* Quick stats */}
-      <div className="grid grid-cols-4 gap-2 mb-4">
-        {prop.bedrooms != null && (
-          <div className="bg-[var(--card-bg)] border border-[var(--card-border)] rounded p-2 text-center">
-            <div className="text-lg font-bold">{prop.bedrooms}</div>
-            <div className="text-xs text-[var(--muted)]">Beds</div>
-          </div>
-        )}
-        {prop.bathrooms != null && (
-          <div className="bg-[var(--card-bg)] border border-[var(--card-border)] rounded p-2 text-center">
-            <div className="text-lg font-bold">{prop.bathrooms}</div>
-            <div className="text-xs text-[var(--muted)]">Baths</div>
-          </div>
-        )}
-        {prop.floor_area_sqm != null && (
-          <div className="bg-[var(--card-bg)] border border-[var(--card-border)] rounded p-2 text-center">
-            <div className="text-lg font-bold">{prop.floor_area_sqm}</div>
-            <div className="text-xs text-[var(--muted)]">m²</div>
-          </div>
-        )}
-        {prop.ber_rating && (
-          <div className="bg-[var(--card-bg)] border border-[var(--card-border)] rounded p-2 text-center">
-            <div
-              className="text-lg font-bold"
-              style={{ color: berColor(prop.ber_rating) }}
-            >
-              {prop.ber_rating}
+        <div className="mb-4 h-44 overflow-hidden rounded-xl border border-[var(--card-border)] bg-neutral-900">
+          {prop.images?.[0]?.url ? (
+            // eslint-disable-next-line @next/next/no-img-element
+            <img src={prop.images[0].url} alt={prop.title} className="h-full w-full object-cover" />
+          ) : (
+            <div className="flex h-full w-full items-center justify-center text-sm text-[var(--muted)]">
+              No listing image available
             </div>
-            <div className="text-xs text-[var(--muted)]">BER</div>
+          )}
+        </div>
+
+        <div className="mb-4 flex flex-wrap gap-2">
+          <button
+            onClick={() => toggleCompareProperty(prop.id)}
+            className={[
+              'rounded-full border px-3 py-1.5 text-xs transition-colors',
+              inCompare
+                ? 'border-[var(--accent)] bg-[var(--accent-soft)] text-[var(--accent)]'
+                : 'border-[var(--card-border)] hover:bg-[var(--card-border)]',
+            ].join(' ')}
+          >
+            {inCompare ? 'Added to compare' : 'Add to compare'}
+          </button>
+          <a
+            href={prop.url}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="rounded-full border border-[var(--accent)] bg-[var(--accent)] px-3 py-1.5 text-xs font-medium text-white transition-colors hover:bg-[var(--accent-strong)]"
+          >
+            Open source listing
+          </a>
+        </div>
+
+        {quickStats.length > 0 ? (
+          <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
+            {quickStats.map((stat) => (
+              <div
+                key={stat.label}
+                className="rounded-xl border border-[var(--card-border)] bg-[var(--background)] px-3 py-2 text-center"
+              >
+                <div className="text-lg font-bold" style={stat.color ? { color: stat.color } : undefined}>
+                  {stat.value}
+                </div>
+                <div className="text-xs text-[var(--muted)]">{stat.label}</div>
+              </div>
+            ))}
           </div>
-        )}
+        ) : null}
       </div>
 
-      {/* Description */}
-      {prop.description && (
-        <div className="mb-4">
-          <h3 className="text-sm font-semibold mb-1">Description</h3>
-          <p className="text-sm text-[var(--muted)] leading-relaxed">
+      {prop.description ? (
+        <section className="mb-4 rounded-xl border border-[var(--card-border)] bg-[var(--card-bg)] p-3">
+          <h3 className="mb-1 text-sm font-semibold">Description</h3>
+          <p className="text-sm leading-relaxed text-[var(--muted)]">
             {prop.description.slice(0, 500)}
             {(prop.description?.length || 0) > 500 && '...'}
           </p>
-        </div>
-      )}
+        </section>
+      ) : null}
 
-      {/* Price history */}
-      {priceHistory.length > 0 && (
-        <div className="mb-4">
-          <h3 className="text-sm font-semibold mb-2">Price History</h3>
-          <div className="space-y-1">
-            {priceHistory.map((h: any) => (
-              <div key={h.id} className="flex justify-between text-sm">
-                <span className="text-[var(--muted)]">{formatDate(h.recorded_at)}</span>
+      {priceHistory.length > 0 ? (
+        <section className="mb-4 rounded-xl border border-[var(--card-border)] bg-[var(--card-bg)] p-3">
+          <h3 className="mb-2 text-sm font-semibold">Price history</h3>
+          <div className="space-y-1.5">
+            {priceHistory.map((entry) => (
+              <div key={entry.id} className="flex items-center justify-between text-sm">
+                <span className="text-[var(--muted)]">{formatDate(entry.recorded_at)}</span>
                 <span>
-                  {formatEur(h.price)}
-                  {h.price_change && (
-                    <span className={h.price_change < 0 ? 'text-green-400 ml-2' : 'text-red-400 ml-2'}>
-                      {h.price_change > 0 ? '+' : ''}{formatEur(h.price_change)}
+                  {formatEur(entry.price)}
+                  {entry.price_change ? (
+                    <span className={entry.price_change < 0 ? 'ml-2 text-green-400' : 'ml-2 text-red-400'}>
+                      {entry.price_change > 0 ? '+' : ''}
+                      {formatEur(entry.price_change)}
                     </span>
-                  )}
+                  ) : null}
                 </span>
               </div>
             ))}
           </div>
-        </div>
-      )}
+        </section>
+      ) : null}
 
-      {/* AI Enrichment */}
-      <div className="mb-4">
-        <div className="flex items-center justify-between mb-2">
-          <h3 className="text-sm font-semibold">AI Analysis</h3>
-          {!enrichment && (
+      {timeline.length > 0 ? (
+        <section className="mb-4 rounded-xl border border-[var(--card-border)] bg-[var(--card-bg)] p-3">
+          <h3 className="mb-2 text-sm font-semibold">Property timeline</h3>
+          <div className="space-y-2">
+            {timeline.slice(0, 8).map((event) => (
+              <div key={event.id} className="rounded-lg border border-[var(--card-border)] bg-[var(--background)] px-2.5 py-2 text-xs">
+                <div className="flex items-center justify-between gap-2">
+                  <span className="font-semibold uppercase tracking-[0.08em] text-[var(--muted)]">
+                    {event.event_type.replace(/_/g, ' ')}
+                  </span>
+                  <span className="text-[var(--muted)]">{formatDate(event.occurred_at)}</span>
+                </div>
+                <div className="mt-1.5 flex flex-wrap items-center gap-x-3 gap-y-1 text-[var(--muted)]">
+                  {event.price != null ? <span>Price: {formatEur(event.price)}</span> : null}
+                  {event.price_change != null ? (
+                    <span className={event.price_change < 0 ? 'text-[var(--success)]' : 'text-[var(--danger)]'}>
+                      Change: {event.price_change > 0 ? '+' : ''}{formatEur(event.price_change)}
+                    </span>
+                  ) : null}
+                  {event.detection_method ? <span>Method: {event.detection_method}</span> : null}
+                  {typeof event.confidence_score === 'number' ? (
+                    <span>Confidence: {(event.confidence_score * 100).toFixed(0)}%</span>
+                  ) : null}
+                </div>
+              </div>
+            ))}
+          </div>
+        </section>
+      ) : null}
+
+      <section className="mb-4 rounded-xl border border-[var(--card-border)] bg-[var(--card-bg)] p-3">
+        <div className="mb-2 flex items-center justify-between gap-3">
+          <div>
+            <h3 className="text-sm font-semibold">AI analysis</h3>
+            <p className="text-xs text-[var(--muted)]">Generated per property on demand.</p>
+          </div>
+          {!enrichment ? (
             <button
               onClick={handleEnrich}
-              disabled={loading}
-              className="text-xs px-2 py-1 bg-[var(--accent)] text-white rounded hover:bg-[var(--accent-strong)] disabled:opacity-50 transition-colors"
+              disabled={loading || autoEnrichPending}
+              className="rounded-full bg-[var(--accent)] px-3 py-1.5 text-xs text-white transition-colors hover:bg-[var(--accent-strong)] disabled:opacity-50"
             >
-              {loading ? 'Analyzing...' : 'Run AI analysis'}
+              {loading || autoEnrichPending ? 'Analyzing...' : 'Run AI analysis'}
             </button>
-          )}
+          ) : null}
         </div>
 
         {enrichment ? (
           <div className="space-y-3">
             <p className="text-sm text-[var(--muted)]">{enrichment.summary}</p>
 
-            {enrichment.value_score && (
+            {enrichment.value_score ? (
               <div className="flex items-center gap-2">
-                <span className="text-sm font-medium">Value Score:</span>
-                <div className="flex-1 bg-[var(--card-border)] rounded-full h-2">
+                <span className="text-sm font-medium">Value score:</span>
+                <div className="h-2 flex-1 rounded-full bg-[var(--card-border)]">
                   <div
-                    className="bg-[var(--accent)] h-2 rounded-full"
+                    className="h-2 rounded-full bg-[var(--accent)]"
                     style={{ width: `${enrichment.value_score * 10}%` }}
                   />
                 </div>
                 <span className="text-sm font-bold">{enrichment.value_score}/10</span>
               </div>
-            )}
+            ) : null}
 
-            {Array.isArray(enrichment.pros) && enrichment.pros.length > 0 && (
+            {Array.isArray(enrichment.pros) && enrichment.pros.length > 0 ? (
               <div>
-                <h4 className="text-xs font-semibold text-green-400 mb-1">Pros</h4>
-                <ul className="text-xs text-[var(--muted)] space-y-0.5">
-                  {enrichment.pros.map((p: string, i: number) => (
-                    <li key={i}>✓ {p}</li>
+                <h4 className="mb-1 text-xs font-semibold text-green-400">Pros</h4>
+                <ul className="space-y-0.5 text-xs text-[var(--muted)]">
+                  {enrichment.pros.map((pro, index) => (
+                    <li key={index}>+ {pro}</li>
                   ))}
                 </ul>
               </div>
-            )}
+            ) : null}
 
-            {Array.isArray(enrichment.cons) && enrichment.cons.length > 0 && (
+            {Array.isArray(enrichment.cons) && enrichment.cons.length > 0 ? (
               <div>
-                <h4 className="text-xs font-semibold text-red-400 mb-1">Cons</h4>
-                <ul className="text-xs text-[var(--muted)] space-y-0.5">
-                  {enrichment.cons.map((c: string, i: number) => (
-                    <li key={i}>✗ {c}</li>
+                <h4 className="mb-1 text-xs font-semibold text-red-400">Cons</h4>
+                <ul className="space-y-0.5 text-xs text-[var(--muted)]">
+                  {enrichment.cons.map((con, index) => (
+                    <li key={index}>- {con}</li>
                   ))}
                 </ul>
               </div>
-            )}
+            ) : null}
           </div>
+        ) : !(loading || autoEnrichPending) ? (
+          <p className="text-xs text-[var(--muted)]">Run analysis to generate AI summary and trade-offs.</p>
         ) : (
-          !loading && (
-            <p className="text-xs text-[var(--muted)]">
-              Click &quot;Analyze&quot; to get AI-powered insights
-            </p>
-          )
+          <p className="text-xs text-[var(--muted)]">Generating AI summary...</p>
         )}
-      </div>
+      </section>
 
-      {loadError && (
-        <p className="mb-4 text-xs text-amber-300">{loadError}</p>
-      )}
+      {loadError ? <p className="mb-4 text-xs text-amber-300">{loadError}</p> : null}
 
-      {/* Grants */}
-      {grants.length > 0 && (
-        <div className="mb-4">
-          <h3 className="text-sm font-semibold mb-2">Grant Potential</h3>
+      {grants.length > 0 ? (
+        <section className="mb-4 rounded-xl border border-[var(--card-border)] bg-[var(--card-bg)] p-3">
+          <h3 className="mb-2 text-sm font-semibold">Grant potential</h3>
           <div className="space-y-2">
             {grants.slice(0, 3).map((match) => (
-              <div key={match.id} className="rounded border border-[var(--card-border)] p-2 bg-[var(--card-bg)]">
+              <div key={match.id} className="rounded-lg border border-[var(--card-border)] bg-[var(--background)] p-2">
                 <p className="text-xs font-semibold">{match.grant_program?.name || 'Grant program'}</p>
-                <p className="text-xs text-[var(--muted)] mt-0.5">{match.reason || 'Eligibility under review'}</p>
-                {match.estimated_benefit != null && (
-                  <p className="text-xs text-green-300 mt-1">Potential: {formatEur(match.estimated_benefit)}</p>
-                )}
+                <p className="mt-0.5 text-xs text-[var(--muted)]">{match.reason || 'Eligibility under review'}</p>
+                {match.estimated_benefit != null ? (
+                  <p className="mt-1 text-xs text-green-300">Potential: {formatEur(match.estimated_benefit)}</p>
+                ) : null}
               </div>
             ))}
           </div>
-        </div>
-      )}
+        </section>
+      ) : null}
 
-      {/* External link */}
       <a
         href={prop.url}
         target="_blank"
         rel="noopener noreferrer"
-        className="block text-center py-2 bg-[var(--accent)] text-white hover:bg-[var(--accent-strong)] rounded text-sm font-medium transition-colors"
+        className="block rounded-lg bg-[var(--accent)] py-2 text-center text-sm font-medium text-white transition-colors hover:bg-[var(--accent-strong)]"
       >
-        View on Source Site →
+        View on source site
       </a>
     </div>
   );

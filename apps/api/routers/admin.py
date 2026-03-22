@@ -2,19 +2,32 @@
 
 from __future__ import annotations
 
-import subprocess
-import sys
-from datetime import UTC, datetime, timedelta
-
 from fastapi import APIRouter, Depends, HTTPException, Query
-from sqlalchemy import func
 from sqlalchemy.orm import Session
 
+from packages.admin.service import (
+    AdminServiceError,
+    MigrationCommandFailedError,
+    MigrationCommandTimedOutError,
+    backend_health_summary,
+    backend_logs_summary,
+    diagnose_listing_by_external_id,
+    explain_source_quality,
+    get_migration_status,
+    list_backend_logs,
+    list_discovery_activity,
+    list_feed_activity,
+    list_recent_errors,
+    list_source_quality_activity,
+    list_source_status,
+    run_database_migrations,
+    source_quality_scorecards,
+    source_freshness_report,
+)
 from packages.shared.config import settings
-from packages.shared.constants import MIGRATION_STATUS_TIMEOUT_SECONDS, MIGRATION_TIMEOUT_SECONDS
 from packages.shared.logging import get_logger
+from packages.shared.queue import QueueDispatchError, dispatch_or_inline
 from packages.storage.database import get_db_session
-from packages.storage.models import BackendLog, Source
 
 logger = get_logger(__name__)
 
@@ -25,42 +38,22 @@ router = APIRouter()
 def run_migrations():
     """Execute `alembic upgrade head` inside the Lambda environment."""
     try:
-        result = subprocess.run(
-            [sys.executable, "-m", "alembic", "upgrade", "head"],
-            capture_output=True,
-            text=True,
-            timeout=MIGRATION_TIMEOUT_SECONDS,
-        )
-        if result.returncode != 0:
-            logger.error("migration_failed", stderr=result.stderr)
-            raise HTTPException(status_code=500, detail=result.stderr)
-        logger.info("migration_success", stdout=result.stdout)
-        return {"status": "ok", "output": result.stdout.strip()}
-    except subprocess.TimeoutExpired:
-        logger.error("migration_timeout")
-        raise HTTPException(status_code=504, detail="Migration timed out")
-    except Exception as e:
-        logger.error("migration_error", error=str(e))
-        raise HTTPException(status_code=500, detail=str(e))
+        return run_database_migrations(logger=logger)
+    except MigrationCommandTimedOutError as exc:
+        raise HTTPException(status_code=504, detail=exc.detail) from exc
+    except MigrationCommandFailedError as exc:
+        raise HTTPException(status_code=500, detail=exc.detail) from exc
 
 
 @router.get("/migrate/status", summary="Current Alembic revision")
 def migration_status():
     """Return the current Alembic migration revision."""
     try:
-        result = subprocess.run(
-            [sys.executable, "-m", "alembic", "current"],
-            capture_output=True,
-            text=True,
-            timeout=MIGRATION_STATUS_TIMEOUT_SECONDS,
-        )
-        if result.returncode != 0:
-            raise HTTPException(status_code=500, detail=result.stderr)
-        return {"revision": result.stdout.strip()}
-    except subprocess.TimeoutExpired:
-        raise HTTPException(status_code=504, detail="Status check timed out")
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        return get_migration_status()
+    except MigrationCommandTimedOutError as exc:
+        raise HTTPException(status_code=504, detail=exc.detail) from exc
+    except MigrationCommandFailedError as exc:
+        raise HTTPException(status_code=500, detail=exc.detail) from exc
 
 
 @router.get("/logs/feed-activity", summary="Recent feed refresh activity")
@@ -68,48 +61,23 @@ def get_feed_activity(
     limit: int = Query(10, ge=1, le=100),
     db: Session = Depends(get_db_session),
 ):
-    rows = (
-        db.query(BackendLog)
-        .filter(BackendLog.event_type == "scrape_source_complete")
-        .order_by(BackendLog.created_at.desc())
-        .limit(limit)
-        .all()
-    )
-    return [
-        {
-            "id": row.id,
-            "timestamp": row.created_at.isoformat() if row.created_at else None,
-            "source_id": row.source_id,
-            "source_name": (row.context_json or {}).get("source_name"),
-            "new": (row.context_json or {}).get("new", 0),
-            "updated": (row.context_json or {}).get("updated", 0),
-            "skipped": (row.context_json or {}).get("skipped", 0),
-            "total_fetched": (row.context_json or {}).get("total_fetched", 0),
-            "geocode_success_rate": (row.context_json or {}).get("geocode_success_rate", 0),
-            "status": "success",
-        }
-        for row in rows
-    ]
+    return list_feed_activity(db, limit=limit)
 
 
 @router.get("/logs/sources", summary="Current source status")
 def get_source_status(db: Session = Depends(get_db_session)):
-    rows = db.query(Source).order_by(Source.name.asc()).all()
-    return [
-        {
-            "id": s.id,
-            "name": s.name,
-            "enabled": bool(s.enabled),
-            "status": "disabled" if not s.enabled else ("warning" if (s.error_count or 0) > 0 else "active"),
-            "error_count": int(s.error_count or 0),
-            "last_error": s.last_error,
-            "last_polled_at": s.last_polled_at.isoformat() if s.last_polled_at else None,
-            "last_success_at": s.last_success_at.isoformat() if s.last_success_at else None,
-            "poll_interval_seconds": s.poll_interval_seconds,
-            "total_listings": int(s.total_listings or 0),
-        }
-        for s in rows
-    ]
+    return list_source_status(db)
+
+
+@router.get("/sources/freshness", summary="Source poll freshness report")
+def get_source_freshness(db: Session = Depends(get_db_session)):
+    """Return freshness status for each enabled source.
+
+    Sources that have not had a successful poll within 1.5× their
+    poll_interval_seconds are flagged as stale.  Stale or never-polled
+    sources represent live data gaps.
+    """
+    return source_freshness_report(db)
 
 
 @router.get("/logs/discovery", summary="Recent discovery activity")
@@ -117,79 +85,114 @@ def get_discovery_activity(
     limit: int = Query(5, ge=1, le=50),
     db: Session = Depends(get_db_session),
 ):
-    rows = (
-        db.query(BackendLog)
-        .filter(BackendLog.event_type.in_(["source_discovery_complete", "discovery_during_scrape_complete", "discovery_during_scrape_failed"]))
-        .order_by(BackendLog.created_at.desc())
-        .limit(limit)
-        .all()
+    return list_discovery_activity(db, limit=limit)
+
+
+@router.get("/logs/source-quality", summary="Recent source quality snapshots")
+def get_source_quality_activity(
+    limit: int = Query(50, ge=1, le=500),
+    source_id: str | None = Query(None, min_length=36, max_length=36),
+    run_type: str | None = Query(None, pattern="^(scrape|discovery|governance)$"),
+    db: Session = Depends(get_db_session),
+):
+    return list_source_quality_activity(
+        db,
+        limit=limit,
+        source_id=source_id,
+        run_type=run_type,
     )
-    return [
-        {
-            "id": row.id,
-            "timestamp": row.created_at.isoformat() if row.created_at else None,
-            "event_type": row.event_type,
-            "level": row.level,
-            "message": row.message,
-            "context": row.context_json or {},
-        }
-        for row in rows
-    ]
+
+
+@router.get("/logs/source-quality/scorecards", summary="Rolling source quality scorecards")
+def get_source_quality_scorecards(
+    lookback_hours: int = Query(168, ge=1, le=720),
+    limit: int = Query(100, ge=1, le=500),
+    min_samples: int = Query(3, ge=1, le=50),
+    db: Session = Depends(get_db_session),
+):
+    return source_quality_scorecards(
+        db,
+        lookback_hours=lookback_hours,
+        limit=limit,
+        min_samples=min_samples,
+    )
+
+
+@router.get("/logs/source-quality/{source_id}/explain", summary="Explain quality/governance for one source")
+def get_source_quality_explain(
+    source_id: str,
+    lookback_hours: int = Query(168, ge=1, le=720),
+    min_samples: int = Query(3, ge=1, le=50),
+    governance_limit: int = Query(20, ge=1, le=200),
+    scrape_limit: int = Query(20, ge=1, le=200),
+    db: Session = Depends(get_db_session),
+):
+    return explain_source_quality(
+        db,
+        source_id=source_id,
+        lookback_hours=lookback_hours,
+        min_samples=min_samples,
+        governance_limit=governance_limit,
+        scrape_limit=scrape_limit,
+    )
+
+
+@router.post("/sources/quality-governance/evaluate", summary="Run source quality governance")
+def run_source_quality_governance(
+    recent_limit: int = Query(200, ge=10, le=2000),
+    min_samples: int = Query(3, ge=1, le=20),
+    quarantine_parse_fail_rate: float = Query(0.5, ge=0.1, le=1.0),
+    promote_parse_fail_rate: float = Query(0.1, ge=0.0, le=0.5),
+):
+    """Evaluate source quality snapshots and apply promotion/quarantine rules."""
+    from apps.worker.tasks import evaluate_source_quality_governance
+
+    payload = {
+        "recent_limit": recent_limit,
+        "min_samples": min_samples,
+        "quarantine_parse_fail_rate": quarantine_parse_fail_rate,
+        "promote_parse_fail_rate": promote_parse_fail_rate,
+    }
+    try:
+        return dispatch_or_inline(
+            "scrape",
+            "evaluate_source_quality_governance",
+            payload,
+            lambda **kwargs: evaluate_source_quality_governance(**kwargs),
+        )
+    except QueueDispatchError as exc:
+        raise HTTPException(
+            status_code=503,
+            detail={
+                "code": "source_quality_governance_dispatch_failed",
+                "message": "Failed to dispatch source quality governance task.",
+                "error": str(exc.error)[:300],
+            },
+        ) from exc
+
+
+@router.get("/backend-logs", summary="Query backend logs")
+def get_backend_logs(
+    hours: int = Query(24, ge=1, le=168),
+    limit: int = Query(100, ge=1, le=500),
+    level: str | None = Query(None, description="Optional log level filter, e.g. ERROR or WARNING"),
+    event_type: str | None = Query(None, description="Optional event type filter"),
+    db: Session = Depends(get_db_session),
+):
+    return list_backend_logs(db, hours=hours, limit=limit, level=level, event_type=event_type)
+
+
+@router.get("/backend-logs/summary", summary="Backend logs summary")
+def get_backend_logs_summary(
+    hours: int = Query(24, ge=1, le=168),
+    db: Session = Depends(get_db_session),
+):
+    return backend_logs_summary(db, hours=hours)
 
 
 @router.get("/logs/health", summary="Backend ingestion health summary")
 def get_backend_health_summary(db: Session = Depends(get_db_session)):
-    recent_scrapes = (
-        db.query(BackendLog)
-        .filter(BackendLog.event_type == "scrape_source_complete")
-        .order_by(BackendLog.created_at.desc())
-        .limit(100)
-        .all()
-    )
-
-    geocode_attempts = 0
-    geocode_successes = 0
-    for row in recent_scrapes:
-        ctx = row.context_json or {}
-        geocode_attempts += int(ctx.get("geocode_attempts") or 0)
-        geocode_successes += int(ctx.get("geocode_successes") or 0)
-
-    geocode_success_rate = round((geocode_successes / geocode_attempts) * 100, 2) if geocode_attempts else 100.0
-
-    last_error = (
-        db.query(BackendLog)
-        .filter(BackendLog.level.in_(["ERROR", "WARNING"]))
-        .order_by(BackendLog.created_at.desc())
-        .first()
-    )
-
-    recent_window_start = datetime.now(UTC) - timedelta(hours=24)
-    scrape_count_24h = (
-        db.query(func.count(BackendLog.id))
-        .filter(
-            BackendLog.event_type == "scrape_source_complete",
-            BackendLog.created_at >= recent_window_start,
-        )
-        .scalar()
-    )
-
-    return {
-        "scrape_runs_24h": int(scrape_count_24h or 0),
-        "geocode_attempts": geocode_attempts,
-        "geocode_successes": geocode_successes,
-        "geocode_success_rate": geocode_success_rate,
-        "queue_config": {
-            "scrape_queue_configured": bool(settings.scrape_queue_url),
-            "alert_queue_configured": bool(settings.alert_queue_url),
-            "llm_queue_configured": bool(settings.llm_queue_url),
-        },
-        "last_error": {
-            "timestamp": last_error.created_at.isoformat() if last_error and last_error.created_at else None,
-            "message": last_error.message if last_error else None,
-            "event_type": last_error.event_type if last_error else None,
-            "level": last_error.level if last_error else None,
-        },
-    }
+    return backend_health_summary(db, queue_settings=settings)
 
 
 @router.get("/logs/recent-errors", summary="Recent warning/error logs")
@@ -198,23 +201,58 @@ def get_recent_errors(
     limit: int = Query(25, ge=1, le=200),
     db: Session = Depends(get_db_session),
 ):
-    query = db.query(BackendLog)
-    if level:
-        query = query.filter(BackendLog.level == level.upper())
-    else:
-        query = query.filter(BackendLog.level.in_(["ERROR", "WARNING"]))
+    return list_recent_errors(db, level=level, limit=limit)
 
-    rows = query.order_by(BackendLog.created_at.desc()).limit(limit).all()
-    return [
-        {
-            "id": row.id,
-            "timestamp": row.created_at.isoformat() if row.created_at else None,
-            "level": row.level,
-            "event_type": row.event_type,
-            "component": row.component,
-            "source_id": row.source_id,
-            "message": row.message,
-            "context": row.context_json or {},
-        }
-        for row in rows
-    ]
+
+@router.get("/listings/{external_id}/diagnose", summary="Diagnose why a listing was missed")
+def diagnose_listing(
+    external_id: str,
+    adapter_name: str = Query("daft", description="Source adapter name, currently supports daft"),
+    listing_url: str | None = Query(None, description="Optional listing URL for direct fallback probe"),
+    similar_ids: str | None = Query(None, description="Optional comma-separated similar listing IDs for reverse anchored probe"),
+    hours: int = Query(168, ge=1, le=720, description="Recent log lookback window in hours"),
+    max_probe_sources: int = Query(25, ge=1, le=60, description="Maximum source/candidate probes to attempt"),
+    probe_max_pages: int = Query(25, ge=5, le=300, description="Maximum pages to probe per target source"),
+    db: Session = Depends(get_db_session),
+):
+    try:
+        return diagnose_listing_by_external_id(
+            db,
+            external_id=external_id,
+            adapter_name=adapter_name,
+            listing_url=listing_url,
+            similar_ids=similar_ids,
+            repair=False,
+            hours=hours,
+            max_probe_sources=max_probe_sources,
+            probe_max_pages=probe_max_pages,
+        )
+    except AdminServiceError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@router.post("/listings/{external_id}/repair", summary="Diagnose and repair a missed listing")
+def repair_listing(
+    external_id: str,
+    adapter_name: str = Query("daft", description="Source adapter name, currently supports daft"),
+    listing_url: str | None = Query(None, description="Optional listing URL for direct fallback probe"),
+    similar_ids: str | None = Query(None, description="Optional comma-separated similar listing IDs for reverse anchored probe"),
+    hours: int = Query(168, ge=1, le=720, description="Recent log lookback window in hours"),
+    max_probe_sources: int = Query(25, ge=1, le=60, description="Maximum source/candidate probes to attempt"),
+    probe_max_pages: int = Query(25, ge=5, le=300, description="Maximum pages to probe per target source"),
+    db: Session = Depends(get_db_session),
+):
+    try:
+        return diagnose_listing_by_external_id(
+            db,
+            external_id=external_id,
+            adapter_name=adapter_name,
+            listing_url=listing_url,
+            similar_ids=similar_ids,
+            repair=True,
+            hours=hours,
+            max_probe_sources=max_probe_sources,
+            probe_max_pages=probe_max_pages,
+        )
+    except AdminServiceError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc

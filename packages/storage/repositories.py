@@ -8,11 +8,13 @@ never ORM model instances. This decouples persistence from domain logic.
 
 from __future__ import annotations
 
-from datetime import datetime, timedelta
+from datetime import UTC, datetime, timedelta
+from typing import Any
 
+from geoalchemy2 import Geography
 from geoalchemy2.elements import WKTElement
 from geoalchemy2.functions import ST_DWithin, ST_MakePoint, ST_SetSRID
-from sqlalchemy import and_, func, select
+from sqlalchemy import and_, case, cast, func, select
 from sqlalchemy.exc import DatabaseError
 from sqlalchemy.orm import Session, joinedload
 
@@ -30,13 +32,17 @@ from packages.shared.schemas import (
 from packages.shared.utils import utc_now
 from packages.storage.models import (
     Alert,
+    BackendLog,
     Conversation,
     ConversationMessage,
     GrantProgram,
     LLMEnrichment,
     Property,
+    PropertyDocument,
     PropertyGrantMatch,
     PropertyPriceHistory,
+    PropertyTimelineEvent,
+    SourceQualitySnapshot,
     OrganicSearchRun,
     SavedSearch,
     SoldProperty,
@@ -166,6 +172,9 @@ class PropertyRepository:
         self.session = session
 
     def get_by_id(self, property_id: str, include_relations: bool = True) -> Property | None:
+        if not hasattr(self.session, "scalar"):
+            return self.session.get(Property, property_id)
+
         query = select(Property).where(Property.id == property_id)
         if include_relations:
             query = query.options(
@@ -179,6 +188,48 @@ class PropertyRepository:
         return self.session.scalar(
             select(Property).where(Property.content_hash == content_hash)
         )
+
+    def get_by_external_id_and_source(self, source_id: str, external_id: str) -> Property | None:
+        return self.session.scalar(
+            select(Property).where(
+                Property.source_id == source_id,
+                Property.external_id == external_id,
+            )
+        )
+
+    def list_by_external_id(self, external_id: str) -> list[Property]:
+        query = (
+            select(Property)
+            .where(Property.external_id == external_id)
+            .options(joinedload(Property.source))
+            .order_by(Property.created_at.desc())
+        )
+        return list(self.session.scalars(query).unique())
+
+    def list_by_url_suffix(self, suffix: str, limit: int = 20) -> list[Property]:
+        query = (
+            select(Property)
+            .where(Property.url.ilike(f"%{suffix}"))
+            .options(joinedload(Property.source))
+            .order_by(Property.created_at.desc())
+            .limit(limit)
+        )
+        return list(self.session.scalars(query).unique())
+
+    def get_by_canonical_property_id(self, canonical_property_id: str) -> Property | None:
+        return self.session.scalar(
+            select(Property)
+            .where(Property.canonical_property_id == canonical_property_id)
+            .order_by(Property.created_at.desc())
+        )
+
+    def list_by_canonical_property_id(self, canonical_property_id: str) -> list[Property]:
+        query = (
+            select(Property)
+            .where(Property.canonical_property_id == canonical_property_id)
+            .order_by(Property.created_at.desc())
+        )
+        return list(self.session.scalars(query))
 
     def list_properties(self, filters: PropertyFilters) -> tuple[list[Property], int]:
         """
@@ -227,8 +278,8 @@ class PropertyRepository:
             radius_metres = filters.radius_km * 1000
             conditions.append(
                 ST_DWithin(
-                    Property.location_point,
-                    func.ST_Geography(point),
+                    cast(Property.location_point, Geography),
+                    cast(point, Geography),
                     radius_metres,
                 )
             )
@@ -261,6 +312,111 @@ class PropertyRepository:
         items = list(self.session.scalars(query).unique())
         return items, total
 
+    def list_properties_with_eligible_grants(
+        self,
+        filters: PropertyFilters,
+    ) -> tuple[list[Property], int, dict[str, dict[str, float]]]:
+        """List properties sorted by net price (price - eligible grants)."""
+        eligible_grants_expr = func.coalesce(
+            func.sum(
+                case(
+                    (
+                        and_(
+                            PropertyGrantMatch.status == "eligible",
+                            PropertyGrantMatch.estimated_benefit.is_not(None),
+                        ),
+                        PropertyGrantMatch.estimated_benefit,
+                    ),
+                    else_=0.0,
+                )
+            ),
+            0.0,
+        )
+        net_price_expr = (func.coalesce(Property.price, 0.0) - eligible_grants_expr)
+
+        query = (
+            select(
+                Property,
+                eligible_grants_expr.label("eligible_grants_total"),
+                net_price_expr.label("net_price"),
+            )
+            .outerjoin(PropertyGrantMatch, PropertyGrantMatch.property_id == Property.id)
+            .group_by(Property.id)
+        )
+        conditions = []
+
+        if filters.counties:
+            conditions.append(Property.county.in_(filters.counties))
+
+        if filters.min_price is not None:
+            conditions.append(Property.price >= filters.min_price)
+
+        if filters.max_price is not None:
+            conditions.append(Property.price <= filters.max_price)
+
+        if filters.min_bedrooms is not None:
+            conditions.append(Property.bedrooms >= filters.min_bedrooms)
+
+        if filters.max_bedrooms is not None:
+            conditions.append(Property.bedrooms <= filters.max_bedrooms)
+
+        if filters.property_types:
+            conditions.append(Property.property_type.in_([pt.value for pt in filters.property_types]))
+
+        if filters.ber_ratings:
+            conditions.append(Property.ber_rating.in_(filters.ber_ratings))
+
+        if filters.statuses:
+            conditions.append(Property.status.in_([s.value for s in filters.statuses]))
+
+        if filters.source_id:
+            conditions.append(Property.source_id == filters.source_id)
+
+        if filters.lat is not None and filters.lng is not None and filters.radius_km is not None:
+            point = ST_SetSRID(ST_MakePoint(filters.lng, filters.lat), 4326)
+            radius_metres = filters.radius_km * 1000
+            conditions.append(
+                ST_DWithin(
+                    cast(Property.location_point, Geography),
+                    cast(point, Geography),
+                    radius_metres,
+                )
+            )
+
+        if conditions:
+            query = query.where(and_(*conditions))
+
+        having_conditions = []
+        if filters.eligible_only:
+            having_conditions.append(eligible_grants_expr > 0)
+        if filters.min_eligible_grants_total is not None:
+            having_conditions.append(eligible_grants_expr >= filters.min_eligible_grants_total)
+        if having_conditions:
+            query = query.having(and_(*having_conditions))
+
+        if filters.sort_order == "desc":
+            query = query.order_by(net_price_expr.desc(), Property.created_at.desc(), Property.id.asc())
+        else:
+            query = query.order_by(net_price_expr.asc(), Property.created_at.desc(), Property.id.asc())
+
+        total = self.session.scalar(
+            select(func.count()).select_from(query.order_by(None).subquery())
+        ) or 0
+
+        offset = (filters.page - 1) * filters.per_page
+        query = query.offset(offset).limit(filters.per_page)
+
+        rows = list(self.session.execute(query))
+        items = [row[0] for row in rows]
+        metrics = {
+            str(row[0].id): {
+                "eligible_grants_total": float(row[1] or 0.0),
+                "net_price": float(row[2] or 0.0),
+            }
+            for row in rows
+        }
+        return items, total, metrics
+
     def create(self, **kwargs) -> Property:
         location_point = _build_location_point(kwargs.get("latitude"), kwargs.get("longitude"))
         if location_point is not None:
@@ -268,6 +424,14 @@ class PropertyRepository:
         prop = Property(**kwargs)
         self.session.add(prop)
         self.session.flush()
+        # Record initial price history
+        if prop.price is not None:
+            PriceHistoryRepository(self.session).add_entry(
+                property_id=prop.id,
+                price=prop.price,
+                price_change=None,
+                price_change_pct=None,
+            )
         return prop
 
     def update(self, property_id: str, **kwargs) -> Property | None:
@@ -281,11 +445,24 @@ class PropertyRepository:
         if location_point is not None:
             kwargs["location_point"] = location_point
 
+        old_price = prop.price
         for key, value in kwargs.items():
             if value is not None and hasattr(prop, key):
                 setattr(prop, key, value)
         prop.updated_at = utc_now()
         self.session.flush()
+
+        # Record price history if price changed
+        new_price = prop.price
+        if new_price is not None and (old_price is None or new_price != old_price):
+            price_change = (new_price - old_price) if old_price is not None else None
+            price_change_pct = ((price_change / old_price) * 100) if old_price and price_change is not None else None
+            PriceHistoryRepository(self.session).add_entry(
+                property_id=prop.id,
+                price=new_price,
+                price_change=price_change,
+                price_change_pct=price_change_pct,
+            )
         return prop
 
     def get_stats(
@@ -429,6 +606,8 @@ class PriceHistoryRepository:
         price: float,
         price_change: float | None = None,
         price_change_pct: float | None = None,
+        timeline_event_type: str | None = None,
+        timeline_context: dict[str, Any] | None = None,
     ) -> PropertyPriceHistory:
         entry = PropertyPriceHistory(
             property_id=property_id,
@@ -438,6 +617,27 @@ class PriceHistoryRepository:
         )
         self.session.add(entry)
         self.session.flush()
+
+        resolved_event_type = timeline_event_type or (
+            "asking_price_changed" if price_change is not None else "asking_price_set"
+        )
+        context = dict(timeline_context or {})
+        metadata = {"origin": "price_history"}
+        metadata.update(context.pop("metadata_json", {}) or {})
+        dedup_key = context.pop("dedup_key", None) or f"price:{float(price):.2f}"
+
+        PropertyTimelineRepository(self.session).add_event(
+            property_id=property_id,
+            event_type=resolved_event_type,
+            price=price,
+            price_change=price_change,
+            price_change_pct=price_change_pct,
+            detection_method=str(context.pop("detection_method", None) or "price_history_repository"),
+            confidence_score=context.pop("confidence_score", 1.0),
+            dedup_key=dedup_key,
+            metadata_json=metadata,
+            **context,
+        )
         return entry
 
     def add_entry_if_new_price(
@@ -447,6 +647,8 @@ class PriceHistoryRepository:
         price_change: float | None = None,
         price_change_pct: float | None = None,
         tolerance: float = 0.01,
+        timeline_event_type: str | None = None,
+        timeline_context: dict[str, Any] | None = None,
     ) -> PropertyPriceHistory | None:
         """Insert a history row only when latest recorded price is different."""
         latest_price = self.get_latest_price(property_id)
@@ -457,6 +659,8 @@ class PriceHistoryRepository:
             price=price,
             price_change=price_change,
             price_change_pct=price_change_pct,
+            timeline_event_type=timeline_event_type,
+            timeline_context=timeline_context,
         )
 
     def get_for_property(self, property_id: str) -> list[PropertyPriceHistory]:
@@ -468,6 +672,9 @@ class PriceHistoryRepository:
             )
         )
 
+    def list_for_property(self, property_id: str) -> list[PropertyPriceHistory]:
+        return self.get_for_property(property_id)
+
     def get_latest_price(self, property_id: str) -> float | None:
         entry = self.session.scalar(
             select(PropertyPriceHistory)
@@ -476,6 +683,94 @@ class PriceHistoryRepository:
             .limit(1)
         )
         return float(entry.price) if entry else None
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# PropertyTimelineRepository
+# ──────────────────────────────────────────────────────────────────────────────
+
+class PropertyTimelineRepository:
+    def __init__(self, session: Session):
+        self.session = session
+
+    @staticmethod
+    def _hour_bucket_utc(value: datetime | None) -> datetime:
+        if value is None:
+            ts = datetime.now(UTC)
+        elif value.tzinfo is None:
+            ts = value.replace(tzinfo=UTC)
+        else:
+            ts = value.astimezone(UTC)
+        return ts.replace(minute=0, second=0, microsecond=0, tzinfo=None)
+
+    def add_event(
+        self,
+        *,
+        property_id: str,
+        event_type: str,
+        occurred_at: datetime | None = None,
+        price: float | None = None,
+        price_change: float | None = None,
+        price_change_pct: float | None = None,
+        source_id: str | None = None,
+        adapter_name: str | None = None,
+        source_url: str | None = None,
+        detection_method: str | None = None,
+        confidence_score: float | None = None,
+        dedup_key: str | None = None,
+        evidence: dict | None = None,
+        metadata_json: dict | None = None,
+    ) -> PropertyTimelineEvent | None:
+        hour_bucket = self._hour_bucket_utc(occurred_at)
+
+        if dedup_key and hasattr(self.session, "scalar"):
+            existing = self.session.scalar(
+                select(PropertyTimelineEvent.id)
+                .where(PropertyTimelineEvent.property_id == property_id)
+                .where(PropertyTimelineEvent.event_type == event_type)
+                .where(PropertyTimelineEvent.dedup_key == dedup_key)
+                .where(PropertyTimelineEvent.occurred_hour_utc == hour_bucket)
+                .limit(1)
+            )
+            if existing:
+                return None
+
+        entry_kwargs = {
+            "property_id": property_id,
+            "event_type": event_type,
+            "occurred_hour_utc": hour_bucket,
+            "price": price,
+            "price_change": price_change,
+            "price_change_pct": price_change_pct,
+            "source_id": source_id,
+            "adapter_name": adapter_name,
+            "source_url": source_url,
+            "detection_method": detection_method,
+            "confidence_score": confidence_score,
+            "dedup_key": dedup_key,
+            "evidence": evidence or {},
+            "metadata_json": metadata_json or {},
+        }
+        if occurred_at is not None:
+            entry_kwargs["occurred_at"] = occurred_at
+
+        entry = PropertyTimelineEvent(
+            **entry_kwargs,
+        )
+        self.session.add(entry)
+        self.session.flush()
+        return entry
+
+    def list_for_property(self, property_id: str, *, limit: int = 200) -> list[PropertyTimelineEvent]:
+        safe_limit = max(1, min(limit, 2000))
+        return list(
+            self.session.scalars(
+                select(PropertyTimelineEvent)
+                .where(PropertyTimelineEvent.property_id == property_id)
+                .order_by(PropertyTimelineEvent.occurred_at.desc())
+                .limit(safe_limit)
+            )
+        )
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -520,8 +815,8 @@ class SoldPropertyRepository:
             radius_metres = filters.radius_km * 1000
             conditions.append(
                 ST_DWithin(
-                    SoldProperty.location_point,
-                    func.ST_Geography(point),
+                    cast(SoldProperty.location_point, Geography),
+                    cast(point, Geography),
                     radius_metres,
                 )
             )
@@ -573,8 +868,8 @@ class SoldPropertyRepository:
             select(SoldProperty)
             .where(
                 ST_DWithin(
-                    SoldProperty.location_point,
-                    func.ST_Geography(point),
+                    cast(SoldProperty.location_point, Geography),
+                    cast(point, Geography),
                     radius_metres,
                 )
             )
@@ -806,6 +1101,154 @@ class LLMEnrichmentRepository:
             )
         )
         return float(result) if result else None
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# PropertyDocumentRepository
+# ──────────────────────────────────────────────────────────────────────────────
+
+class PropertyDocumentRepository:
+    def __init__(self, session: Session):
+        self.session = session
+
+    def get_by_document_key(self, document_key: str) -> PropertyDocument | None:
+        return self.session.scalar(
+            select(PropertyDocument).where(PropertyDocument.document_key == document_key)
+        )
+
+    def upsert_document(self, document_key: str, **kwargs) -> PropertyDocument:
+        document = self.get_by_document_key(document_key)
+        if document:
+            for key, value in kwargs.items():
+                if hasattr(document, key):
+                    setattr(document, key, value)
+            document.updated_at = utc_now()
+        else:
+            document = PropertyDocument(document_key=document_key, **kwargs)
+            self.session.add(document)
+        self.session.flush()
+        return document
+
+    def list_for_property(self, property_id: str) -> list[PropertyDocument]:
+        query = (
+            select(PropertyDocument)
+            .where(PropertyDocument.property_id == property_id)
+            .order_by(PropertyDocument.document_type.asc(), PropertyDocument.effective_at.desc().nullslast())
+        )
+        return list(self.session.scalars(query))
+
+    def list_for_scope(self, scope_type: str, scope_key: str) -> list[PropertyDocument]:
+        query = (
+            select(PropertyDocument)
+            .where(PropertyDocument.scope_type == scope_type, PropertyDocument.scope_key == scope_key)
+            .order_by(PropertyDocument.document_type.asc(), PropertyDocument.effective_at.desc().nullslast())
+        )
+        return list(self.session.scalars(query))
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# BackendLogRepository
+# ──────────────────────────────────────────────────────────────────────────────
+
+class BackendLogRepository:
+    def __init__(self, session: Session):
+        self.session = session
+
+    def list_recent(
+        self,
+        *,
+        hours: int = 24,
+        limit: int = 100,
+        level: str | None = None,
+        event_type: str | None = None,
+    ) -> list[BackendLog]:
+        window_start = utc_now() - timedelta(hours=max(hours, 1))
+        query = select(BackendLog).where(BackendLog.created_at >= window_start)
+
+        if level:
+            query = query.where(BackendLog.level == level.upper())
+        if event_type:
+            query = query.where(BackendLog.event_type == event_type)
+
+        query = query.order_by(BackendLog.created_at.desc()).limit(limit)
+        return list(self.session.scalars(query))
+
+    def list_recent_errors(self, *, hours: int = 24, limit: int = 100) -> list[BackendLog]:
+        window_start = utc_now() - timedelta(hours=max(hours, 1))
+        query = (
+            select(BackendLog)
+            .where(BackendLog.created_at >= window_start)
+            .where(BackendLog.level.in_(["ERROR", "WARNING"]))
+            .order_by(BackendLog.created_at.desc())
+            .limit(limit)
+        )
+        return list(self.session.scalars(query))
+
+    def count_recent_errors(self, *, hours: int = 1) -> int:
+        window_start = utc_now() - timedelta(hours=max(hours, 1))
+        count_query = (
+            select(func.count(BackendLog.id))
+            .where(BackendLog.created_at >= window_start)
+            .where(BackendLog.level.in_(["ERROR", "WARNING"]))
+        )
+        return int(self.session.scalar(count_query) or 0)
+
+    def summary(self, *, hours: int = 24) -> dict:
+        window_start = utc_now() - timedelta(hours=max(hours, 1))
+
+        by_level_rows = self.session.execute(
+            select(BackendLog.level, func.count(BackendLog.id).label("total"))
+            .where(BackendLog.created_at >= window_start)
+            .group_by(BackendLog.level)
+        ).all()
+
+        by_event_rows = self.session.execute(
+            select(BackendLog.event_type, func.count(BackendLog.id).label("total"))
+            .where(BackendLog.created_at >= window_start)
+            .group_by(BackendLog.event_type)
+        ).all()
+
+        return {
+            "hours": max(hours, 1),
+            "total": sum(int(row.total or 0) for row in by_level_rows),
+            "by_level": [{"level": row.level, "count": int(row.total or 0)} for row in by_level_rows],
+            "by_event_type": [
+                {"event_type": row.event_type, "count": int(row.total or 0)}
+                for row in by_event_rows
+            ],
+        }
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# SourceQualitySnapshotRepository
+# ──────────────────────────────────────────────────────────────────────────────
+
+class SourceQualitySnapshotRepository:
+    def __init__(self, session: Session):
+        self.session = session
+
+    def create_snapshot(self, **kwargs) -> SourceQualitySnapshot:
+        snapshot = SourceQualitySnapshot(**kwargs)
+        self.session.add(snapshot)
+        self.session.flush()
+        return snapshot
+
+    def list_recent(
+        self,
+        *,
+        source_id: str | None = None,
+        run_type: str | None = None,
+        limit: int = 100,
+    ) -> list[SourceQualitySnapshot]:
+        query = select(SourceQualitySnapshot)
+
+        if source_id:
+            query = query.where(SourceQualitySnapshot.source_id == source_id)
+        if run_type:
+            query = query.where(SourceQualitySnapshot.run_type == run_type)
+
+        query = query.order_by(SourceQualitySnapshot.created_at.desc()).limit(max(1, min(limit, 1000)))
+        return list(self.session.scalars(query))
 
 
 # ──────────────────────────────────────────────────────────────────────────────

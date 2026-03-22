@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import hashlib
 import re
+import uuid
 from datetime import UTC, datetime
 
 from dateutil import parser as dateutil_parser
@@ -104,6 +105,33 @@ def fuzzy_address_hash(address: str) -> str:
     # Collapse whitespace
     addr = re.sub(r"\s+", " ", addr).strip()
     return hashlib.sha256(addr.encode("utf-8")).hexdigest()[:16]
+
+
+def canonical_property_id(
+    address: str | None,
+    county: str | None = None,
+    eircode: str | None = None,
+) -> str | None:
+    """Generate a deterministic canonical property identity.
+
+    Prefer Eircode when available. Otherwise fall back to normalized address + county.
+    Returns a UUIDv5 string or None when insufficient identity data is present.
+    """
+    normalized_eircode = (eircode or "").upper().replace(" ", "").strip()
+    if normalized_eircode:
+        return str(uuid.uuid5(uuid.NAMESPACE_URL, f"property:eircode:{normalized_eircode}"))
+
+    normalized_address = normalize_address(address or "").lower().strip()
+    normalized_county = (county or extract_county(normalized_address) or "").strip().lower()
+    if not normalized_address:
+        return None
+
+    return str(
+        uuid.uuid5(
+            uuid.NAMESPACE_URL,
+            f"property:address:{normalized_address}|county:{normalized_county}",
+        )
+    )
 
 
 # ── Address Parsing ───────────────────────────────────────────────────────────

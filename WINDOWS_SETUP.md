@@ -2,16 +2,42 @@
 
 ## Quick Start (Recommended)
 
-### Option 1: Automated Setup
-1. Open Command Prompt (cmd.exe) as Administrator
+### Option 1: All-In-One Startup
+1. Open Command Prompt (cmd.exe)
 2. Run:
    ```cmd
    cd d:\_code\property_search
-   start-local.cmd
+   start-all.cmd
    ```
-3. Follow the on-screen instructions
+3. Verify status:
+   ```cmd
+   status-local.cmd
+   ```
 
-### Option 2: Manual Setup
+This path:
+- cleans stale local API/frontend processes
+- starts local Docker services
+- runs migrations and seed step
+- launches API, Web, and SQS worker in separate windows
+- waits for readiness checks
+
+### Option 2: Launch Split Windows (After Setup)
+
+Use this when services are already prepared and you want separate API/Web windows quickly:
+
+```cmd
+cd d:\_code\property_search
+start-local-services.cmd
+status-local.cmd
+```
+
+If needed, you can launch only the queue consumer window:
+
+```cmd
+start-sqs-worker.cmd
+```
+
+### Option 3: Manual Setup
 
 #### Terminal 1 - Setup & API
 ```cmd
@@ -54,12 +80,34 @@ If you see errors about npm.ps1 in PowerShell, use Command Prompt (cmd.exe) inst
 3. Restart PowerShell
 
 ### Docker Not Running
-Start Docker Desktop before running the setup.
+Start Docker Desktop before running `start-all.cmd`.
+
+### PostGIS Function Errors (`ST_Geography` / `ST_DWithin`)
+If worker logs show spatial-function errors, enable PostGIS in your local DB:
+
+```cmd
+python -c "from packages.storage.database import engine; from sqlalchemy import text; c=engine.connect(); t=c.begin(); c.execute(text('CREATE EXTENSION IF NOT EXISTS postgis')); t.commit(); c.close(); print('postgis_ok')"
+```
+
+Then restart local services (`stop-local.cmd`, then `start-all.cmd`).
+
+### `make` Command Not Found
+On Windows shells without GNU Make, use direct commands:
+
+```cmd
+uv run pytest -q
+uv run alembic upgrade head
+docker compose up -d
+```
 
 ### Port Already in Use
-If port 8000 or 3000 is in use:
-- API: Change port in start-api.cmd
-- Frontend: Edit web/start-dev.cmd and add `-p 3001`
+Use:
+
+```cmd
+stop-local.cmd
+```
+
+Then restart with `start-all.cmd`.
 
 ### Python Version Issues
 Ensure Python 3.12+ is installed:
@@ -95,5 +143,5 @@ LOG_LEVEL=INFO
 
 - View API documentation: http://localhost:8000/docs
 - Check database: `docker exec -it ps_postgres psql -U postgres -d propertysearch`
-- Run tests: `pytest`
+- Run tests: `uv run pytest -q`
 - Deploy to AWS: `python deploy.py`

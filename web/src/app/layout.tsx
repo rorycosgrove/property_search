@@ -1,21 +1,21 @@
 import type { Metadata } from 'next';
-import { Fraunces, Manrope } from 'next/font/google';
+import { Space_Grotesk, Syne } from 'next/font/google';
 import './globals.css';
 import TopNav from '@/components/TopNav';
 
-const fraunces = Fraunces({
+const syne = Syne({
   subsets: ['latin'],
   variable: '--font-display',
 });
 
-const manrope = Manrope({
+const spaceGrotesk = Space_Grotesk({
   subsets: ['latin'],
   variable: '--font-body',
 });
 
 export const metadata: Metadata = {
-  title: 'Atlas AI Property Decisions',
-  description: 'AI-guided property decision workspace for search, comparison, grants, and market confidence.',
+  title: 'Atlas Field Desk',
+  description: 'Mobile-first property intelligence across market signals, grants, operations, and AI decisioning.',
 };
 
 export default function RootLayout({
@@ -24,7 +24,7 @@ export default function RootLayout({
   children: React.ReactNode;
 }) {
   return (
-    <html lang="en" className={`${fraunces.variable} ${manrope.variable}`}>
+    <html lang="en" className={`${syne.variable} ${spaceGrotesk.variable}`}>
       <head>
         <link
           rel="stylesheet"
@@ -34,11 +34,11 @@ export default function RootLayout({
         />
       </head>
       <body className="bg-[var(--background)] text-[var(--foreground)] min-h-screen antialiased">
-        <div className="flex flex-col min-h-screen">
+        <div className="relative flex min-h-screen flex-col">
           <header>
             <TopNav />
           </header>
-          <main className="flex-1">{children}</main>
+          <main className="flex-1 pb-20 lg:pb-0">{children}</main>
         </div>
       </body>
     </html>

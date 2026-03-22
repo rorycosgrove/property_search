@@ -111,8 +111,11 @@ async function fetchJSON<T>(path: string, options?: RequestInit): Promise<T> {
   let requestUrl = `${resolvedAPIBase}${path}`;
   let res = await fetch(requestUrl, {
     ...options,
+    cache: 'no-store',
     headers: {
       'Content-Type': 'application/json',
+      'Cache-Control': 'no-cache',
+      Pragma: 'no-cache',
       ...options?.headers,
     },
   });
@@ -124,8 +127,11 @@ async function fetchJSON<T>(path: string, options?: RequestInit): Promise<T> {
       requestUrl = `${resolvedAPIBase}${path}`;
       res = await fetch(requestUrl, {
         ...options,
+        cache: 'no-store',
         headers: {
           'Content-Type': 'application/json',
+          'Cache-Control': 'no-cache',
+          Pragma: 'no-cache',
           ...options?.headers,
         },
       });
@@ -135,6 +141,15 @@ async function fetchJSON<T>(path: string, options?: RequestInit): Promise<T> {
   if (!res.ok) {
     const body = await res.text().catch(() => '');
     throw new Error(`API error ${res.status} at ${requestUrl}: ${body}`);
+  }
+
+  if (res.status === 204) {
+    return undefined as T;
+  }
+
+  const contentLength = res.headers.get('content-length');
+  if (contentLength === '0') {
+    return undefined as T;
   }
 
   return res.json();
@@ -166,6 +181,8 @@ export interface Property {
   first_listed_at?: string;
   created_at?: string;
   llm_value_score?: number;
+  eligible_grants_total?: number;
+  net_price?: number;
 }
 
 export interface PropertyListResponse {
@@ -191,6 +208,8 @@ export interface PropertyFilters {
   lat?: number;
   lng?: number;
   radius_km?: number;
+  eligible_only?: boolean;
+  min_eligible_grants_total?: number;
   page?: number;
   size?: number;
 }
@@ -221,6 +240,27 @@ export interface PriceHistoryEntry {
 
 export async function getPriceHistory(id: string): Promise<PriceHistoryEntry[]> {
   return fetchJSON<PriceHistoryEntry[]>(`/api/v1/properties/${id}/price-history`);
+}
+
+export interface PropertyTimelineEvent {
+  id: string;
+  event_type: string;
+  occurred_at: string;
+  price?: number;
+  price_change?: number;
+  price_change_pct?: number;
+  source_id?: string;
+  adapter_name?: string;
+  source_url?: string;
+  detection_method?: string;
+  confidence_score?: number;
+  dedup_key?: string;
+  evidence?: Record<string, unknown>;
+  metadata?: Record<string, unknown>;
+}
+
+export async function getPropertyTimeline(id: string, limit = 50): Promise<PropertyTimelineEvent[]> {
+  return fetchJSON<PropertyTimelineEvent[]>(`/api/v1/properties/${id}/timeline?limit=${limit}`);
 }
 
 export async function getSimilarProperties(id: string, limit = 5): Promise<Property[]> {
@@ -323,6 +363,93 @@ export async function getHeatmapData(): Promise<HeatmapPoint[]> {
   return fetchJSON<HeatmapPoint[]>('/api/v1/analytics/heatmap');
 }
 
+export interface BestValueProperty {
+  id: string;
+  title: string;
+  address: string;
+  url?: string;
+  county: string;
+  property_type?: string;
+  price: number;
+  bedrooms?: number;
+  floor_area_sqm?: number;
+  value_score?: number;
+  price_per_sqm?: number;
+  price_per_bed?: number;
+}
+
+export async function getBestValueProperties(
+  county?: string,
+  propertyType?: string,
+  maxBudget?: number,
+  limit = 10
+): Promise<BestValueProperty[]> {
+  const params = new URLSearchParams({ limit: String(limit) });
+  if (county) params.set('county', county);
+  if (propertyType) params.set('property_type', propertyType);
+  if (maxBudget !== undefined) params.set('max_price', String(maxBudget));
+  return fetchJSON<BestValueProperty[]>(`/api/v1/analytics/best-value-properties?${params}`);
+}
+
+export async function getPriceTrendsByType(county?: string, months = 12): Promise<Record<string, PriceTrend[]>> {
+  const params = new URLSearchParams({ months: String(months) });
+  if (county) params.set('county', county);
+  return fetchJSON<Record<string, PriceTrend[]>>(`/api/v1/analytics/price-trends-by-type?${params}`);
+}
+
+export interface PriceChange {
+  property_id: string;
+  title: string;
+  address: string;
+  url?: string;
+  county: string;
+  current_price: number | null;
+  property_type?: string;
+  bedrooms?: number;
+  bathrooms?: number;
+  price_change: number | null;
+  price_change_pct: number | null;
+  recorded_at: string;
+}
+
+export interface PriceChangesTimeline {
+  increases: Array<{
+    date: string;
+    count: number;
+    avg_change: number;
+    avg_change_pct: number;
+  }>;
+  decreases: Array<{
+    date: string;
+    count: number;
+    avg_change: number;
+    avg_change_pct: number;
+  }>;
+}
+
+export async function getPriceChangesByBudget(
+  maxBudget?: number,
+  county?: string,
+  days = 30,
+  limit = 100
+): Promise<PriceChange[]> {
+  const params = new URLSearchParams({ days: String(days), limit: String(limit) });
+  if (maxBudget !== undefined) params.set('max_budget', String(maxBudget));
+  if (county) params.set('county', county);
+  return fetchJSON<PriceChange[]>(`/api/v1/analytics/price-changes-by-budget?${params}`);
+}
+
+export async function getPriceChangesTimeline(
+  maxBudget?: number,
+  county?: string,
+  days = 30
+): Promise<PriceChangesTimeline> {
+  const params = new URLSearchParams({ days: String(days) });
+  if (maxBudget !== undefined) params.set('max_budget', String(maxBudget));
+  if (county) params.set('county', county);
+  return fetchJSON<PriceChangesTimeline>(`/api/v1/analytics/price-changes-timeline?${params}`);
+}
+
 // ── Alerts ──────────────────────────────────────────────────────────────────
 
 export interface Alert {
@@ -334,6 +461,17 @@ export interface Alert {
   metadata?: Record<string, unknown>;
   acknowledged: boolean;
   created_at?: string;
+}
+
+export interface AlertTypeStat {
+  type: string;
+  total: number;
+  unacknowledged: number;
+}
+
+export interface AlertStats {
+  by_type: AlertTypeStat[];
+  total_unacknowledged: number;
 }
 
 export async function getAlerts(filters: Record<string, string | number | boolean | undefined> = {}): Promise<{ items: Alert[]; total: number }> {
@@ -348,12 +486,96 @@ export async function getUnreadAlertCount(): Promise<{ count: number }> {
   return fetchJSON<{ count: number }>('/api/v1/alerts/unread-count');
 }
 
+export async function getAlertStats(): Promise<AlertStats> {
+  return fetchJSON<AlertStats>('/api/v1/alerts/stats');
+}
+
 export async function acknowledgeAlert(id: string): Promise<{ id: string; acknowledged: boolean }> {
   return fetchJSON<{ id: string; acknowledged: boolean }>(`/api/v1/alerts/${id}/acknowledge`, { method: 'PATCH' });
 }
 
 export async function acknowledgeAllAlerts(): Promise<{ acknowledged: number }> {
   return fetchJSON<{ acknowledged: number }>('/api/v1/alerts/acknowledge-all', { method: 'POST' });
+}
+
+// ── Saved Searches ──────────────────────────────────────────────────────────
+
+export type NotifyMethod = 'in_app' | 'email' | 'both';
+
+export interface SavedSearchCriteria {
+  counties?: string[];
+  min_price?: number;
+  max_price?: number;
+  min_bedrooms?: number;
+  max_bedrooms?: number;
+  property_types?: string[];
+  ber_ratings?: string[];
+  min_floor_area_sqm?: number;
+  keywords?: string[];
+  radius_km?: number;
+  center_lat?: number;
+  center_lng?: number;
+}
+
+export interface SavedSearch {
+  id: string;
+  name: string;
+  criteria: SavedSearchCriteria;
+  notify_new_listings: boolean;
+  notify_price_drops: boolean;
+  notify_method: NotifyMethod;
+  email?: string;
+  is_active: boolean;
+  last_matched_at?: string;
+  created_at?: string;
+  updated_at?: string;
+}
+
+export interface SavedSearchCreateRequest {
+  name: string;
+  criteria: SavedSearchCriteria;
+  notify_new_listings: boolean;
+  notify_price_drops: boolean;
+  notify_method: NotifyMethod;
+  email?: string;
+}
+
+export interface SavedSearchUpdateRequest {
+  name?: string;
+  criteria?: SavedSearchCriteria;
+  notify_new_listings?: boolean;
+  notify_price_drops?: boolean;
+  notify_method?: NotifyMethod;
+  email?: string;
+  is_active?: boolean;
+}
+
+export async function getSavedSearches(): Promise<SavedSearch[]> {
+  return fetchJSON<SavedSearch[]>('/api/v1/saved-searches');
+}
+
+export async function createSavedSearch(payload: SavedSearchCreateRequest): Promise<SavedSearch> {
+  return fetchJSON<SavedSearch>('/api/v1/saved-searches', {
+    method: 'POST',
+    body: JSON.stringify(payload),
+  });
+}
+
+export async function getSavedSearch(id: string): Promise<SavedSearch> {
+  return fetchJSON<SavedSearch>(`/api/v1/saved-searches/${id}`);
+}
+
+export async function updateSavedSearch(id: string, payload: SavedSearchUpdateRequest): Promise<SavedSearch> {
+  return fetchJSON<SavedSearch>(`/api/v1/saved-searches/${id}`, {
+    method: 'PATCH',
+    body: JSON.stringify(payload),
+  });
+}
+
+export async function deleteSavedSearch(id: string): Promise<void> {
+  await fetchJSON<Record<string, never>>(`/api/v1/saved-searches/${id}`, {
+    method: 'DELETE',
+  });
 }
 
 // ── Sources ─────────────────────────────────────────────────────────────────
@@ -394,7 +616,7 @@ export async function getAdapters(): Promise<AdapterInfo[]> {
 export async function triggerScrape(
   sourceId: string,
   options?: { force?: boolean },
-): Promise<{ task_id?: string; status: string; result?: Record<string, unknown> }> {
+): Promise<{ task_id?: string; status: string; result?: Record<string, unknown>; timestamp?: string; force?: boolean }> {
   const params = new URLSearchParams();
   if (options?.force) {
     params.set('force', 'true');
@@ -403,7 +625,7 @@ export async function triggerScrape(
   const path = suffix
     ? `/api/v1/sources/${sourceId}/trigger?${suffix}`
     : `/api/v1/sources/${sourceId}/trigger`;
-  return fetchJSON<{ task_id?: string; status: string; result?: Record<string, unknown> }>(
+  return fetchJSON<{ task_id?: string; status: string; result?: Record<string, unknown>; timestamp?: string; force?: boolean }>(
     path,
     { method: 'POST' },
   );
@@ -412,8 +634,8 @@ export async function triggerScrape(
 export interface SourceDiscoveryRunResult {
   run_at?: string;
   created: Source[];
-  existing: Array<{ id: string; url: string; name: string }>;
-  skipped_invalid: Array<{ url?: string; reason: string }>;
+  existing: Array<{ id: string; url: string; name: string; timestamp?: string }>;
+  skipped_invalid: Array<{ url?: string; reason: string; timestamp?: string }>;
   auto_enable: boolean;
 }
 
@@ -437,7 +659,7 @@ export interface DiscoveryDuringScrapeSummary {
 }
 
 export async function discoverSourcesAuto(
-  autoEnable = true,
+  autoEnable = false,
   limit = 25,
 ): Promise<SourceDiscoveryRunResult> {
   return fetchJSON<SourceDiscoveryRunResult>(
@@ -457,6 +679,7 @@ export async function approveDiscoveredSource(sourceId: string): Promise<Source>
 export interface OrganicSearchStepResult {
   step: string;
   status: 'dispatched' | 'processed_inline';
+  timestamp?: string;
   task_id?: string;
   result?: Record<string, unknown>;
 }
@@ -465,6 +688,7 @@ export interface OrganicSearchRunResult {
   run_id?: string;
   status: 'dispatched' | 'processed_inline' | 'mixed';
   steps: OrganicSearchStepResult[];
+  created_at?: string;
 }
 
 export interface OrganicSearchHistoryItem {
@@ -569,6 +793,30 @@ export interface BackendLogEntry {
   context: Record<string, unknown>;
 }
 
+export async function getBackendLogs(options?: {
+  hours?: number;
+  limit?: number;
+  level?: string;
+  eventType?: string;
+}): Promise<BackendLogEntry[]> {
+  const params = new URLSearchParams();
+  if (options?.hours !== undefined) {
+    params.set('hours', String(options.hours));
+  }
+  if (options?.limit !== undefined) {
+    params.set('limit', String(options.limit));
+  }
+  if (options?.level) {
+    params.set('level', options.level);
+  }
+  if (options?.eventType) {
+    params.set('event_type', options.eventType);
+  }
+  const suffix = params.toString();
+  const path = suffix ? `/api/v1/admin/backend-logs?${suffix}` : '/api/v1/admin/backend-logs';
+  return fetchJSON<BackendLogEntry[]>(path);
+}
+
 export async function getBackendFeedActivity(limit = 10): Promise<BackendFeedActivity[]> {
   return fetchJSON<BackendFeedActivity[]>(`/api/v1/admin/logs/feed-activity?limit=${limit}`);
 }
@@ -594,6 +842,87 @@ export async function getBackendRecentErrors(
     params.set('level', level);
   }
   return fetchJSON<BackendLogEntry[]>(`/api/v1/admin/logs/recent-errors?${params.toString()}`);
+}
+
+export interface ListingDiagnoseOptions {
+  adapterName?: string;
+  hours?: number;
+  maxProbeSources?: number;
+  listingUrl?: string;
+  probeMaxPages?: number;
+  similarIds?: string[];
+}
+
+export interface ListingDiagnoseResult {
+  external_id: string;
+  adapter_name: string;
+  persisted_matches: Array<Record<string, unknown>>;
+  persisted_url_matches: Array<Record<string, unknown>>;
+  recent_logs: BackendLogEntry[];
+  probe: {
+    matched?: boolean;
+    attempted_sources?: Array<Record<string, unknown>>;
+    match_source?: Record<string, unknown>;
+    matched_identifiers?: string[];
+    listing_url?: string | null;
+    title?: string | null;
+    api_id?: string | null;
+    url_listing_id?: string | null;
+    normalized_preview?: Record<string, unknown> | null;
+  } | null;
+  diagnosis: {
+    status: string;
+    reason?: string | null;
+    recommended_action?: string | null;
+  };
+  repair: {
+    status?: string | null;
+    source_action?: string | null;
+    source?: Record<string, unknown> | null;
+    property?: Record<string, unknown> | null;
+  } | null;
+}
+
+function buildListingDiagnosticQuery(options?: ListingDiagnoseOptions): string {
+  const params = new URLSearchParams();
+  if (options?.adapterName) {
+    params.set('adapter_name', options.adapterName);
+  }
+  if (options?.hours !== undefined) {
+    params.set('hours', String(options.hours));
+  }
+  if (options?.maxProbeSources !== undefined) {
+    params.set('max_probe_sources', String(options.maxProbeSources));
+  }
+  if (options?.listingUrl) {
+    params.set('listing_url', options.listingUrl);
+  }
+  if (options?.probeMaxPages !== undefined) {
+    params.set('probe_max_pages', String(options.probeMaxPages));
+  }
+  if (options?.similarIds && options.similarIds.length > 0) {
+    params.set('similar_ids', options.similarIds.join(','));
+  }
+  const suffix = params.toString();
+  return suffix ? `?${suffix}` : '';
+}
+
+export async function diagnoseListingByExternalId(
+  externalId: string,
+  options?: ListingDiagnoseOptions,
+): Promise<ListingDiagnoseResult> {
+  const query = buildListingDiagnosticQuery(options);
+  return fetchJSON<ListingDiagnoseResult>(`/api/v1/admin/listings/${externalId}/diagnose${query}`);
+}
+
+export async function repairListingByExternalId(
+  externalId: string,
+  options?: ListingDiagnoseOptions,
+): Promise<ListingDiagnoseResult> {
+  const query = buildListingDiagnosticQuery(options);
+  return fetchJSON<ListingDiagnoseResult>(`/api/v1/admin/listings/${externalId}/repair${query}`, {
+    method: 'POST',
+  });
 }
 
 // ── LLM ─────────────────────────────────────────────────────────────────────
@@ -749,7 +1078,7 @@ export interface ChatTurnResponse {
   retrieval_context?: RetrievalContext;
 }
 
-export type RankingMode = 'llm_only' | 'hybrid' | 'user_weighted';
+export type RankingMode = 'llm_only' | 'hybrid' | 'user_weighted' | 'net_price';
 
 export interface ComparePropertyMetric {
   property_id: string;
@@ -769,6 +1098,8 @@ export interface ComparePropertyMetric {
   weighted_score?: number;
   grants_estimated_total?: number;
   grants_count?: number;
+  eligible_grants_total?: number;
+  net_price?: number;
 }
 
 export interface CompareSetResponse {

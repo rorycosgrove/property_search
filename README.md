@@ -2,7 +2,7 @@
 
 A comprehensive web-based platform for researching properties to buy across Ireland (Republic + Northern Ireland). Aggregates listings from multiple sources, provides map visualisation, price tracking, alerts, comparative analysis, and AI-powered insights — all running on AWS serverless infrastructure within the free tier.
 
-![Stack](https://img.shields.io/badge/Python-3.12-blue) ![Stack](https://img.shields.io/badge/FastAPI-0.110-green) ![Stack](https://img.shields.io/badge/Next.js-14-black) ![Stack](https://img.shields.io/badge/AWS_Lambda-serverless-orange) ![Stack](https://img.shields.io/badge/Amazon_Bedrock-AI-purple) ![Stack](https://img.shields.io/badge/RDS_PostgreSQL-16+PostGIS-blue)
+![Stack](https://img.shields.io/badge/Python-3.12-blue) ![Stack](https://img.shields.io/badge/FastAPI-0.110-green) ![Stack](https://img.shields.io/badge/Next.js-16-black) ![Stack](https://img.shields.io/badge/AWS_Lambda-serverless-orange) ![Stack](https://img.shields.io/badge/Amazon_Bedrock-AI-purple) ![Stack](https://img.shields.io/badge/RDS_PostgreSQL-16+PostGIS-blue)
 
 ## Features
 
@@ -26,7 +26,7 @@ A comprehensive web-based platform for researching properties to buy across Irel
 | Amazon DynamoDB | Config cache (replaces Redis) | 25 GB free forever |
 | Amazon Bedrock | AI enrichment (Titan Text / Nova) | Free trial included |
 | AWS Amplify | Next.js SSR hosting | 1000 build-min + 15 GB/month |
-| EventBridge | Scheduled tasks (replaces Celery Beat) | Included |
+| EventBridge | Scheduled tasks (scrape/alerts/PPR/cleanup) | Included |
 | AWS CDK | Infrastructure as Code (TypeScript) | — |
 
 ## Quick Start
@@ -36,7 +36,33 @@ A comprehensive web-based platform for researching properties to buy across Irel
 - **AWS CLI** configured with credentials (`aws configure`)
 - **Node.js 20+** (for CDK and frontend)
 - **Python 3.12+**
+- **uv** package manager (used by Makefile commands, tests, and scripts)
 - **Docker** (for local PostgreSQL only)
+
+## Reliability Progress (Mar 2026)
+
+The reliability-first stabilization plan is implemented and validated:
+
+- Queue dispatch semantics unified (`dispatch_or_inline`) with typed dispatch failures (`QueueDispatchError`) and safer API error mapping.
+- Worker ownership consolidated with compatibility shims in `packages/worker/service.py` delegating to canonical `apps/worker/tasks.py`.
+- Backend logs operationalized through admin endpoints and repository queries.
+- Health diagnostics expanded with `backend_errors_last_hour` signal.
+- Migration safety and repository behavior reinforced with dedicated tests.
+- Focused verification workflow added: `make test-cov-plan`.
+
+See `docs/RELEASE_NOTES_MAR_2026.md` for implementation details and validation outcomes.
+
+## Run/Deploy At A Glance
+
+| Path | Entry Command | Typical Time | Ease | Notes |
+|------|---------------|--------------|------|-------|
+| Local (Windows) | `start-all.cmd` | 2-5 min first run, then ~1 min restarts | Easy | Best default for local development. Includes health checks and startup orchestration. |
+| Local (Manual split) | `start-local-services.cmd` + `status-local.cmd` | 2-5 min | Moderate | Better for debugging separate API/web terminals. |
+| Remote (AWS) | `python deploy.py` | 15-25 min | Moderate | Mostly automated, but Bedrock model access remains a manual AWS Console step. |
+
+Practical assessment:
+- Local is straightforward once prerequisites are installed.
+- Remote deployment is practical and repeatable, but not fully one-click due to required AWS account setup and Bedrock enablement.
 
 ### Deploy to AWS
 
@@ -103,6 +129,11 @@ uvicorn apps.api.main:app --reload --port 8000
 cd web && npm install && npm run dev
 ```
 
+Note: if `make` is unavailable in your environment, use direct equivalents such as:
+- `docker compose up -d` instead of `make up`
+- `uv run alembic upgrade head` instead of `make migrate`
+- `uv run pytest -q` instead of `make test`
+
 ## Architecture
 
 See [ARCHITECTURE.md](docs/ARCHITECTURE.md) for the full system design.
@@ -120,7 +151,7 @@ property_search/
 ├── apps/
 │   ├── api/            # FastAPI REST API (Lambda + Mangum)
 │   └── worker/         # SQS + EventBridge Lambda handlers
-├── web/                # Next.js 14 frontend (Amplify)
+├── web/                # Next.js frontend (Amplify)
 ├── infra/              # AWS CDK infrastructure (TypeScript)
 ├── docker/             # Local dev Dockerfiles
 ├── scripts/            # Setup, seed, import scripts
@@ -139,6 +170,7 @@ property_search/
 | [SOURCES.md](docs/SOURCES.md) | Source adapter system & how to add adapters |
 | [AWS_DEPLOYMENT.md](docs/AWS_DEPLOYMENT.md) | AWS deployment guide, CDK stacks, costs |
 | [QUICKSTART.md](docs/QUICKSTART.md) | Get running in under 5 minutes |
+| [CURRENT_STATUS.md](docs/CURRENT_STATUS.md) | Current operational status and known constraints |
 
 ## License
 

@@ -13,6 +13,7 @@ import random
 import re
 from datetime import UTC, datetime
 from typing import Any
+from urllib.parse import urlparse, urlunparse
 
 import httpx
 
@@ -26,6 +27,12 @@ logger = get_logger(__name__)
 
 # Daft gateway API endpoint (public, used by their SPA)
 DAFT_API_URL = "https://gateway.daft.ie/old/v1/listings"
+
+_BROWSER_UA_FALLBACKS: tuple[str, ...] = (
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 14_4) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36",
+)
 
 # Daft area slug → storedShapeIds mapping
 AREA_SHAPE_MAP: dict[str, list[str]] = {
@@ -59,6 +66,12 @@ AREA_SHAPE_MAP: dict[str, list[str]] = {
 }
 
 
+class _DaftBlockedError(Exception):
+    def __init__(self, status_code: int):
+        super().__init__(f"Daft access blocked with status {status_code}")
+        self.status_code = status_code
+
+
 class DaftAdapter(SourceAdapter):
     """
     Adapter for Daft.ie property listings.
@@ -89,6 +102,14 @@ class DaftAdapter(SourceAdapter):
             "max_price": None,
             "min_beds": None,
             "max_pages": 5,
+            "max_retries": settings.max_scrape_retries,
+            "stale_page_threshold": 2,
+            "tail_pass_pages": 1,
+            "tail_pass_min_new_ids": 3,
+            "history_tail_pass_pages": 1,
+            "history_tail_trigger_min_new_ids": 3,
+            "recent_listing_ids": [],
+            "delay_seconds": None,
         }
 
     def get_config_schema(self) -> dict[str, Any]:
@@ -99,6 +120,43 @@ class DaftAdapter(SourceAdapter):
             "max_price": {"type": "number", "description": "Maximum price filter"},
             "min_beds": {"type": "integer", "description": "Minimum bedrooms"},
             "max_pages": {"type": "integer", "description": "Max pages to fetch per area", "default": 5},
+            "max_retries": {"type": "integer", "description": "Retry attempts for transient API errors", "default": settings.max_scrape_retries},
+            "stale_page_threshold": {
+                "type": "integer",
+                "description": "Stop area pagination after this many pages with no new IDs",
+                "default": 2,
+            },
+            "tail_pass_pages": {
+                "type": "integer",
+                "description": "Extra pages to fetch past API boundary when boundary page has many new IDs",
+                "default": 1,
+            },
+            "tail_pass_min_new_ids": {
+                "type": "integer",
+                "description": "Minimum new IDs on boundary page to trigger tail pass",
+                "default": 3,
+            },
+            "history_tail_pass_pages": {
+                "type": "integer",
+                "description": "Extra pages to fetch when configured max_pages boundary still contains unseen IDs",
+                "default": 1,
+            },
+            "history_tail_trigger_min_new_ids": {
+                "type": "integer",
+                "description": "Minimum unseen IDs (vs previous runs) on boundary page to trigger history tail pass",
+                "default": 3,
+            },
+            "recent_listing_ids": {
+                "type": "array",
+                "items": {"type": "string"},
+                "description": "Recent listing IDs seen in previous runs to support adaptive backfill",
+                "default": [],
+            },
+            "delay_seconds": {
+                "type": "number",
+                "description": "Optional fixed inter-page delay override for diagnostics or testing",
+                "default": None,
+            },
         }
 
     async def fetch_listings(self, source_config: dict[str, Any]) -> list[RawListing]:
@@ -106,69 +164,168 @@ class DaftAdapter(SourceAdapter):
         config = {**self.get_default_config(), **source_config}
         areas: list[str] = config.get("areas", ["ireland"])
         max_pages: int = config.get("max_pages", 5)
+        max_retries: int = max(0, int(config.get("max_retries", settings.max_scrape_retries)))
+        stale_page_threshold: int = max(1, int(config.get("stale_page_threshold", 2)))
+        tail_pass_pages: int = max(0, int(config.get("tail_pass_pages", 1)))
+        tail_pass_min_new_ids: int = max(1, int(config.get("tail_pass_min_new_ids", 3)))
+        history_tail_pass_pages: int = max(0, int(config.get("history_tail_pass_pages", 1)))
+        history_tail_trigger_min_new_ids: int = max(
+            1,
+            int(config.get("history_tail_trigger_min_new_ids", 3)),
+        )
+        recent_listing_ids = self._coerce_recent_listing_ids(config.get("recent_listing_ids"))
+        recent_listing_id_set = set(recent_listing_ids)
+        delay_seconds = config.get("delay_seconds")
         page_size = 20
         all_listings: list[RawListing] = []
 
         async with httpx.AsyncClient(
             timeout=settings.request_timeout_seconds,
             headers={
-                "User-Agent": settings.user_agent,
                 "Content-Type": "application/json",
                 "Brand": "daft",
                 "Platform": "web",
+                "Accept": "application/json, text/plain, */*",
+                "Accept-Language": "en-IE,en;q=0.9",
+                "Origin": "https://www.daft.ie",
+                "Referer": "https://www.daft.ie/",
             },
         ) as client:
             for area in areas:
                 shape_ids = AREA_SHAPE_MAP.get(area.lower(), [f"daft_county-{area.lower()}"])
+                seen_listing_ids: set[str] = set()
+                consecutive_stale_pages = 0
+                tail_pages_remaining = 0
+                history_tail_pages_remaining = 0
+                history_tail_extension_used = False
+                effective_max_pages = max_pages
+                page = 0
 
-                for page in range(max_pages):
+                while page < effective_max_pages:
                     offset = page * page_size
                     payload = self._build_api_payload(shape_ids, config, offset, page_size)
 
                     try:
-                        logger.info("daft_api_fetch", area=area, page=page, offset=offset)
-                        response = await client.post(DAFT_API_URL, json=payload)
-                        response.raise_for_status()
+                        data = await self._fetch_page_with_retries(
+                            client=client,
+                            payload=payload,
+                            area=area,
+                            page=page,
+                            offset=offset,
+                            max_retries=max_retries,
+                        )
+                    except _DaftBlockedError as exc:
+                        logger.warning(
+                            "daft_area_blocked",
+                            area=area,
+                            page=page,
+                            status=exc.status_code,
+                        )
+                        break
+                    if data is None:
+                        page += 1
+                        continue
 
-                        data = response.json()
-                        api_listings = data.get("listings", [])
+                    api_listings = data.get("listings", [])
+                    if not api_listings:
+                        logger.info("daft_no_more_listings", area=area, page=page)
+                        break
 
-                        if not api_listings:
-                            logger.info("daft_no_more_listings", area=area, page=page)
+                    now = datetime.now(UTC)
+                    new_ids_on_page = 0
+                    unseen_vs_history_ids_on_page = 0
+                    for entry in api_listings:
+                        listing_data = entry.get("listing", {})
+                        if not listing_data:
+                            continue
+
+                        listing_id = str(listing_data.get("id", "")).strip()
+                        if listing_id:
+                            if listing_id not in seen_listing_ids:
+                                seen_listing_ids.add(listing_id)
+                                new_ids_on_page += 1
+                            if listing_id not in recent_listing_id_set:
+                                unseen_vs_history_ids_on_page += 1
+
+                        source_url = self._build_listing_url(listing_data.get("seoFriendlyPath", ""))
+                        all_listings.append(
+                            RawListing(
+                                raw_html="",
+                                raw_data=listing_data,
+                                source_url=source_url,
+                                fetched_at=now,
+                            )
+                        )
+
+                    if new_ids_on_page == 0:
+                        consecutive_stale_pages += 1
+                        if consecutive_stale_pages >= stale_page_threshold:
+                            logger.info(
+                                "daft_stale_page_stop",
+                                area=area,
+                                page=page,
+                                threshold=stale_page_threshold,
+                            )
                             break
+                    else:
+                        consecutive_stale_pages = 0
 
-                        now = datetime.now(UTC)
-                        for entry in api_listings:
-                            listing_data = entry.get("listing", {})
-                            if listing_data:
-                                all_listings.append(
-                                    RawListing(
-                                        raw_html="",
-                                        raw_data=listing_data,
-                                        source_url=f"{self.BASE_URL}{listing_data.get('seoFriendlyPath', '')}",
-                                        fetched_at=now,
-                                    )
-                                )
+                    paging = data.get("paging", {})
+                    total_pages = int(paging.get("totalPages", 0) or 0)
+                    at_reported_end = total_pages > 0 and page + 1 >= total_pages
 
-                        # Check if we've reached the last page
-                        paging = data.get("paging", {})
-                        total_pages = paging.get("totalPages", 0)
-                        if page + 1 >= total_pages:
-                            break
+                    if at_reported_end and tail_pass_pages > 0 and new_ids_on_page >= tail_pass_min_new_ids and tail_pages_remaining == 0:
+                        tail_pages_remaining = tail_pass_pages
+                        effective_max_pages = max(effective_max_pages, page + 1 + tail_pass_pages)
+                        logger.info(
+                            "daft_tail_pass_triggered",
+                            area=area,
+                            page=page,
+                            new_ids_on_page=new_ids_on_page,
+                            tail_pass_pages=tail_pass_pages,
+                        )
 
-                        # Respect rate limits
+                    if at_reported_end and tail_pages_remaining == 0:
+                        break
+
+                    at_configured_boundary = page + 1 >= max_pages
+                    can_extend_from_history = (
+                        history_tail_pass_pages > 0
+                        and history_tail_pages_remaining == 0
+                        and not history_tail_extension_used
+                        and at_configured_boundary
+                        and (total_pages == 0 or page + 1 < total_pages)
+                        and unseen_vs_history_ids_on_page >= history_tail_trigger_min_new_ids
+                    )
+                    if can_extend_from_history:
+                        history_tail_extension_used = True
+                        history_tail_pages_remaining = history_tail_pass_pages
+                        effective_max_pages = max(
+                            effective_max_pages,
+                            page + 1 + history_tail_pass_pages,
+                        )
+                        logger.info(
+                            "daft_history_tail_pass_triggered",
+                            area=area,
+                            page=page,
+                            unseen_vs_history_ids_on_page=unseen_vs_history_ids_on_page,
+                            history_tail_pass_pages=history_tail_pass_pages,
+                        )
+
+                    if tail_pages_remaining > 0:
+                        tail_pages_remaining -= 1
+                    if history_tail_pages_remaining > 0:
+                        history_tail_pages_remaining -= 1
+
+                    if delay_seconds is None:
                         delay = random.uniform(
                             settings.scrape_delay_min_seconds,
                             settings.scrape_delay_max_seconds,
                         )
-                        await asyncio.sleep(delay)
-
-                    except httpx.HTTPStatusError as e:
-                        logger.warning("daft_api_error", area=area, status=e.response.status_code)
-                        break
-                    except httpx.RequestError as e:
-                        logger.error("daft_request_error", area=area, error=str(e))
-                        break
+                    else:
+                        delay = max(0.0, float(delay_seconds))
+                    await asyncio.sleep(delay)
+                    page += 1
 
         logger.info("daft_fetch_complete", total_listings=len(all_listings))
         return all_listings
@@ -214,10 +371,37 @@ class DaftAdapter(SourceAdapter):
 
             # URL
             seo_path = data.get("seoFriendlyPath", "")
-            url = f"{self.BASE_URL}{seo_path}" if seo_path else raw.source_url
+            url = self._normalize_listing_url(
+                f"{self.BASE_URL}{seo_path}" if seo_path else raw.source_url
+            )
 
             # Listing ID
-            listing_id = str(data.get("id", ""))
+            listing_id = str(data.get("id", "")).strip()
+            url_listing_id = self._extract_listing_id_from_url(url)
+
+            if not listing_id and url_listing_id:
+                listing_id = url_listing_id
+
+            normalized_raw_data = dict(data)
+            if url_listing_id:
+                normalized_raw_data["url_listing_id"] = url_listing_id
+            if listing_id and url_listing_id and listing_id != url_listing_id:
+                logger.info(
+                    "daft_identifier_mismatch_observed",
+                    listing_id=listing_id,
+                    url_listing_id=url_listing_id,
+                    url=url,
+                )
+
+            if not title or not address or not url or not listing_id:
+                logger.debug(
+                    "daft_parse_skipped_missing_required",
+                    has_title=bool(title),
+                    has_address=bool(address),
+                    has_url=bool(url),
+                    has_listing_id=bool(listing_id),
+                )
+                return None
 
             # Publish date
             publish_ts = data.get("publishDate")
@@ -242,7 +426,7 @@ class DaftAdapter(SourceAdapter):
                 ber_number=ber_number,
                 images=images,
                 features={"sections": data.get("sections", [])},
-                raw_data=data,
+                raw_data=normalized_raw_data,
                 external_id=listing_id,
                 first_listed_at=first_listed,
                 latitude=latitude,
@@ -253,6 +437,201 @@ class DaftAdapter(SourceAdapter):
             return None
 
     # ── Private helpers ───────────────────────────────────────────────────────
+
+    async def _fetch_page_with_retries(
+        self,
+        client: httpx.AsyncClient,
+        payload: dict[str, Any],
+        area: str,
+        page: int,
+        offset: int,
+        max_retries: int,
+    ) -> dict[str, Any] | None:
+        """Fetch one API page with bounded retries for transient failures."""
+        attempt = 0
+        while True:
+            try:
+                logger.info("daft_api_fetch", area=area, page=page, offset=offset, attempt=attempt)
+                response = await self._post_with_headers_fallback(
+                    client,
+                    DAFT_API_URL,
+                    payload,
+                    self._build_request_headers(area=area, attempt=attempt),
+                )
+                response.raise_for_status()
+                return response.json()
+            except httpx.HTTPStatusError as exc:
+                status = exc.response.status_code
+                if status == 403 and attempt < max_retries:
+                    attempt += 1
+                    retry_delay = min(8.0, (2 ** attempt) + random.uniform(0.0, 0.8))
+                    logger.warning(
+                        "daft_blocked_retry",
+                        area=area,
+                        page=page,
+                        status=status,
+                        attempt=attempt,
+                        delay_seconds=retry_delay,
+                    )
+                    await asyncio.sleep(retry_delay)
+                    continue
+
+                if status == 401:
+                    raise _DaftBlockedError(status) from exc
+
+                if status == 403:
+                    raise _DaftBlockedError(status) from exc
+                transient = status == 429 or status >= 500
+                if transient and attempt < max_retries:
+                    attempt += 1
+                    retry_delay = min(8.0, (2 ** attempt) + random.uniform(0.0, 0.8))
+                    logger.warning(
+                        "daft_api_retry",
+                        area=area,
+                        page=page,
+                        status=status,
+                        attempt=attempt,
+                        delay_seconds=retry_delay,
+                    )
+                    await asyncio.sleep(retry_delay)
+                    continue
+                logger.warning(
+                    "daft_api_error",
+                    area=area,
+                    page=page,
+                    status=status,
+                    retried=attempt,
+                )
+                return None
+            except httpx.RequestError as exc:
+                if attempt < max_retries:
+                    attempt += 1
+                    retry_delay = min(8.0, (2 ** attempt) + random.uniform(0.0, 0.8))
+                    logger.warning(
+                        "daft_request_retry",
+                        area=area,
+                        page=page,
+                        attempt=attempt,
+                        delay_seconds=retry_delay,
+                        error=str(exc),
+                    )
+                    await asyncio.sleep(retry_delay)
+                    continue
+                logger.error(
+                    "daft_request_error",
+                    area=area,
+                    page=page,
+                    retried=attempt,
+                    error=str(exc),
+                )
+                return None
+
+    @staticmethod
+    def _looks_like_default_bot_ua(user_agent: str) -> bool:
+        raw = (user_agent or "").strip().lower()
+        return (not raw) or raw.startswith("propertysearch/")
+
+    def _build_request_headers(self, *, area: str, attempt: int) -> dict[str, str]:
+        configured_ua = (settings.user_agent or "").strip()
+        if self._looks_like_default_bot_ua(configured_ua):
+            user_agent = random.choice(_BROWSER_UA_FALLBACKS)
+        else:
+            user_agent = configured_ua
+
+        return {
+            "User-Agent": user_agent,
+            "Sec-Fetch-Dest": "empty",
+            "Sec-Fetch-Mode": "cors",
+            "Sec-Fetch-Site": "same-site",
+            "X-Requested-With": "XMLHttpRequest",
+        }
+
+    @staticmethod
+    async def _post_with_headers_fallback(
+        client: httpx.AsyncClient,
+        url: str,
+        payload: dict[str, Any],
+        headers: dict[str, str],
+    ) -> httpx.Response:
+        try:
+            return await client.post(url, json=payload, headers=headers)
+        except TypeError:
+            # Test doubles may not accept per-request headers.
+            return await client.post(url, json=payload)
+
+    def _build_listing_url(self, seo_path: str) -> str:
+        """Build and normalize a Daft listing URL from API path fragments."""
+        raw = f"{self.BASE_URL}{seo_path}" if seo_path else ""
+        return self._normalize_listing_url(raw)
+
+    @staticmethod
+    def _normalize_listing_url(url: str) -> str:
+        """Normalize listing URL and strip query/fragment noise."""
+        raw = (url or "").strip()
+        if not raw:
+            return ""
+        parsed = urlparse(raw)
+        if not parsed.scheme or not parsed.netloc:
+            return ""
+        normalized_path = parsed.path.rstrip("/")
+        normalized = parsed._replace(scheme=parsed.scheme.lower(), netloc=parsed.netloc.lower(), path=normalized_path, query="", fragment="")
+        return urlunparse(normalized)
+
+    @staticmethod
+    def _extract_listing_id_from_url(url: str) -> str | None:
+        """Extract numeric listing ID from canonical Daft listing URLs."""
+        if not url:
+            return None
+        parsed = urlparse(url)
+        path = parsed.path.rstrip("/")
+        if not path.startswith("/for-sale/"):
+            return None
+        match = re.search(r"/(\d+)$", path)
+        return match.group(1) if match else None
+
+    @classmethod
+    def listing_identifiers(cls, raw_data: dict[str, Any] | None, source_url: str = "") -> set[str]:
+        """Return all comparable identifiers for a Daft listing."""
+        identifiers: set[str] = set()
+        data = raw_data or {}
+        listing_id = str(data.get("id", "")).strip()
+        if listing_id:
+            identifiers.add(listing_id)
+        url_listing_id = cls._extract_listing_id_from_url(source_url)
+        if url_listing_id:
+            identifiers.add(url_listing_id)
+        raw_url_listing_id = str(data.get("url_listing_id", "")).strip()
+        if raw_url_listing_id:
+            identifiers.add(raw_url_listing_id)
+        return identifiers
+
+    @classmethod
+    def listing_matches_identifier(
+        cls,
+        *,
+        raw_data: dict[str, Any] | None,
+        source_url: str,
+        external_id: str,
+    ) -> bool:
+        """Return True when the requested identifier matches the API ID or URL ID."""
+        target = str(external_id or "").strip()
+        if not target:
+            return False
+        return target in cls.listing_identifiers(raw_data, source_url)
+
+    @staticmethod
+    def _coerce_recent_listing_ids(value: Any, limit: int = 600) -> list[str]:
+        """Return sanitized recent listing IDs from source config."""
+        if not isinstance(value, list):
+            return []
+        cleaned: list[str] = []
+        for item in value:
+            listing_id = str(item).strip()
+            if listing_id:
+                cleaned.append(listing_id)
+            if len(cleaned) >= limit:
+                break
+        return cleaned
 
     @staticmethod
     def _build_api_payload(shape_ids: list[str], config: dict, offset: int, page_size: int) -> dict:

@@ -92,6 +92,7 @@ class Property(Base):
         index=True,
     )
     external_id: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    canonical_property_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
 
     # Core listing fields
     title: Mapped[str] = mapped_column(String(500), nullable=False)
@@ -167,6 +168,11 @@ class Property(Base):
     price_history: Mapped[list[PropertyPriceHistory]] = relationship(
         "PropertyPriceHistory", back_populates="property", order_by="PropertyPriceHistory.recorded_at.desc()"
     )
+    timeline_events: Mapped[list[PropertyTimelineEvent]] = relationship(
+        "PropertyTimelineEvent",
+        back_populates="property",
+        order_by="PropertyTimelineEvent.occurred_at.desc()",
+    )
     enrichment: Mapped[LLMEnrichment | None] = relationship(
         "LLMEnrichment", back_populates="property", uselist=False
     )
@@ -174,10 +180,15 @@ class Property(Base):
     grant_matches: Mapped[list[PropertyGrantMatch]] = relationship(
         "PropertyGrantMatch", back_populates="property"
     )
+    documents: Mapped[list[PropertyDocument]] = relationship(
+        "PropertyDocument", back_populates="property"
+    )
 
     __table_args__ = (
         Index("ix_properties_county_price", "county", "price"),
         Index("ix_properties_status_created", "status", "created_at"),
+        Index("ix_properties_canonical_property_id", "canonical_property_id"),
+        Index("ix_properties_source_external_id", "source_id", "external_id"),
         {"schema": None},
     )
 
@@ -213,6 +224,54 @@ class PropertyPriceHistory(Base):
             "property_id",
             "price",
             "recorded_hour_utc",
+            unique=True,
+        ),
+    )
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# PropertyTimelineEvent — unified timeline of property lifecycle/price events
+# ──────────────────────────────────────────────────────────────────────────────
+
+class PropertyTimelineEvent(Base):
+    __tablename__ = "property_timeline_events"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid)
+    property_id: Mapped[str] = mapped_column(String(36), nullable=False, index=True)
+    event_type: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    occurred_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=_utcnow, server_default="now()"
+    )
+    occurred_hour_utc: Mapped[datetime] = mapped_column(
+        DateTime(timezone=False),
+        server_default="date_trunc('hour', now() AT TIME ZONE 'UTC')",
+        nullable=False,
+    )
+
+    price: Mapped[float | None] = mapped_column(Numeric(12, 2), nullable=True)
+    price_change: Mapped[float | None] = mapped_column(Numeric(12, 2), nullable=True)
+    price_change_pct: Mapped[float | None] = mapped_column(Float, nullable=True)
+
+    source_id: Mapped[str | None] = mapped_column(String(36), nullable=True, index=True)
+    adapter_name: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    source_url: Mapped[str | None] = mapped_column(String(1024), nullable=True)
+    detection_method: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    confidence_score: Mapped[float | None] = mapped_column(Float, nullable=True)
+    dedup_key: Mapped[str | None] = mapped_column(String(255), nullable=True)
+
+    evidence: Mapped[dict] = mapped_column(JSONB, default=dict, server_default="{}")
+    metadata_json: Mapped[dict] = mapped_column("metadata", JSONB, default=dict, server_default="{}")
+
+    property: Mapped[Property] = relationship("Property", back_populates="timeline_events")
+
+    __table_args__ = (
+        Index("ix_timeline_property_date", "property_id", "occurred_at"),
+        Index(
+            "uq_timeline_event_property_type_key_hour",
+            "property_id",
+            "event_type",
+            "dedup_key",
+            "occurred_hour_utc",
             unique=True,
         ),
     )
@@ -362,6 +421,7 @@ class BackendLog(Base):
     component: Mapped[str] = mapped_column(String(100), nullable=False, default="worker", server_default="worker")
     source_id: Mapped[str | None] = mapped_column(String(36), nullable=True, index=True)
     message: Mapped[str] = mapped_column(Text, nullable=False)
+    # DB column is named 'context'; ORM uses context_json to avoid shadowing common names.
     context_json: Mapped[dict] = mapped_column("context", JSONB, default=dict, server_default="{}")
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=_utcnow, server_default="now()", index=True
@@ -370,6 +430,49 @@ class BackendLog(Base):
     __table_args__ = (
         Index("ix_backend_logs_event_created", "event_type", "created_at"),
         Index("ix_backend_logs_level_created", "level", "created_at"),
+    )
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# SourceQualitySnapshot — periodic source quality corpus metrics
+# ──────────────────────────────────────────────────────────────────────────────
+
+class SourceQualitySnapshot(Base):
+    __tablename__ = "source_quality_snapshots"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid)
+    source_id: Mapped[str | None] = mapped_column(String(36), nullable=True, index=True)
+    source_name: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    adapter_name: Mapped[str | None] = mapped_column(String(100), nullable=True, index=True)
+    run_type: Mapped[str] = mapped_column(String(30), nullable=False, index=True)
+
+    total_fetched: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    parse_failed: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    new_count: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    updated_count: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    price_unchanged_count: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    dedup_conflicts: Mapped[int | None] = mapped_column(Integer, nullable=True)
+
+    candidates_scored: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    created_count: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    auto_enabled_count: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    pending_approval_count: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    existing_count: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    skipped_invalid_count: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    skipped_invalid_config_count: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    score_avg: Mapped[float | None] = mapped_column(Float, nullable=True)
+    score_max: Mapped[float | None] = mapped_column(Float, nullable=True)
+
+    dry_run: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
+    follow_links: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
+    details: Mapped[dict] = mapped_column(JSONB, default=dict, server_default="{}")
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=_utcnow, server_default="now()", index=True
+    )
+
+    __table_args__ = (
+        Index("ix_source_quality_run_created", "run_type", "created_at"),
+        Index("ix_source_quality_source_created", "source_id", "created_at"),
     )
 
 
@@ -390,7 +493,7 @@ class LLMEnrichment(Base):
     cons: Mapped[list] = mapped_column(JSONB, default=list, server_default="[]")
     extracted_features: Mapped[dict] = mapped_column(JSONB, default=dict, server_default="{}")
     neighbourhood_notes: Mapped[str | None] = mapped_column(Text, nullable=True)
-    investment_potential: Mapped[str | None] = mapped_column(String(50), nullable=True)
+    investment_potential: Mapped[str | None] = mapped_column(Text, nullable=True)
 
     llm_provider: Mapped[str | None] = mapped_column(String(50), nullable=True)
     llm_model: Mapped[str | None] = mapped_column(String(100), nullable=True)
@@ -471,6 +574,46 @@ class PropertyGrantMatch(Base):
 
 
 # ──────────────────────────────────────────────────────────────────────────────
+# PropertyDocument — unified retrieval/vector-ready corpus records
+# ──────────────────────────────────────────────────────────────────────────────
+
+class PropertyDocument(Base):
+    __tablename__ = "property_documents"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid)
+    document_type: Mapped[str] = mapped_column(String(60), nullable=False, index=True)
+    scope_type: Mapped[str] = mapped_column(String(40), nullable=False, index=True)
+    scope_key: Mapped[str] = mapped_column(String(255), nullable=False, index=True)
+    document_key: Mapped[str] = mapped_column(String(255), nullable=False, unique=True)
+    content_hash: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+
+    property_id: Mapped[str | None] = mapped_column(String(36), nullable=True, index=True)
+    source_id: Mapped[str | None] = mapped_column(String(36), nullable=True, index=True)
+    canonical_property_id: Mapped[str | None] = mapped_column(String(36), nullable=True, index=True)
+    county: Mapped[str | None] = mapped_column(String(100), nullable=True, index=True)
+
+    title: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    content: Mapped[str] = mapped_column(Text, nullable=False)
+    metadata_json: Mapped[dict] = mapped_column("metadata", JSONB, default=dict, server_default="{}")
+    effective_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True, index=True)
+    expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=_utcnow, server_default="now()"
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=_utcnow, server_default="now()", onupdate=_utcnow
+    )
+
+    property: Mapped[Property | None] = relationship("Property", back_populates="documents")
+
+    __table_args__ = (
+        Index("ix_property_documents_scope", "scope_type", "scope_key"),
+        Index("ix_property_documents_property_type", "property_id", "document_type"),
+        Index("ix_property_documents_canonical_type", "canonical_property_id", "document_type"),
+    )
+
+
+# ──────────────────────────────────────────────────────────────────────────────
 # Conversation + ConversationMessage — direct user chat with LLM
 # ──────────────────────────────────────────────────────────────────────────────
 
@@ -524,6 +667,9 @@ Property.__table__.append_constraint(
 PropertyPriceHistory.__table__.append_constraint(
     ForeignKeyConstraint(["property_id"], ["properties.id"], name="fk_pricehistory_property", ondelete="CASCADE")
 )
+PropertyTimelineEvent.__table__.append_constraint(
+    ForeignKeyConstraint(["property_id"], ["properties.id"], name="fk_timeline_property", ondelete="CASCADE")
+)
 Alert.__table__.append_constraint(
     ForeignKeyConstraint(["property_id"], ["properties.id"], name="fk_alert_property", ondelete="SET NULL")
 )
@@ -535,6 +681,9 @@ Alert.__table__.append_constraint(
 LLMEnrichment.__table__.append_constraint(
     ForeignKeyConstraint(["property_id"], ["properties.id"], name="fk_enrichment_property", ondelete="CASCADE")
 )
+SourceQualitySnapshot.__table__.append_constraint(
+    ForeignKeyConstraint(["source_id"], ["sources.id"], name="fk_source_quality_source", ondelete="SET NULL")
+)
 PropertyGrantMatch.__table__.append_constraint(
     ForeignKeyConstraint(
         ["property_id"], ["properties.id"], name="fk_grantmatch_property", ondelete="CASCADE"
@@ -544,6 +693,12 @@ PropertyGrantMatch.__table__.append_constraint(
     ForeignKeyConstraint(
         ["grant_program_id"], ["grant_programs.id"], name="fk_grantmatch_program", ondelete="CASCADE"
     )
+)
+PropertyDocument.__table__.append_constraint(
+    ForeignKeyConstraint(["property_id"], ["properties.id"], name="fk_document_property", ondelete="CASCADE")
+)
+PropertyDocument.__table__.append_constraint(
+    ForeignKeyConstraint(["source_id"], ["sources.id"], name="fk_document_source", ondelete="SET NULL")
 )
 ConversationMessage.__table__.append_constraint(
     ForeignKeyConstraint(

@@ -127,3 +127,54 @@ class SourceAdapter(ABC):
         Used by the frontend to render adapter-specific configuration forms.
         """
         return {}
+
+    def validate_config(self, source_config: dict[str, Any]) -> list[str]:
+        """Validate config values against ``get_config_schema``.
+
+        Adapters can override for richer validation, but this default catches
+        common type mismatches at API boundaries.
+        """
+        if not isinstance(source_config, dict):
+            return ["config must be an object"]
+
+        errors: list[str] = []
+        schema = self.get_config_schema() or {}
+        for key, rules in schema.items():
+            if key not in source_config:
+                continue
+            value = source_config.get(key)
+            expected_type = (rules or {}).get("type")
+            if not expected_type:
+                continue
+
+            if not _matches_type(value, expected_type):
+                errors.append(
+                    f"config.{key} must be type '{expected_type}', got '{type(value).__name__}'"
+                )
+                continue
+
+            if expected_type == "array":
+                item_type = ((rules or {}).get("items") or {}).get("type")
+                if item_type:
+                    for idx, item in enumerate(value):
+                        if not _matches_type(item, item_type):
+                            errors.append(
+                                f"config.{key}[{idx}] must be type '{item_type}', got '{type(item).__name__}'"
+                            )
+        return errors
+
+
+def _matches_type(value: Any, expected_type: str) -> bool:
+    if expected_type == "array":
+        return isinstance(value, list)
+    if expected_type == "object":
+        return isinstance(value, dict)
+    if expected_type == "string":
+        return isinstance(value, str)
+    if expected_type == "boolean":
+        return isinstance(value, bool)
+    if expected_type == "integer":
+        return isinstance(value, int) and not isinstance(value, bool)
+    if expected_type == "number":
+        return isinstance(value, (int, float)) and not isinstance(value, bool)
+    return True
