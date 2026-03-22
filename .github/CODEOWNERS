@@ -1,0 +1,23 @@
+# Stage 0 ownership map (initial)
+# Update as teams expand.
+
+# Default owner
+* @rorycosgrove
+
+# Backend
+/apps/api/ @rorycosgrove
+/apps/worker/ @rorycosgrove
+/packages/shared/ @rorycosgrove
+/packages/storage/ @rorycosgrove
+/packages/sources/ @rorycosgrove
+/packages/normalizer/ @rorycosgrove
+/packages/alerts/ @rorycosgrove
+/packages/analytics/ @rorycosgrove
+/packages/ai/ @rorycosgrove
+
+# Frontend
+/web/ @rorycosgrove
+
+# Infrastructure
+/infra/ @rorycosgrove
+/docker/ @rorycosgrove

@@ -33,6 +33,19 @@ test-cov-plan:
 lint:
 	uv run ruff check packages/ apps/ tests/
 	uv run mypy packages/ apps/
+	uv run python scripts/restructure/check_dependency_boundaries.py
+
+workspace-list:
+	uv run python scripts/restructure/workspace_runner.py list
+
+workspace-lint:
+	uv run python scripts/restructure/workspace_runner.py run lint
+
+workspace-build:
+	uv run python scripts/restructure/workspace_runner.py run build
+
+boundary-check:
+	uv run python scripts/restructure/check_dependency_boundaries.py
 
 format:
 	uv run black packages/ apps/ tests/

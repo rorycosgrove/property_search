@@ -1,0 +1,26 @@
+{
+  "version": 1,
+  "rules": [
+    {
+      "name": "apps-can-depend-on-packages",
+      "allow": {
+        "from": ["apps/api", "apps/worker", "web", "infra"],
+        "to": ["packages"]
+      }
+    },
+    {
+      "name": "packages-must-not-depend-on-apps",
+      "deny": {
+        "from": ["packages"],
+        "to": ["apps", "web"]
+      }
+    },
+    {
+      "name": "shared-is-foundational",
+      "deny": {
+        "from": ["packages/shared"],
+        "to": ["packages/alerts", "packages/analytics", "packages/ai", "packages/sources", "packages/storage", "packages/normalizer", "apps", "web"]
+      }
+    }
+  ]
+}
