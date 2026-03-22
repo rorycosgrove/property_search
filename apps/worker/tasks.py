@@ -519,7 +519,7 @@ def scrape_source(source_id: str, force: bool = False) -> dict[str, Any]:
                             )
                             property_repo.update(
                                 str(existing.id),
-                                price=new_price,
+                                price=new_price_dec,
                                 price_text=record.get("price_text"),
                                 status="price_changed",
                             )
@@ -527,22 +527,22 @@ def scrape_source(source_id: str, force: bool = False) -> dict[str, Any]:
                             updated_count += 1
                         else:
                             price_unchanged_count += 1
-                    elif old_price is not None and new_price is None:
+                    elif old_price_dec is not None and new_price_dec is None:
                         # Edge case: priced listing transitions to POA/no numeric price.
                         _add_timeline_event_safe(
                             timeline_repo,
                             property_id=str(existing.id),
                             event_type="asking_price_removed",
-                            price=old_price,
+                            price=old_price_dec,
                             source_id=source_id,
                             adapter_name=source.adapter_name,
                             source_url=source_url,
                             detection_method="worker_scrape_poa_transition",
                             confidence_score=0.9,
-                            dedup_key=f"poa:{float(old_price):.2f}",
+                            dedup_key=f"poa:{float(old_price_dec):.2f}",
                             metadata_json={
                                 "source_name": source.name,
-                                "old_price": old_price,
+                                "old_price": old_price_dec,
                                 "new_price": None,
                             },
                         )
@@ -554,11 +554,11 @@ def scrape_source(source_id: str, force: bool = False) -> dict[str, Any]:
                         )
                         _materialize_property_documents_safe(db, str(existing.id))
                         updated_count += 1
-                    elif old_price is None and new_price is not None:
+                    elif old_price_dec is None and new_price_dec is not None:
                         # Edge case: POA listing gets a concrete numeric price.
                         price_repo.add_entry_if_new_price(
                             property_id=str(existing.id),
-                            price=new_price,
+                            price=new_price_dec,
                             price_change=None,
                             price_change_pct=None,
                             timeline_event_type="asking_price_set",
@@ -570,7 +570,7 @@ def scrape_source(source_id: str, force: bool = False) -> dict[str, Any]:
                         )
                         property_repo.update(
                             str(existing.id),
-                            price=new_price,
+                            price=new_price_dec,
                             price_text=record.get("price_text"),
                             status="price_changed",
                         )
