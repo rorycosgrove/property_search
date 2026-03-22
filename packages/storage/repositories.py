@@ -117,7 +117,13 @@ class SourceRepository:
             source.last_success_at = now
             source.error_count = 0
             source.last_error = None
-            source.total_listings += listings_count
+            actual_count = (
+                self.session.scalar(
+                    select(func.count(Property.id)).where(Property.source_id == source_id)
+                )
+                or 0
+            )
+            source.total_listings = actual_count
             self.session.flush()
 
     def mark_poll_error(self, source_id: str, error_message: str) -> None:
