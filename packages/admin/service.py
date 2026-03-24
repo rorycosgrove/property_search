@@ -17,6 +17,7 @@ from sqlalchemy.orm import Session
 
 from packages.shared.constants import MIGRATION_STATUS_TIMEOUT_SECONDS, MIGRATION_TIMEOUT_SECONDS
 from packages.storage.models import BackendLog, Source
+from packages.storage.models import Property, PropertyPriceHistory, PropertyTimelineEvent
 from packages.storage.repositories import (
     BackendLogRepository,
     PriceHistoryRepository,
@@ -127,14 +128,104 @@ def list_feed_activity(db: Session, *, limit: int = 10) -> list[dict[str, Any]]:
             "skipped": (row.context_json or {}).get("skipped", 0),
             "total_fetched": (row.context_json or {}).get("total_fetched", 0),
             "geocode_success_rate": (row.context_json or {}).get("geocode_success_rate", 0),
+            "existing_by_external_id": (row.context_json or {}).get("existing_by_external_id", 0),
+            "existing_by_content_hash": (row.context_json or {}).get("existing_by_content_hash", 0),
+            "zero_fetch_reason": (row.context_json or {}).get("zero_fetch_reason"),
             "status": "success",
         }
         for row in rows
     ]
 
 
+def source_net_new_summary(
+    db: Session,
+    *,
+    runs: int = 10,
+    source_id: str | None = None,
+) -> list[dict[str, Any]]:
+    """Aggregate net-new property counts per source across recent scrape runs.
+
+    Returns a ranked list — stalled sources (zero_ingestion=True) appear first
+    so data gaps are immediately visible.  Each entry includes counts of
+    consecutive zero-new and zero-fetch streaks to indicate cursor vs upstream
+    issues.
+    """
+    query = (
+        db.query(BackendLog)
+        .filter(BackendLog.event_type == "scrape_source_complete")
+    )
+    if source_id:
+        query = query.filter(BackendLog.source_id == source_id)
+
+    # Fetch a working set large enough to get `runs` rows per source without knowing
+    # how many distinct sources exist.  Cap at a reasonable ceiling.
+    rows = query.order_by(BackendLog.created_at.desc()).limit(runs * 100).all()
+
+    by_source: dict[str, list[Any]] = defaultdict(list)
+    for row in rows:
+        sid = str(row.source_id or "").strip()
+        if sid:
+            by_source[sid].append(row)
+
+    result: list[dict[str, Any]] = []
+    for sid, source_rows in by_source.items():
+        recent = sorted(source_rows, key=lambda r: r.created_at, reverse=True)[:runs]
+
+        total_new = sum(int((r.context_json or {}).get("new", 0) or 0) for r in recent)
+        total_updated = sum(int((r.context_json or {}).get("updated", 0) or 0) for r in recent)
+        total_fetched = sum(int((r.context_json or {}).get("total_fetched", 0) or 0) for r in recent)
+        source_name = (recent[0].context_json or {}).get("source_name") if recent else None
+
+        # Consecutive zero-new streak from the most recent run backwards.
+        consecutive_zero_new = 0
+        for row in recent:
+            if int((row.context_json or {}).get("new", 0) or 0) == 0:
+                consecutive_zero_new += 1
+            else:
+                break
+
+        # Consecutive zero-fetch streak (upstream returned nothing).
+        consecutive_zero_fetch = 0
+        for row in recent:
+            if int((row.context_json or {}).get("total_fetched", 0) or 0) == 0:
+                consecutive_zero_fetch += 1
+            else:
+                break
+
+        last_zero_fetch_reason: str | None = None
+        if recent:
+            last_zero_fetch_reason = (recent[0].context_json or {}).get("zero_fetch_reason")
+
+        result.append({
+            "source_id": sid,
+            "source_name": source_name,
+            "runs_sampled": len(recent),
+            "total_new": total_new,
+            "total_updated": total_updated,
+            "total_fetched": total_fetched,
+            "consecutive_zero_new": consecutive_zero_new,
+            "consecutive_zero_fetch": consecutive_zero_fetch,
+            "zero_ingestion": total_new == 0 and total_updated == 0 and len(recent) > 0,
+            "last_zero_fetch_reason": last_zero_fetch_reason,
+            "last_run_at": recent[0].created_at.isoformat() if recent and recent[0].created_at else None,
+        })
+
+    # Stalled (zero ingestion) sources first, then alphabetically by source name.
+    result.sort(key=lambda x: (-int(x["zero_ingestion"]), (x["source_name"] or "").lower()))
+    return result
+
+
 def list_source_status(db: Session) -> list[dict[str, Any]]:
-    rows = db.query(Source).order_by(Source.name.asc()).all()
+    rows = (
+        db.query(
+            Source,
+            func.count(Property.id).label("listing_count"),
+        )
+        .outerjoin(Property, Property.source_id == Source.id)
+        .group_by(Source.id)
+        .order_by(Source.name.asc())
+        .all()
+    )
     return [
         {
             "id": source.id,
@@ -146,9 +237,9 @@ def list_source_status(db: Session) -> list[dict[str, Any]]:
             "last_polled_at": source.last_polled_at.isoformat() if source.last_polled_at else None,
             "last_success_at": source.last_success_at.isoformat() if source.last_success_at else None,
             "poll_interval_seconds": source.poll_interval_seconds,
-            "total_listings": int(source.total_listings or 0),
+            "total_listings": int(listing_count or 0),
         }
-        for source in rows
+        for source, listing_count in rows
     ]
 
 
@@ -195,6 +286,178 @@ def source_freshness_report(db: Session) -> dict[str, Any]:
         "never_polled": never_polled,
         "healthy": healthy,
     }
+
+
+def data_lifecycle_report(
+    db: Session,
+    *,
+    property_archive_days: int = 365,
+    backend_log_archive_days: int = 90,
+    rollup_days: int = 180,
+) -> dict[str, Any]:
+    """Return archival and rollup candidates for lifecycle operations.
+
+    This endpoint is intentionally read-only: it provides a safe dry-run
+    overview before any destructive or archival jobs are introduced.
+    """
+    now = datetime.now(UTC)
+
+    property_cutoff = now - timedelta(days=max(property_archive_days, 1))
+    log_cutoff = now - timedelta(days=max(backend_log_archive_days, 1))
+    rollup_cutoff = now - timedelta(days=max(rollup_days, 1))
+
+    property_archive_candidates = (
+        db.query(Property)
+        .filter(Property.status.in_(["sold", "withdrawn"]))
+        .filter(Property.updated_at < property_cutoff)
+        .count()
+    )
+
+    backend_log_archive_candidates = (
+        db.query(BackendLog)
+        .filter(BackendLog.created_at < log_cutoff)
+        .count()
+    )
+
+    price_history_rollup_candidates = (
+        db.query(PropertyPriceHistory)
+        .filter(PropertyPriceHistory.recorded_at < rollup_cutoff)
+        .count()
+    )
+
+    timeline_rollup_candidates = (
+        db.query(PropertyTimelineEvent)
+        .filter(PropertyTimelineEvent.occurred_at < rollup_cutoff)
+        .count()
+    )
+
+    return {
+        "checked_at": now.isoformat(),
+        "cutoffs": {
+            "property_archive_before": property_cutoff.isoformat(),
+            "backend_log_archive_before": log_cutoff.isoformat(),
+            "rollup_before": rollup_cutoff.isoformat(),
+        },
+        "candidates": {
+            "property_archive": int(property_archive_candidates),
+            "backend_log_archive": int(backend_log_archive_candidates),
+            "price_history_rollup": int(price_history_rollup_candidates),
+            "timeline_rollup": int(timeline_rollup_candidates),
+        },
+        "actions": [
+            {
+                "id": "archive_properties",
+                "description": "Archive sold/withdrawn properties older than cutoff",
+                "dry_run": True,
+            },
+            {
+                "id": "archive_backend_logs",
+                "description": "Archive backend logs older than cutoff",
+                "dry_run": True,
+            },
+            {
+                "id": "rollup_price_and_timeline",
+                "description": "Roll up historical price/timeline events older than cutoff",
+                "dry_run": True,
+            },
+        ],
+    }
+
+
+def run_data_lifecycle_action(
+    db: Session,
+    *,
+    action: str,
+    queue_settings: Any | None = None,
+    dry_run: bool = True,
+    property_archive_days: int = 365,
+    backend_log_archive_days: int = 90,
+    rollup_days: int = 180,
+) -> dict[str, Any]:
+    """Execute a lifecycle action in dry-run mode and emit an audit log.
+
+    Safety guard: non-dry-run execution requires explicit feature enablement
+    and a rollback-plan identifier before execution can be considered.
+    """
+    allowed_actions = {
+        "archive_properties": "property_archive",
+        "archive_backend_logs": "backend_log_archive",
+        "rollup_price_and_timeline": None,
+    }
+
+    normalized = str(action or "").strip()
+    if normalized not in allowed_actions:
+        raise AdminServiceError(
+            f"invalid action '{normalized}'. expected one of: {', '.join(allowed_actions)}"
+        )
+
+    destructive_enabled = bool(getattr(queue_settings, "lifecycle_destructive_execution_enabled", False))
+    rollback_plan_id = str(getattr(queue_settings, "lifecycle_rollback_plan_id", "") or "").strip()
+    destructive_ready = destructive_enabled and bool(rollback_plan_id)
+
+    if not dry_run and not destructive_enabled:
+        raise AdminServiceError(
+            "non-dry-run lifecycle execution requires lifecycle_destructive_execution_enabled=true"
+        )
+    if not dry_run and not rollback_plan_id:
+        raise AdminServiceError(
+            "non-dry-run lifecycle execution requires lifecycle_rollback_plan_id to be configured"
+        )
+    if not dry_run and not destructive_ready:
+        raise AdminServiceError(
+            "non-dry-run lifecycle execution is not ready; verify feature flag and rollback-plan controls"
+        )
+
+    if not dry_run:
+        raise AdminServiceError(
+            "non-dry-run lifecycle execution path is gated and not yet available for this action"
+        )
+
+    report = data_lifecycle_report(
+        db,
+        property_archive_days=property_archive_days,
+        backend_log_archive_days=backend_log_archive_days,
+        rollup_days=rollup_days,
+    )
+    candidates = report.get("candidates", {})
+
+    if normalized == "rollup_price_and_timeline":
+        affected = int(candidates.get("price_history_rollup", 0)) + int(candidates.get("timeline_rollup", 0))
+    else:
+        candidate_key = allowed_actions[normalized]
+        affected = int(candidates.get(candidate_key or "", 0))
+
+    payload = {
+        "status": "dry_run_completed",
+        "action": normalized,
+        "dry_run": True,
+        "execution_mode": {
+            "destructive_enabled": destructive_enabled,
+            "rollback_plan_id_configured": bool(rollback_plan_id),
+            "destructive_ready": destructive_ready,
+        },
+        "executed_at": datetime.now(UTC).isoformat(),
+        "affected_candidates": affected,
+        "report": report,
+    }
+
+    db.add(
+        BackendLog(
+            level="INFO",
+            event_type="admin_data_lifecycle_action",
+            component="api",
+            message=f"Lifecycle action dry-run executed: {normalized}",
+            context_json={
+                "action": normalized,
+                "dry_run": True,
+                "affected_candidates": affected,
+                "cutoffs": report.get("cutoffs", {}),
+            },
+        )
+    )
+    db.flush()
+
+    return payload
 
 
 def list_discovery_activity(db: Session, *, limit: int = 5) -> list[dict[str, Any]]:
@@ -536,6 +799,69 @@ def list_backend_logs(
     return [backend_log_to_dict(row) for row in rows]
 
 
+def list_data_lifecycle_activity(
+    db: Session,
+    *,
+    hours: int = 168,
+    limit: int = 50,
+) -> list[dict[str, Any]]:
+    """Return recent lifecycle dry-run actions for operator audit timelines."""
+    repo = BackendLogRepository(db)
+    rows = repo.list_recent(
+        hours=hours,
+        limit=limit,
+        event_type="admin_data_lifecycle_action",
+    )
+    return [backend_log_to_dict(row) for row in rows]
+
+
+def data_lifecycle_schedule_metadata(
+    db: Session,
+    *,
+    queue_settings: Any,
+) -> dict[str, Any]:
+    """Return lifecycle scheduling and policy metadata for operator visibility."""
+    repo = BackendLogRepository(db)
+    recent_runs = repo.list_recent(
+        hours=24 * 30,
+        limit=1,
+        event_type="admin_data_lifecycle_action",
+    )
+    last_run = recent_runs[0] if recent_runs else None
+
+    destructive_enabled = bool(getattr(queue_settings, "lifecycle_destructive_execution_enabled", False))
+    rollback_plan_id = str(getattr(queue_settings, "lifecycle_rollback_plan_id", "") or "").strip()
+    destructive_ready = destructive_enabled and bool(rollback_plan_id)
+
+    return {
+        "checked_at": datetime.now(UTC).isoformat(),
+        "execution_mode": {
+            "destructive_enabled": destructive_enabled,
+            "rollback_plan_id_configured": bool(rollback_plan_id),
+            "destructive_ready": destructive_ready,
+            "dry_run_only": not destructive_ready,
+            "note": (
+                "Dry-run only: set lifecycle_destructive_execution_enabled=true and configure "
+                "lifecycle_rollback_plan_id to arm destructive execution controls."
+                if not destructive_ready
+                else "Destructive execution controls are armed; endpoint policy still applies per-action safeguards."
+            ),
+        },
+        "cadence": {
+            "source_scrape_interval_seconds": int(getattr(queue_settings, "scrape_poll_interval_seconds", 0) or 0),
+            "rss_poll_interval_seconds": int(getattr(queue_settings, "rss_poll_interval_seconds", 0) or 0),
+            "ppr_poll_interval_seconds": int(getattr(queue_settings, "ppr_poll_interval_seconds", 0) or 0),
+            "lifecycle_action_trigger": "manual_admin_dry_run",
+        },
+        "policy": {
+            "backend_log_retention_days": int(getattr(queue_settings, "backend_log_retention_days", 0) or 0),
+            "default_property_archive_days": 365,
+            "default_rollup_days": 180,
+        },
+        "last_lifecycle_run": backend_log_to_dict(last_run) if last_run else None,
+    }
+
+
 def backend_logs_summary(db: Session, *, hours: int = 24) -> dict[str, Any]:
     repo = BackendLogRepository(db)
     return repo.summary(hours=hours)
@@ -559,12 +885,15 @@ def backend_health_summary(db: Session, *, queue_settings: Any) -> dict[str, Any
 
     geocode_success_rate = round((geocode_successes / geocode_attempts) * 100, 2) if geocode_attempts else 100.0
 
-    last_error = (
+    recent_errors = (
         db.query(BackendLog)
         .filter(BackendLog.level.in_(["ERROR", "WARNING"]))
         .order_by(BackendLog.created_at.desc())
-        .first()
+        .limit(25)
+        .all()
     )
+    actionable_errors = [row for row in recent_errors if not _is_non_actionable_recent_error(row)]
+    last_error = actionable_errors[0] if actionable_errors else None
 
     recent_window_start = datetime.now(UTC) - timedelta(hours=24)
     scrape_count_24h = (
@@ -595,19 +924,62 @@ def backend_health_summary(db: Session, *, queue_settings: Any) -> dict[str, Any
     }
 
 
+_NON_ACTIONABLE_WARNING_EVENT_TYPES = {
+    "daft_cursor_auto_reset",
+    "daft_area_blocked",
+    "propertypal_area_blocked",
+}
+
+_NON_ACTIONABLE_EXTERNAL_ERROR_TOKENS = (
+    "status 403",
+    "status code 403",
+    "forbidden",
+    "access denied",
+    "captcha",
+    "cloudflare",
+    "too many requests",
+    "status 429",
+)
+
+
+def _is_non_actionable_recent_error(row: BackendLog) -> bool:
+    event_type = str(getattr(row, "event_type", "") or "").strip().lower()
+    if event_type in _NON_ACTIONABLE_WARNING_EVENT_TYPES:
+        return True
+
+    context = getattr(row, "context_json", None) or {}
+    error_text = str(context.get("error") or "").strip().lower()
+    if not error_text:
+        return False
+
+    source_name = str(context.get("source_name") or "").strip().lower()
+    is_external_block = any(token in error_text for token in _NON_ACTIONABLE_EXTERNAL_ERROR_TOKENS)
+    is_known_external_source = ("daft" in source_name) or ("propertypal" in source_name)
+    return is_external_block and is_known_external_source
+
+
 def list_recent_errors(
     db: Session,
     *,
     level: str | None = None,
     limit: int = 25,
+    include_non_actionable: bool = False,
 ) -> list[dict[str, Any]]:
     repo = BackendLogRepository(db)
-    if level:
-        rows = repo.list_recent(hours=24, limit=limit, level=level)
-    else:
-        rows = repo.list_recent_errors(hours=24, limit=limit)
+    query_limit = int(max(limit, 1))
+    if not include_non_actionable:
+        # Over-fetch because non-actionable rows are filtered in Python.
+        query_limit = min(max(limit * 4, limit), 200)
 
-    return [backend_log_to_dict(row) for row in rows]
+    if level:
+        rows = repo.list_recent(hours=24, limit=query_limit, level=level)
+    else:
+        rows = repo.list_recent_errors(hours=24, limit=query_limit)
+
+    if not include_non_actionable:
+        rows = [row for row in rows if not _is_non_actionable_recent_error(row)]
+
+    return [backend_log_to_dict(row) for row in rows[:limit]]
 
 
 def _source_to_dict(source: Any) -> dict[str, Any]:

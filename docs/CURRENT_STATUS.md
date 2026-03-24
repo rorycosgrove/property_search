@@ -28,3 +28,39 @@ To keep docs accurate:
 - Prefer capability-based descriptions over brittle hardcoded counts/versions.
 - Keep dated milestone details in release notes, not in evergreen setup docs.
 - If behavior changes in worker orchestration, update `QUICKSTART.md`, `DEVELOPMENT.md`, and `WINDOWS_SETUP.md` together.
+
+## Plan Update (Mar 22, 2026)
+
+Functional-error remediation was applied to Phase 4 operability work:
+
+- Added lifecycle action execution endpoint with strict safety guard (dry-run only):
+  - `POST /api/v1/admin/data-lifecycle/actions/{action}`
+  - Supported actions: `archive_properties`, `archive_backend_logs`, `rollup_price_and_timeline`
+- Added backend audit logging for lifecycle dry-runs (`admin_data_lifecycle_action`) to improve operator traceability.
+- Added admin UI controls for lifecycle dry-runs and result feedback.
+- Added API and service regression coverage for lifecycle report/action flows.
+
+Validation snapshot:
+
+- Admin lifecycle focused tests pass:
+  - `tests/test_admin_service.py`
+  - `tests/test_admin_lifecycle_api.py`
+
+Remaining Phase 4 implementation track:
+
+1. Keep destructive execution disabled until explicit feature flag and rollback strategy are implemented.
+
+Progress update:
+
+- Completed lifecycle action history visibility:
+  - `GET /api/v1/admin/data-lifecycle/history`
+  - Admin UI now shows recent lifecycle run timeline from backend logs.
+- Added lifecycle history API regression test coverage (`tests/test_admin_lifecycle_api.py`).
+- Completed scheduled execution metadata visibility:
+  - `GET /api/v1/admin/data-lifecycle/schedule`
+  - Admin UI now shows cadence and policy metadata (scrape/RSS/PPR intervals, log retention, execution mode).
+- Added lifecycle execution safety contract (feature-flag + rollback prerequisites):
+  - Config settings: `lifecycle_destructive_execution_enabled`, `lifecycle_rollback_plan_id`.
+  - Lifecycle action execution now enforces both controls before any non-dry-run request is considered.
+  - Schedule metadata now exposes `destructive_enabled`, `rollback_plan_id_configured`, and `destructive_ready` for operator readiness checks.
+  - Regression coverage added in admin service + API lifecycle tests for the new guardrails.

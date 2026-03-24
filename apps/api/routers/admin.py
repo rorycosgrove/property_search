@@ -11,16 +11,21 @@ from packages.admin.service import (
     MigrationCommandTimedOutError,
     backend_health_summary,
     backend_logs_summary,
+    data_lifecycle_schedule_metadata,
+    data_lifecycle_report,
     diagnose_listing_by_external_id,
     explain_source_quality,
     get_migration_status,
     list_backend_logs,
+    list_data_lifecycle_activity,
     list_discovery_activity,
     list_feed_activity,
     list_recent_errors,
+    run_data_lifecycle_action,
     list_source_quality_activity,
     list_source_status,
     run_database_migrations,
+    source_net_new_summary,
     source_quality_scorecards,
     source_freshness_report,
 )
@@ -64,6 +69,25 @@ def get_feed_activity(
     return list_feed_activity(db, limit=limit)
 
 
+@router.get("/logs/net-new", summary="Net-new property ingestion summary per source")
+def get_net_new_summary(
+    runs: int = Query(10, ge=1, le=100, description="Number of recent scrape runs to aggregate per source"),
+    source_id: str | None = Query(None, min_length=36, max_length=36, description="Filter to a single source UUID"),
+    db: Session = Depends(get_db_session),
+):
+    """Return per-source net-new aggregation across recent scrape runs.
+
+    Sources with zero net-new ingestion across all sampled runs appear first,
+    flagged with ``zero_ingestion: true``.  The ``consecutive_zero_new`` and
+    ``consecutive_zero_fetch`` fields indicate *why* ingestion stalled:
+
+    - ``consecutive_zero_fetch > 0`` → upstream returned no results (cursor issue or source offline)
+    - ``consecutive_zero_new > 0`` with ``consecutive_zero_fetch == 0`` → listings are fetched but all
+      already exist (dedup / price-unchanged)
+    """
+    return source_net_new_summary(db, runs=runs, source_id=source_id)
+
+
 @router.get("/logs/sources", summary="Current source status")
 def get_source_status(db: Session = Depends(get_db_session)):
     return list_source_status(db)
@@ -78,6 +102,61 @@ def get_source_freshness(db: Session = Depends(get_db_session)):
     sources represent live data gaps.
     """
     return source_freshness_report(db)
+
+
+@router.get("/data-lifecycle/report", summary="Data lifecycle archival/rollup report")
+def get_data_lifecycle_report(
+    property_archive_days: int = Query(365, ge=30, le=3650),
+    backend_log_archive_days: int = Query(90, ge=7, le=3650),
+    rollup_days: int = Query(180, ge=30, le=3650),
+    db: Session = Depends(get_db_session),
+):
+    """Return dry-run lifecycle candidates for archival and rollup workflows."""
+    return data_lifecycle_report(
+        db,
+        property_archive_days=property_archive_days,
+        backend_log_archive_days=backend_log_archive_days,
+        rollup_days=rollup_days,
+    )
+
+
+@router.post("/data-lifecycle/actions/{action}", summary="Execute lifecycle action (guarded; dry-run by default)")
+def execute_data_lifecycle_action(
+    action: str,
+    dry_run: bool = Query(True, description="Defaults to true. non-dry-run requires feature flag + rollback controls."),
+    property_archive_days: int = Query(365, ge=30, le=3650),
+    backend_log_archive_days: int = Query(90, ge=7, le=3650),
+    rollup_days: int = Query(180, ge=30, le=3650),
+    db: Session = Depends(get_db_session),
+):
+    try:
+        return run_data_lifecycle_action(
+            db,
+            action=action,
+            queue_settings=settings,
+            dry_run=dry_run,
+            property_archive_days=property_archive_days,
+            backend_log_archive_days=backend_log_archive_days,
+            rollup_days=rollup_days,
+        )
+    except AdminServiceError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@router.get("/data-lifecycle/history", summary="Recent lifecycle action history")
+def get_data_lifecycle_history(
+    hours: int = Query(168, ge=1, le=720),
+    limit: int = Query(50, ge=1, le=500),
+    db: Session = Depends(get_db_session),
+):
+    return list_data_lifecycle_activity(db, hours=hours, limit=limit)
+
+
+@router.get("/data-lifecycle/schedule", summary="Lifecycle schedule and policy metadata")
+def get_data_lifecycle_schedule(
+    db: Session = Depends(get_db_session),
+):
+    return data_lifecycle_schedule_metadata(db, queue_settings=settings)
 
 
 @router.get("/logs/discovery", summary="Recent discovery activity")
@@ -199,9 +278,18 @@ def get_backend_health_summary(db: Session = Depends(get_db_session)):
 def get_recent_errors(
     level: str | None = Query(None, description="Optional log level filter, e.g. ERROR or WARNING"),
     limit: int = Query(25, ge=1, le=200),
+    include_non_actionable: bool = Query(
+        False,
+        description="Include expected/non-actionable external-block warnings in results",
+    ),
     db: Session = Depends(get_db_session),
 ):
-    return list_recent_errors(db, level=level, limit=limit)
+    return list_recent_errors(
+        db,
+        level=level,
+        limit=limit,
+        include_non_actionable=include_non_actionable,
+    )
 
 
 @router.get("/listings/{external_id}/diagnose", summary="Diagnose why a listing was missed")

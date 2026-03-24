@@ -8,16 +8,23 @@ from sqlalchemy.orm import Session
 from packages.properties.service import (
     PropertyNotFoundError,
     PropertyValidationError,
+    get_intelligence_payload,
     get_price_history_payload,
     get_property_payload,
     get_similar_payload,
     get_timeline_payload,
     list_properties_payload,
 )
+from packages.properties.service import get_brief_payload
 from packages.shared.constants import DEFAULT_PAGE_SIZE, MAX_PAGE_SIZE
 from packages.shared.schemas import PropertyListResponse, PropertyResponse, PropertyTimelineEventResponse
 from packages.storage.database import get_db_session
-from packages.storage.repositories import PriceHistoryRepository, PropertyRepository, PropertyTimelineRepository
+from packages.storage.repositories import (
+    PriceHistoryRepository,
+    PropertyDocumentRepository,
+    PropertyRepository,
+    PropertyTimelineRepository,
+)
 
 router = APIRouter()
 
@@ -114,5 +121,45 @@ def get_similar(
     repo = PropertyRepository(db)
     try:
         return get_similar_payload(repo=repo, property_id=property_id, limit=limit)
+    except PropertyNotFoundError as exc:
+        raise HTTPException(status_code=404, detail="Property not found") from exc
+
+
+@router.get("/{property_id}/intelligence")
+def get_intelligence(
+    property_id: str = Path(..., min_length=1, max_length=36),
+    db: Session = Depends(get_db_session),
+):
+    """Consolidated property intelligence: listing + price history + timeline + RAG documents."""
+    try:
+        return get_intelligence_payload(
+            property_repo=PropertyRepository(db),
+            price_history_repo=PriceHistoryRepository(db),
+            timeline_repo=PropertyTimelineRepository(db),
+            document_repo=PropertyDocumentRepository(db),
+            property_id=property_id,
+        )
+    except PropertyNotFoundError as exc:
+        raise HTTPException(status_code=404, detail="Property not found") from exc
+
+
+@router.get("/{property_id}/brief")
+def get_brief(
+    property_id: str = Path(..., min_length=1, max_length=36),
+    db: Session = Depends(get_db_session),
+):
+    """Generate a structured decision brief for a single property.
+
+    Combines listing detail, price history, AI enrichment, and risk flags
+    suitable for saving, sharing, or printing.
+    """
+    try:
+        return get_brief_payload(
+            property_repo=PropertyRepository(db),
+            price_history_repo=PriceHistoryRepository(db),
+            timeline_repo=PropertyTimelineRepository(db),
+            document_repo=PropertyDocumentRepository(db),
+            property_id=property_id,
+        )
     except PropertyNotFoundError as exc:
         raise HTTPException(status_code=404, detail="Property not found") from exc

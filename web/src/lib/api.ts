@@ -183,6 +183,7 @@ export interface Property {
   llm_value_score?: number;
   eligible_grants_total?: number;
   net_price?: number;
+  enrichment?: LLMEnrichment;
 }
 
 export interface PropertyListResponse {
@@ -265,6 +266,102 @@ export async function getPropertyTimeline(id: string, limit = 50): Promise<Prope
 
 export async function getSimilarProperties(id: string, limit = 5): Promise<Property[]> {
   return fetchJSON<Property[]>(`/api/v1/properties/${id}/similar?limit=${limit}`);
+}
+
+// ── Property Intelligence ────────────────────────────────────────────────────
+
+export interface PropertyDocumentSummary {
+  document_key: string;
+  document_type: string;
+  title: string | null;
+  effective_at: string | null;
+  county: string | null;
+}
+
+export interface PropertyIntelligence {
+  property_id: string;
+  listing: Property;
+  price_history: PriceHistoryEntry[];
+  timeline: PropertyTimelineEvent[];
+  documents: PropertyDocumentSummary[];
+  completeness_score: number;
+  data_sources: {
+    price_history_entries: number;
+    timeline_events: number;
+    rag_documents: number;
+  };
+}
+
+export async function getPropertyIntelligence(id: string): Promise<PropertyIntelligence> {
+  return fetchJSON<PropertyIntelligence>(`/api/v1/properties/${id}/intelligence`);
+}
+
+// ── Discovery feed ───────────────────────────────────────────────────────────
+
+export type SignalType = 'price_drop' | 'high_value' | 'stale' | 'new_listing';
+
+export interface DiscoverySignal {
+  signal_type: SignalType;
+  severity: 'high' | 'medium' | 'low';
+  property_id: string;
+  title: string;
+  address: string;
+  county?: string;
+  price?: number;
+  url: string;
+  image_url?: string;
+  status: string;
+  created_at: string;
+  headline: string;
+  detail: string;
+  // signal-specific extras
+  value_score?: number;
+  days_on_market?: number;
+}
+
+export async function getDiscoveryFeed(limit = 20): Promise<DiscoverySignal[]> {
+  return fetchJSON<DiscoverySignal[]>(`/api/v1/discovery/feed?limit=${limit}`);
+}
+
+// ── Property brief ───────────────────────────────────────────────────────────
+
+export interface PropertyBrief {
+  property_id: string;
+  generated_at: string;
+  completeness_score: number;
+  listing: {
+    title?: string;
+    address?: string;
+    county?: string;
+    price?: number;
+    net_price?: number;
+    eligible_grants_total?: number;
+    bedrooms?: number;
+    bathrooms?: number;
+    floor_area_sqm?: number;
+    ber_rating?: string;
+    property_type?: string;
+    status?: string;
+    url?: string;
+  };
+  ai_analysis: {
+    summary?: string;
+    value_score?: number;
+    value_reasoning?: string;
+    pros: string[];
+    cons: string[];
+    neighbourhood_notes?: string;
+    investment_potential?: string;
+  };
+  price_history_summary: { date: string; price: number; change_pct: number }[];
+  timeline_event_count: number;
+  evidence_document_count: number;
+  risk_flags: string[];
+  data_sources: { price_history_entries: number; timeline_events: number; rag_documents: number };
+}
+
+export async function getPropertyBrief(id: string): Promise<PropertyBrief> {
+  return fetchJSON<PropertyBrief>(`/api/v1/properties/${id}/brief`);
 }
 
 // ── Sold Properties ─────────────────────────────────────────────────────────
@@ -631,6 +728,15 @@ export async function triggerScrape(
   );
 }
 
+export async function resetSourceCursor(
+  sourceId: string,
+): Promise<{ cursor_reset: boolean; source_id: string; adapter_name: string; source_name: string }> {
+  return fetchJSON<{ cursor_reset: boolean; source_id: string; adapter_name: string; source_name: string }>(
+    `/api/v1/sources/${sourceId}/reset-cursor`,
+    { method: 'POST' },
+  );
+}
+
 export interface SourceDiscoveryRunResult {
   run_at?: string;
   created: Source[];
@@ -739,7 +845,24 @@ export interface BackendFeedActivity {
   skipped: number;
   total_fetched: number;
   geocode_success_rate?: number;
+  existing_by_external_id?: number;
+  existing_by_content_hash?: number;
+  zero_fetch_reason?: string | null;
   status: string;
+}
+
+export interface SourceNetNewSummaryItem {
+  source_id: string;
+  source_name?: string;
+  runs_sampled: number;
+  total_new: number;
+  total_updated: number;
+  total_fetched: number;
+  consecutive_zero_new: number;
+  consecutive_zero_fetch: number;
+  zero_ingestion: boolean;
+  last_zero_fetch_reason?: string | null;
+  last_run_at?: string;
 }
 
 export interface BackendSourceStatus {
@@ -782,6 +905,67 @@ export interface BackendHealthSummary {
   };
 }
 
+export interface DataLifecycleReport {
+  checked_at: string;
+  cutoffs: {
+    property_archive_before: string;
+    backend_log_archive_before: string;
+    rollup_before: string;
+  };
+  candidates: {
+    property_archive: number;
+    backend_log_archive: number;
+    price_history_rollup: number;
+    timeline_rollup: number;
+  };
+  actions: Array<{
+    id: string;
+    description: string;
+    dry_run: boolean;
+  }>;
+}
+
+export interface DataLifecycleActionResult {
+  status: string;
+  action: string;
+  dry_run: boolean;
+  executed_at: string;
+  affected_candidates: number;
+  report: DataLifecycleReport;
+}
+
+export interface DataLifecycleHistoryEntry {
+  id: string;
+  timestamp?: string;
+  level: string;
+  event_type: string;
+  component: string;
+  source_id?: string;
+  message: string;
+  context: Record<string, unknown>;
+}
+
+export interface DataLifecycleScheduleMetadata {
+  checked_at: string;
+  execution_mode: {
+    destructive_enabled: boolean;
+    dry_run_only: boolean;
+    note: string;
+  };
+  cadence: {
+    source_scrape_interval_seconds: number;
+    rss_poll_interval_seconds: number;
+    ppr_poll_interval_seconds: number;
+    lifecycle_action_trigger: string;
+  };
+  policy: {
+    backend_log_retention_days: number;
+    default_property_archive_days: number;
+    default_rollup_days: number;
+  };
+  last_lifecycle_run: DataLifecycleHistoryEntry | null;
+}
+
 export interface BackendLogEntry {
   id: string;
   timestamp?: string;
@@ -821,6 +1005,15 @@ export async function getBackendFeedActivity(limit = 10): Promise<BackendFeedAct
   return fetchJSON<BackendFeedActivity[]>(`/api/v1/admin/logs/feed-activity?limit=${limit}`);
 }
 
+export async function getSourceNetNewSummary(
+  runs = 10,
+  sourceId?: string,
+): Promise<SourceNetNewSummaryItem[]> {
+  const params = new URLSearchParams({ runs: String(runs) });
+  if (sourceId) params.set('source_id', sourceId);
+  return fetchJSON<SourceNetNewSummaryItem[]>(`/api/v1/admin/logs/net-new?${params.toString()}`);
+}
+
 export async function getBackendSourceStatus(): Promise<BackendSourceStatus[]> {
   return fetchJSON<BackendSourceStatus[]>('/api/v1/admin/logs/sources');
 }
@@ -831,6 +1024,76 @@ export async function getBackendDiscoveryActivity(limit = 5): Promise<BackendDis
 
 export async function getBackendHealthSummary(): Promise<BackendHealthSummary> {
   return fetchJSON<BackendHealthSummary>('/api/v1/admin/logs/health');
+}
+
+export async function getDataLifecycleReport(options?: {
+  propertyArchiveDays?: number;
+  backendLogArchiveDays?: number;
+  rollupDays?: number;
+}): Promise<DataLifecycleReport> {
+  const params = new URLSearchParams();
+  if (options?.propertyArchiveDays !== undefined) {
+    params.set('property_archive_days', String(options.propertyArchiveDays));
+  }
+  if (options?.backendLogArchiveDays !== undefined) {
+    params.set('backend_log_archive_days', String(options.backendLogArchiveDays));
+  }
+  if (options?.rollupDays !== undefined) {
+    params.set('rollup_days', String(options.rollupDays));
+  }
+  const suffix = params.toString();
+  const path = suffix
+    ? `/api/v1/admin/data-lifecycle/report?${suffix}`
+    : '/api/v1/admin/data-lifecycle/report';
+  return fetchJSON<DataLifecycleReport>(path);
+}
+
+export async function runDataLifecycleAction(
+  action: 'archive_properties' | 'archive_backend_logs' | 'rollup_price_and_timeline',
+  options?: {
+    dryRun?: boolean;
+    propertyArchiveDays?: number;
+    backendLogArchiveDays?: number;
+    rollupDays?: number;
+  },
+): Promise<DataLifecycleActionResult> {
+  const params = new URLSearchParams();
+  params.set('dry_run', String(options?.dryRun ?? true));
+  if (options?.propertyArchiveDays !== undefined) {
+    params.set('property_archive_days', String(options.propertyArchiveDays));
+  }
+  if (options?.backendLogArchiveDays !== undefined) {
+    params.set('backend_log_archive_days', String(options.backendLogArchiveDays));
+  }
+  if (options?.rollupDays !== undefined) {
+    params.set('rollup_days', String(options.rollupDays));
+  }
+  return fetchJSON<DataLifecycleActionResult>(
+    `/api/v1/admin/data-lifecycle/actions/${action}?${params.toString()}`,
+    { method: 'POST' },
+  );
+}
+
+export async function getDataLifecycleHistory(options?: {
+  hours?: number;
+  limit?: number;
+}): Promise<DataLifecycleHistoryEntry[]> {
+  const params = new URLSearchParams();
+  if (options?.hours !== undefined) {
+    params.set('hours', String(options.hours));
+  }
+  if (options?.limit !== undefined) {
+    params.set('limit', String(options.limit));
+  }
+  const suffix = params.toString();
+  const path = suffix
+    ? `/api/v1/admin/data-lifecycle/history?${suffix}`
+    : '/api/v1/admin/data-lifecycle/history';
+  return fetchJSON<DataLifecycleHistoryEntry[]>(path);
+}
+
+export async function getDataLifecycleScheduleMetadata(): Promise<DataLifecycleScheduleMetadata> {
+  return fetchJSON<DataLifecycleScheduleMetadata>('/api/v1/admin/data-lifecycle/schedule');
 }
 
 export async function getBackendRecentErrors(

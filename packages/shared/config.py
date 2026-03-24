@@ -91,6 +91,16 @@ class Settings(BaseSettings):
     enable_tracing: bool = False
     backend_log_retention_days: int = 7
 
+    # ── Admin lifecycle execution controls ────────
+    lifecycle_destructive_execution_enabled: bool = False
+    lifecycle_rollback_plan_id: str = ""
+
+    # ── Product quality gates (Phase 0) ───────────
+    quality_gate_chat_citation_coverage_min: float = 0.8
+    quality_gate_chat_p95_latency_ms_max: int = 4500
+    quality_gate_backend_errors_last_hour_max: int = 25
+    quality_gate_min_assistant_messages_sample: int = 10
+
     @model_validator(mode="after")
     def _resolve_secrets(self) -> Settings:
         """Fetch DB credentials from Secrets Manager when running in Lambda."""

@@ -60,8 +60,8 @@ def _record_backend_event(
 def list_sources(db: Session = Depends(get_db_session)):
     """List all configured sources."""
     repo = SourceRepository(db)
-    sources = repo.get_all()
-    return [source_to_dict(source) for source in sources]
+    sources_with_counts = repo.get_all_with_listing_counts()
+    return [source_to_dict(source, listing_count=listing_count) for source, listing_count in sources_with_counts]
 
 
 @router.post("", status_code=201)
@@ -241,6 +241,34 @@ def approve_discovered_source(source_id: str, db: Session = Depends(get_db_sessi
         )
     except SourceNotFoundError as exc:
         raise HTTPException(404, "Source not found") from exc
+
+
+@router.post("/{source_id}/reset-cursor")
+def reset_source_cursor(source_id: str, db: Session = Depends(get_db_session)):
+    """Reset the ingestion cursor for a source.
+
+    Removes stored cursor keys (recent_listing_ids, last_publish_ts_ms,
+    cursor_updated_at) from the source config so the next scrape performs a
+    full re-fetch.  Safe to call at any time; idempotent if the cursor is
+    already absent.
+    """
+    repo = SourceRepository(db)
+    source = repo.reset_cursor(source_id)
+    if not source:
+        raise HTTPException(404, "Source not found")
+    _record_backend_event(
+        db,
+        event_type="source_cursor_reset",
+        message=f"Cursor manually reset for source {source.name}",
+        source_id=source_id,
+        context={"source_name": source.name, "adapter_name": source.adapter_name},
+    )
+    return {
+        "source_id": source_id,
+        "cursor_reset": True,
+        "adapter_name": source.adapter_name,
+        "source_name": source.name,
+    }
 
 
 @router.get("/trigger-all/history")

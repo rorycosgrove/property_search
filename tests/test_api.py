@@ -65,6 +65,58 @@ class TestHealthEndpoint:
         finally:
             app.dependency_overrides.clear()
 
+    def test_quality_gates_pass(self, client):
+        from packages.storage.database import get_db_session
+
+        mock_session = MagicMock()
+        app.dependency_overrides[get_db_session] = lambda: mock_session
+
+        try:
+            with patch("apps.api.routers.health.BackendLogRepository") as MockBackendRepo:
+                with patch("apps.api.routers.health.ConversationRepository") as MockConvoRepo:
+                    MockBackendRepo.return_value.count_recent_errors.return_value = 2
+                    MockConvoRepo.return_value.assistant_message_quality_snapshot.return_value = {
+                        "sample_size": 24,
+                        "citation_coverage": 0.92,
+                        "p95_latency_ms": 1800,
+                    }
+
+                    resp = client.get("/api/v1/health/quality-gates")
+
+            assert resp.status_code == 200
+            data = resp.json()
+            assert data["status"] == "pass"
+            assert len(data["metrics"]) == 3
+            assert all(metric["status"] == "pass" for metric in data["metrics"])
+        finally:
+            app.dependency_overrides.clear()
+
+    def test_quality_gates_warn_on_low_sample(self, client):
+        from packages.storage.database import get_db_session
+
+        mock_session = MagicMock()
+        app.dependency_overrides[get_db_session] = lambda: mock_session
+
+        try:
+            with patch("apps.api.routers.health.BackendLogRepository") as MockBackendRepo:
+                with patch("apps.api.routers.health.ConversationRepository") as MockConvoRepo:
+                    MockBackendRepo.return_value.count_recent_errors.return_value = 1
+                    MockConvoRepo.return_value.assistant_message_quality_snapshot.return_value = {
+                        "sample_size": 2,
+                        "citation_coverage": 1.0,
+                        "p95_latency_ms": 300,
+                    }
+
+                    resp = client.get("/api/v1/health/quality-gates")
+
+            assert resp.status_code == 200
+            data = resp.json()
+            assert data["status"] == "warn"
+            warn_metrics = [metric for metric in data["metrics"] if metric["status"] == "warn"]
+            assert len(warn_metrics) == 2
+        finally:
+            app.dependency_overrides.clear()
+
 
 class TestAdminLogsEndpoint:
     def test_get_backend_logs(self, client):
@@ -130,6 +182,34 @@ class TestAdminLogsEndpoint:
                 assert data["total"] == 3
                 assert data["by_level"][0]["level"] == "ERROR"
                 mock_summary.assert_called_once_with(mock_session, hours=24)
+        finally:
+            app.dependency_overrides.clear()
+
+    def test_get_recent_errors_passes_include_non_actionable_flag(self, client):
+        from packages.storage.database import get_db_session
+
+        mock_session = MagicMock()
+        app.dependency_overrides[get_db_session] = lambda: mock_session
+
+        try:
+            with patch(
+                "apps.api.routers.admin.list_recent_errors",
+                return_value=[{"id": "log-1", "event_type": "scrape_source_failed"}],
+            ) as mock_list:
+                resp = client.get(
+                    "/api/v1/admin/logs/recent-errors?level=WARNING&limit=5&include_non_actionable=true"
+                )
+
+                assert resp.status_code == 200
+                data = resp.json()
+                assert len(data) == 1
+                assert data[0]["id"] == "log-1"
+                mock_list.assert_called_once_with(
+                    mock_session,
+                    level="WARNING",
+                    limit=5,
+                    include_non_actionable=True,
+                )
         finally:
             app.dependency_overrides.clear()
 
@@ -466,6 +546,44 @@ class TestAdminLogsEndpoint:
             app.dependency_overrides.clear()
 
 
+    def test_get_net_new_summary_returns_per_source_aggregation(self, client):
+        from packages.storage.database import get_db_session
+
+        mock_session = MagicMock()
+        app.dependency_overrides[get_db_session] = lambda: mock_session
+
+        try:
+            with patch(
+                "apps.api.routers.admin.source_net_new_summary",
+                return_value=[
+                    {
+                        "source_id": "src-1",
+                        "source_name": "Daft Cork",
+                        "runs_sampled": 5,
+                        "total_new": 0,
+                        "total_updated": 0,
+                        "total_fetched": 0,
+                        "consecutive_zero_new": 5,
+                        "consecutive_zero_fetch": 5,
+                        "zero_ingestion": True,
+                        "last_zero_fetch_reason": "no_results",
+                        "last_run_at": "2026-03-22T04:21:00+00:00",
+                    }
+                ],
+            ) as mock_fn:
+                resp = client.get("/api/v1/admin/logs/net-new?runs=5")
+
+            assert resp.status_code == 200
+            data = resp.json()
+            assert len(data) == 1
+            assert data[0]["source_id"] == "src-1"
+            assert data[0]["zero_ingestion"] is True
+            assert data[0]["consecutive_zero_fetch"] == 5
+            mock_fn.assert_called_once_with(mock_session, runs=5, source_id=None)
+        finally:
+            app.dependency_overrides.clear()
+
+
 class TestPropertiesEndpoint:
     def test_list_properties(self, client):
         from packages.storage.database import get_db_session
@@ -596,6 +714,7 @@ class TestPropertiesEndpoint:
 class TestSourcesEndpoint:
     def test_list_sources(self, client):
         from packages.storage.database import get_db_session
+        from types import SimpleNamespace
 
         mock_session = MagicMock()
         app.dependency_overrides[get_db_session] = lambda: mock_session
@@ -603,9 +722,31 @@ class TestSourcesEndpoint:
         try:
             with patch("apps.api.routers.sources.SourceRepository") as MockRepo:
                 instance = MockRepo.return_value
-                instance.get_all.return_value = []
+                source = SimpleNamespace(
+                    id="source-1",
+                    name="Daft Feed",
+                    url="https://www.daft.ie/property-for-sale/dublin",
+                    adapter_type="scraper",
+                    adapter_name="daft",
+                    config={},
+                    enabled=True,
+                    poll_interval_seconds=900,
+                    tags=[],
+                    last_polled_at=None,
+                    last_success_at=None,
+                    last_error=None,
+                    error_count=0,
+                    total_listings=0,
+                    created_at=None,
+                    updated_at=None,
+                )
+                instance.get_all_with_listing_counts.return_value = [(source, 7)]
                 resp = client.get("/api/v1/sources")
                 assert resp.status_code == 200
+                data = resp.json()
+                assert len(data) == 1
+                assert data[0]["id"] == "source-1"
+                assert data[0]["total_listings"] == 7
         finally:
             app.dependency_overrides.clear()
 
@@ -1143,6 +1284,49 @@ class TestSourcesEndpoint:
         assert data["shown"] == 1
         assert data["candidates"][0]["name"] == "High"
 
+    def test_reset_cursor_returns_200_and_metadata(self, client):
+        from packages.storage.database import get_db_session
+        from types import SimpleNamespace
+
+        mock_session = MagicMock()
+        app.dependency_overrides[get_db_session] = lambda: mock_session
+
+        try:
+            with patch("apps.api.routers.sources.SourceRepository") as MockRepo:
+                repo = MockRepo.return_value
+                repo.reset_cursor.return_value = SimpleNamespace(
+                    id="src-1",
+                    name="Daft Cork",
+                    adapter_name="daft",
+                )
+
+                resp = client.post("/api/v1/sources/src-1/reset-cursor")
+
+            assert resp.status_code == 200
+            data = resp.json()
+            assert data["cursor_reset"] is True
+            assert data["source_id"] == "src-1"
+            assert data["adapter_name"] == "daft"
+        finally:
+            app.dependency_overrides.clear()
+
+    def test_reset_cursor_returns_404_when_source_missing(self, client):
+        from packages.storage.database import get_db_session
+
+        mock_session = MagicMock()
+        app.dependency_overrides[get_db_session] = lambda: mock_session
+
+        try:
+            with patch("apps.api.routers.sources.SourceRepository") as MockRepo:
+                repo = MockRepo.return_value
+                repo.reset_cursor.return_value = None
+
+                resp = client.post("/api/v1/sources/no-such-id/reset-cursor")
+
+            assert resp.status_code == 404
+        finally:
+            app.dependency_overrides.clear()
+
 
 class TestGrantsEndpoint:
     def test_list_grants(self, client):
@@ -1314,6 +1498,8 @@ class TestLLMChatEndpoint:
                         data = resp.json()
                         assert data["conversation_id"] == "conv-1"
                         assert data["assistant_message"]["content"] == "Hi there"
+                        assert data["evidence"]["policy"] == "chat_evidence_v1"
+                        assert data["evidence"]["citation_count"] == 0
         finally:
             app.dependency_overrides.clear()
 

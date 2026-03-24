@@ -5,9 +5,13 @@ import { useEffect, useMemo, useState } from 'react';
 import {
   getAlerts,
   getAnalyticsSummary,
+  getDataLifecycleHistory,
+  getDataLifecycleReport,
+  getDataLifecycleScheduleMetadata,
   getGrants,
   getHealth,
   getProperties,
+  runDataLifecycleAction,
   getSavedSearches,
   getSoldProperties,
   getSources,
@@ -51,6 +55,13 @@ const ADMIN_CARDS = [
     cta: 'Open listing repair console',
   },
   {
+    title: 'Data Lifecycle',
+    description:
+      'Inspect archival and rollup candidate counts before running retention jobs across properties, logs, and history tables.',
+    href: '/settings#data-lifecycle',
+    cta: 'Open lifecycle controls',
+  },
+  {
     title: 'System Settings',
     description:
       'Adjust runtime settings, model preferences, and operator controls used across the workspace.',
@@ -67,6 +78,16 @@ const ADMIN_CARDS = [
 ];
 
 export default function AdminPage() {
+  const [lifecycleSummary, setLifecycleSummary] = useState<string>('Loading lifecycle candidates...');
+  const [lifecycleActionStatus, setLifecycleActionStatus] = useState<string>('No lifecycle dry-run executed yet.');
+  const [lifecycleActionBusy, setLifecycleActionBusy] = useState<string | null>(null);
+  const [lifecycleHistory, setLifecycleHistory] = useState<Array<{
+    id: string;
+    timestamp?: string;
+    message: string;
+    context: Record<string, unknown>;
+  }>>([]);
+  const [lifecycleScheduleNote, setLifecycleScheduleNote] = useState<string>('Loading schedule metadata...');
   const [checks, setChecks] = useState<EndpointCheck[]>([
     { key: 'health', label: 'Platform health', route: '/admin', state: 'loading', detail: 'Checking...' },
     { key: 'properties', label: 'Properties domain', route: '/workspace', state: 'loading', detail: 'Checking...' },
@@ -76,6 +97,7 @@ export default function AdminPage() {
     { key: 'alerts', label: 'Alerts domain', route: '/alerts', state: 'loading', detail: 'Checking...' },
     { key: 'saved', label: 'Saved searches', route: '/saved-searches', state: 'loading', detail: 'Checking...' },
     { key: 'sources', label: 'Sources operations', route: '/sources', state: 'loading', detail: 'Checking...' },
+    { key: 'lifecycle', label: 'Data lifecycle', route: '/settings#data-lifecycle', state: 'loading', detail: 'Checking...' },
   ]);
 
   useEffect(() => {
@@ -91,6 +113,9 @@ export default function AdminPage() {
         getAlerts({ size: 1 }),
         getSavedSearches(),
         getSources(),
+        getDataLifecycleReport(),
+        getDataLifecycleHistory({ hours: 168, limit: 8 }),
+        getDataLifecycleScheduleMetadata(),
       ]);
 
       if (cancelled) {
@@ -170,7 +195,45 @@ export default function AdminPage() {
             ? `${results[7].value.length} configured sources`
             : 'sources endpoint failed',
         },
+        {
+          key: 'lifecycle',
+          label: 'Data lifecycle',
+          route: '/settings#data-lifecycle',
+          state: results[8].status === 'fulfilled' ? 'ok' : 'error',
+          detail: results[8].status === 'fulfilled'
+            ? `${results[8].value.candidates.property_archive} archive · ${results[8].value.candidates.price_history_rollup} rollup`
+            : 'lifecycle endpoint failed',
+        },
       ];
+
+      if (results[8].status === 'fulfilled') {
+        const c = results[8].value.candidates;
+        setLifecycleSummary(
+          `${c.property_archive.toLocaleString()} properties, ${c.backend_log_archive.toLocaleString()} logs, ${c.price_history_rollup.toLocaleString()} price history rows, and ${c.timeline_rollup.toLocaleString()} timeline rows currently eligible.`
+        );
+      } else {
+        setLifecycleSummary('Unable to load lifecycle candidate counts.');
+      }
+
+      if (results[9].status === 'fulfilled') {
+        setLifecycleHistory(results[9].value.map((row) => ({
+          id: row.id,
+          timestamp: row.timestamp,
+          message: row.message,
+          context: row.context,
+        })));
+      } else {
+        setLifecycleHistory([]);
+      }
+
+      if (results[10].status === 'fulfilled') {
+        const meta = results[10].value;
+        setLifecycleScheduleNote(
+          `Cadence: scrape ${meta.cadence.source_scrape_interval_seconds}s, RSS ${meta.cadence.rss_poll_interval_seconds}s, PPR ${meta.cadence.ppr_poll_interval_seconds}s · retention ${meta.policy.backend_log_retention_days}d logs · mode: ${meta.execution_mode.dry_run_only ? 'dry-run only' : 'destructive enabled'}`
+        );
+      } else {
+        setLifecycleScheduleNote('Unable to load lifecycle scheduling metadata.');
+      }
 
       setChecks(next);
     };
@@ -188,6 +251,29 @@ export default function AdminPage() {
     const errored = checks.filter((item) => item.state === 'error').length;
     return { ok, errored, total: checks.length };
   }, [checks]);
+
+  const runLifecycleDryRun = async (
+    action: 'archive_properties' | 'archive_backend_logs' | 'rollup_price_and_timeline',
+  ) => {
+    setLifecycleActionBusy(action);
+    try {
+      const result = await runDataLifecycleAction(action, { dryRun: true });
+      setLifecycleActionStatus(
+        `${result.action} dry-run complete: ${result.affected_candidates.toLocaleString()} candidates.`
+      );
+      const history = await getDataLifecycleHistory({ hours: 168, limit: 8 });
+      setLifecycleHistory(history.map((row) => ({
+        id: row.id,
+        timestamp: row.timestamp,
+        message: row.message,
+        context: row.context,
+      })));
+    } catch {
+      setLifecycleActionStatus(`${action} dry-run failed. Check backend logs.`);
+    } finally {
+      setLifecycleActionBusy(null);
+    }
+  };
 
   return (
     <div className="page-shell page-shell-wide rise-in">
@@ -241,6 +327,67 @@ export default function AdminPage() {
               </Link>
             </article>
           ))}
+        </div>
+      </section>
+
+      <section className="mt-6 rounded-2xl border border-[var(--card-border)] bg-[var(--card-bg)]/85 p-5">
+        <p className="text-[11px] uppercase tracking-[0.14em] text-[var(--muted)]">Lifecycle preview</p>
+        <h2 className="mt-1 text-2xl">Retention dry-run snapshot</h2>
+        <p className="mt-2 max-w-4xl text-sm leading-6 text-[var(--muted)]">{lifecycleSummary}</p>
+        <p className="mt-2 text-xs text-[var(--muted)]">{lifecycleActionStatus}</p>
+        <p className="mt-1 text-xs text-[var(--muted)]">{lifecycleScheduleNote}</p>
+        <div className="mt-3 flex flex-wrap gap-2">
+          <button
+            type="button"
+            onClick={() => runLifecycleDryRun('archive_properties')}
+            disabled={lifecycleActionBusy !== null}
+            className="rounded-full border border-[var(--card-border)] bg-[var(--card-bg)] px-3 py-1.5 text-xs font-medium text-[var(--foreground)] transition-colors hover:border-[var(--accent)] disabled:opacity-60"
+          >
+            {lifecycleActionBusy === 'archive_properties' ? 'Running…' : 'Dry-run archive properties'}
+          </button>
+          <button
+            type="button"
+            onClick={() => runLifecycleDryRun('archive_backend_logs')}
+            disabled={lifecycleActionBusy !== null}
+            className="rounded-full border border-[var(--card-border)] bg-[var(--card-bg)] px-3 py-1.5 text-xs font-medium text-[var(--foreground)] transition-colors hover:border-[var(--accent)] disabled:opacity-60"
+          >
+            {lifecycleActionBusy === 'archive_backend_logs' ? 'Running…' : 'Dry-run archive logs'}
+          </button>
+          <button
+            type="button"
+            onClick={() => runLifecycleDryRun('rollup_price_and_timeline')}
+            disabled={lifecycleActionBusy !== null}
+            className="rounded-full border border-[var(--card-border)] bg-[var(--card-bg)] px-3 py-1.5 text-xs font-medium text-[var(--foreground)] transition-colors hover:border-[var(--accent)] disabled:opacity-60"
+          >
+            {lifecycleActionBusy === 'rollup_price_and_timeline' ? 'Running…' : 'Dry-run rollup history'}
+          </button>
+        </div>
+        <Link href="/settings#data-lifecycle" className="mt-3 inline-flex text-sm font-medium text-[var(--accent-strong)] hover:underline">
+          Open lifecycle settings
+        </Link>
+
+        <div className="mt-5 rounded-xl border border-[var(--card-border)] bg-[var(--background)]/55 p-3">
+          <p className="text-[11px] uppercase tracking-[0.14em] text-[var(--muted)]">Recent lifecycle runs</p>
+          {lifecycleHistory.length === 0 ? (
+            <p className="mt-2 text-xs text-[var(--muted)]">No lifecycle actions recorded in the selected lookback.</p>
+          ) : (
+            <ul className="mt-2 space-y-2">
+              {lifecycleHistory.map((entry) => {
+                const action = typeof entry.context.action === 'string' ? entry.context.action : 'unknown';
+                const affected = typeof entry.context.affected_candidates === 'number'
+                  ? entry.context.affected_candidates
+                  : Number(entry.context.affected_candidates ?? 0);
+                return (
+                  <li key={entry.id} className="rounded-lg border border-[var(--card-border)] bg-[var(--card-bg)] px-3 py-2">
+                    <p className="text-xs font-medium">{action}</p>
+                    <p className="text-[11px] text-[var(--muted)]">
+                      {entry.timestamp ? new Date(entry.timestamp).toLocaleString() : 'unknown time'} · {affected.toLocaleString()} candidates
+                    </p>
+                  </li>
+                );
+              })}
+            </ul>
+          )}
         </div>
       </section>
 

@@ -1,7 +1,9 @@
 import type { Metadata } from 'next';
 import { Space_Grotesk, Syne } from 'next/font/google';
 import './globals.css';
+import BottomNav from '@/components/BottomNav';
 import TopNav from '@/components/TopNav';
+import AlertStream from '@/components/AlertStream';
 
 const syne = Syne({
   subsets: ['latin'],
@@ -39,6 +41,8 @@ export default function RootLayout({
             <TopNav />
           </header>
           <main className="flex-1 pb-20 lg:pb-0">{children}</main>
+          <BottomNav />
+          <AlertStream />
         </div>
       </body>
     </html>

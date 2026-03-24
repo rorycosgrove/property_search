@@ -424,6 +424,23 @@ class HealthResponse(BaseModel):
     backend_errors_last_hour: int | None = None
 
 
+class QualityGateMetric(BaseModel):
+    key: str
+    label: str
+    actual: float | int | None = None
+    target: float | int
+    comparator: str
+    status: str
+    sample_size: int | None = None
+    note: str | None = None
+
+
+class QualityGatesResponse(BaseModel):
+    status: str
+    evaluated_at: datetime
+    metrics: list[QualityGateMetric] = Field(default_factory=list)
+
+
 class AdapterInfo(BaseModel):
     """Information about an available source adapter."""
     name: str
@@ -536,6 +553,8 @@ class ChatTurnResponse(BaseModel):
     conversation_id: str
     user_message: ConversationMessageResponse
     assistant_message: ConversationMessageResponse
+    retrieval_context: dict[str, Any] = Field(default_factory=dict)
+    evidence: dict[str, Any] = Field(default_factory=dict)
 
 
 class CompareWeights(BaseModel):
