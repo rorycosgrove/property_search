@@ -728,6 +728,15 @@ export async function triggerScrape(
   );
 }
 
+export async function resetSourceCursor(
+  sourceId: string,
+): Promise<{ cursor_reset: boolean; source_id: string; adapter_name: string; source_name: string }> {
+  return fetchJSON<{ cursor_reset: boolean; source_id: string; adapter_name: string; source_name: string }>(
+    `/api/v1/sources/${sourceId}/reset-cursor`,
+    { method: 'POST' },
+  );
+}
+
 export interface SourceDiscoveryRunResult {
   run_at?: string;
   created: Source[];
@@ -836,7 +845,24 @@ export interface BackendFeedActivity {
   skipped: number;
   total_fetched: number;
   geocode_success_rate?: number;
+  existing_by_external_id?: number;
+  existing_by_content_hash?: number;
+  zero_fetch_reason?: string | null;
   status: string;
+}
+
+export interface SourceNetNewSummaryItem {
+  source_id: string;
+  source_name?: string;
+  runs_sampled: number;
+  total_new: number;
+  total_updated: number;
+  total_fetched: number;
+  consecutive_zero_new: number;
+  consecutive_zero_fetch: number;
+  zero_ingestion: boolean;
+  last_zero_fetch_reason?: string | null;
+  last_run_at?: string;
 }
 
 export interface BackendSourceStatus {
@@ -977,6 +1003,15 @@ export async function getBackendLogs(options?: {
 
 export async function getBackendFeedActivity(limit = 10): Promise<BackendFeedActivity[]> {
   return fetchJSON<BackendFeedActivity[]>(`/api/v1/admin/logs/feed-activity?limit=${limit}`);
+}
+
+export async function getSourceNetNewSummary(
+  runs = 10,
+  sourceId?: string,
+): Promise<SourceNetNewSummaryItem[]> {
+  const params = new URLSearchParams({ runs: String(runs) });
+  if (sourceId) params.set('source_id', sourceId);
+  return fetchJSON<SourceNetNewSummaryItem[]>(`/api/v1/admin/logs/net-new?${params.toString()}`);
 }
 
 export async function getBackendSourceStatus(): Promise<BackendSourceStatus[]> {

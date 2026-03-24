@@ -126,7 +126,8 @@ def _find_existing_source_by_canonical_url(
     return None
 
 
-def source_to_dict(source: Any) -> dict[str, Any]:
+def source_to_dict(source: Any, *, listing_count: int | None = None) -> dict[str, Any]:
+    total_listings = source.total_listings if listing_count is None else int(listing_count)
     return {
         "id": str(source.id),
         "name": source.name,
@@ -141,7 +142,7 @@ def source_to_dict(source: Any) -> dict[str, Any]:
         "last_success_at": source.last_success_at.isoformat() if source.last_success_at else None,
         "last_error": source.last_error,
         "error_count": source.error_count,
-        "total_listings": source.total_listings,
+        "total_listings": total_listings,
         "created_at": source.created_at.isoformat() if source.created_at else None,
         "updated_at": source.updated_at.isoformat() if source.updated_at else None,
     }

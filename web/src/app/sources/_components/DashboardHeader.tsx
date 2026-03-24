@@ -142,6 +142,7 @@ export function DashboardHeader(props: Props) {
         {tabButton(props.activeTab, props.setActiveTab, 'sources', 'Sources', props.sourceCountForTab)}
         {tabButton(props.activeTab, props.setActiveTab, 'activity', 'Activity', props.activityCountForTab)}
         {tabButton(props.activeTab, props.setActiveTab, 'history', 'History', props.historyCountForTab)}
+        {tabButton(props.activeTab, props.setActiveTab, 'ingest', 'Ingest Health')}
       </div>
 
       <div className="mt-3 h-1.5 w-full rounded-full bg-[var(--card-border)] overflow-hidden">

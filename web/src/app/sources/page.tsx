@@ -11,16 +11,20 @@ import {
   getAdapters,
   triggerFullOrganicSearch,
   triggerScrape,
+  resetSourceCursor,
+  getSourceNetNewSummary,
   type BackendLogEntry,
   type OrganicSearchHistoryItem,
   type AdapterInfo,
   type Source,
+  type SourceNetNewSummaryItem,
 } from '@/lib/api';
 import { DashboardHeader } from './_components/DashboardHeader';
 import { OverviewTab } from './_components/OverviewTab';
 import { SourcesTableTab } from './_components/SourcesTableTab';
 import { ActivityTab } from './_components/ActivityTab';
 import { HistoryTab } from './_components/HistoryTab';
+import { IngestHealthTab } from './_components/IngestHealthTab';
 import type { SourceSort, SourceStatusFilter, SourcesTab } from './_components/types';
 import { LoadingBlock, LoadingRows } from '@/components/LoadingState';
 
@@ -58,6 +62,8 @@ export default function SourcesPage() {
   const [approvingSelected, setApprovingSelected] = useState(false);
 
   const [pendingDiscovered, setPendingDiscovered] = useState<Source[]>([]);
+  const [netNewSummary, setNetNewSummary] = useState<SourceNetNewSummaryItem[]>([]);
+  const [netNewError, setNetNewError] = useState<string | null>(null);
   const [selectedSourceIds, setSelectedSourceIds] = useState<string[]>([]);
   const [selectedPendingIds, setSelectedPendingIds] = useState<string[]>([]);
 
@@ -226,12 +232,14 @@ export default function SourcesPage() {
         adaptersResult,
         historyResult,
         logsResult,
+        netNewResult,
       ] = await Promise.allSettled([
         getSources(),
         getPendingDiscoveredSources(),
         getAdapters(),
         getOrganicSearchHistory(20),
         getBackendLogs({ hours: 72, limit: 80 }),
+        getSourceNetNewSummary(20),
       ]);
 
       if (sourcesResult.status === 'fulfilled') {
@@ -275,6 +283,15 @@ export default function SourcesPage() {
       }
 
       setLastRefreshedAt(new Date().toISOString());
+
+      if (netNewResult.status === 'fulfilled') {
+        setNetNewSummary(netNewResult.value);
+        setNetNewError(null);
+      } else {
+        console.error(netNewResult.reason);
+        setNetNewError('Ingest health data is temporarily unavailable.');
+      }
+
       setIsRefreshing(false);
       setIsLoading(false);
     })();
@@ -401,6 +418,17 @@ export default function SourcesPage() {
       withToast('Failed to auto-discover new sources.');
     } finally {
       setDiscoveringSources(false);
+    }
+  };
+
+  const handleResetCursor = async (sourceId: string) => {
+    try {
+      const result = await resetSourceCursor(sourceId);
+      withToast(`Cursor reset for "${result.source_name}".`, 2500);
+      await refreshSourcesView();
+    } catch (error) {
+      console.error(error);
+      withToast('Failed to reset cursor.', 2500);
     }
   };
 
@@ -550,6 +578,9 @@ export default function SourcesPage() {
           onScrapeNow={(sourceId) => {
             void handleTrigger(sourceId);
           }}
+          onResetCursor={(sourceId) => {
+            void handleResetCursor(sourceId);
+          }}
         />
       ) : null}
 
@@ -573,6 +604,16 @@ export default function SourcesPage() {
           totalPages={historyTotalPages}
           onPreviousPage={() => setHistoryPage((prev) => Math.max(1, prev - 1))}
           onNextPage={() => setHistoryPage((prev) => Math.min(historyTotalPages, prev + 1))}
+        />
+      ) : null}
+
+      {!isLoading && activeTab === 'ingest' ? (
+        <IngestHealthTab
+          netNewSummary={netNewSummary}
+          netNewError={netNewError}
+          onResetCursor={(sourceId) => {
+            void handleResetCursor(sourceId);
+          }}
         />
       ) : null}
     </div>

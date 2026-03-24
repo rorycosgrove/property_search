@@ -78,6 +78,22 @@ class SourceRepository:
             query = query.where(Source.enabled.is_(True))
         return list(self.session.scalars(query))
 
+    def get_all_with_listing_counts(self, enabled_only: bool = False) -> list[tuple[Source, int]]:
+        """Return sources with live listing counts from the properties table."""
+        query = (
+            select(
+                Source,
+                func.count(Property.id).label("listing_count"),
+            )
+            .outerjoin(Property, Property.source_id == Source.id)
+            .group_by(Source.id)
+            .order_by(Source.name)
+        )
+        if enabled_only:
+            query = query.where(Source.enabled.is_(True))
+        rows = self.session.execute(query).all()
+        return [(row[0], int(row[1] or 0)) for row in rows]
+
     def get_by_id(self, source_id: str) -> Source | None:
         return self.session.get(Source, source_id)
 
@@ -170,6 +186,23 @@ class SourceRepository:
         now_dt = now or utc_now()
         next_allowed = source.last_polled_at + timedelta(seconds=interval_seconds)
         return now_dt < next_allowed
+
+    def reset_cursor(self, source_id: str) -> Source | None:
+        """Strip ingestion cursor keys from a source's config.
+
+        Safe for any adapter; removes the daft-specific keys
+        (recent_listing_ids, last_publish_ts_ms, cursor_updated_at) so that
+        the next scrape run performs a full re-fetch.
+        """
+        source = self.get_by_id(source_id)
+        if not source:
+            return None
+        _CURSOR_KEYS = ("recent_listing_ids", "last_publish_ts_ms", "cursor_updated_at")
+        updated_config = {k: v for k, v in (source.config or {}).items() if k not in _CURSOR_KEYS}
+        source.config = updated_config
+        source.updated_at = utc_now()
+        self.session.flush()
+        return source
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -850,6 +883,7 @@ class PropertyTimelineRepository:
         metadata_json: dict | None = None,
     ) -> PropertyTimelineEvent | None:
         hour_bucket = self._hour_bucket_utc(occurred_at)
+        metadata_payload = metadata_json or {}
 
         entry_kwargs = {
             "property_id": property_id,
@@ -865,10 +899,15 @@ class PropertyTimelineRepository:
             "confidence_score": confidence_score,
             "dedup_key": dedup_key,
             "evidence": evidence or {},
-            "metadata_json": metadata_json or {},
+            "metadata_json": metadata_payload,
         }
         if occurred_at is not None:
             entry_kwargs["occurred_at"] = occurred_at
+
+        # ORM attribute uses metadata_json, but PostgreSQL INSERT operates on table
+        # column names where this field is named metadata.
+        entry_kwargs_sql = dict(entry_kwargs)
+        entry_kwargs_sql["metadata"] = entry_kwargs_sql.pop("metadata_json")
 
         bind = self.session.get_bind()
         dialect_name = bind.dialect.name if bind is not None else ""
@@ -876,7 +915,7 @@ class PropertyTimelineRepository:
             table = PropertyTimelineEvent.__table__
             insert_stmt = (
                 pg_insert(table)
-                .values(**entry_kwargs)
+                .values(**entry_kwargs_sql)
                 .on_conflict_do_nothing(
                     index_elements=[
                         table.c.property_id,

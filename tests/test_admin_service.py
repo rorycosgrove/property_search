@@ -11,9 +11,14 @@ from packages.admin.service import (
     data_lifecycle_report,
     data_lifecycle_schedule_metadata,
     explain_source_quality,
+    backend_health_summary,
     get_migration_status,
+    list_feed_activity,
+    list_recent_errors,
+    list_source_status,
     list_source_quality_activity,
     run_data_lifecycle_action,
+    source_net_new_summary,
     source_quality_scorecards,
     run_database_migrations,
 )
@@ -145,6 +150,48 @@ def test_list_source_quality_activity_uses_repository():
     assert payload[0]["id"] == "sq-1"
     assert payload[0]["source_name"] == "Daft.ie"
     assert payload[0]["details"]["geocode_success_rate"] == 95.0
+
+
+def test_list_source_status_uses_live_listing_count():
+    source = SimpleNamespace(
+        id="source-1",
+        name="Daft Feed",
+        enabled=True,
+        error_count=0,
+        last_error=None,
+        last_polled_at=None,
+        last_success_at=None,
+        poll_interval_seconds=900,
+        total_listings=0,
+    )
+
+    rows = [(source, 12)]
+
+    class FakeQuery:
+        def __init__(self, result_rows):
+            self.result_rows = result_rows
+
+        def outerjoin(self, *_args, **_kwargs):
+            return self
+
+        def group_by(self, *_args, **_kwargs):
+            return self
+
+        def order_by(self, *_args, **_kwargs):
+            return self
+
+        def all(self):
+            return self.result_rows
+
+    class FakeDB:
+        def query(self, *_args, **_kwargs):
+            return FakeQuery(rows)
+
+    payload = list_source_status(FakeDB())
+
+    assert len(payload) == 1
+    assert payload[0]["id"] == "source-1"
+    assert payload[0]["total_listings"] == 12
 
 
 def test_source_quality_scorecards_recommends_promote_and_quarantine():
@@ -565,3 +612,317 @@ def test_data_lifecycle_schedule_metadata_exposes_execution_readiness():
     assert payload["execution_mode"]["rollback_plan_id_configured"] is True
     assert payload["execution_mode"]["destructive_ready"] is True
     assert payload["execution_mode"]["dry_run_only"] is False
+
+
+def test_backend_health_summary_ignores_non_actionable_last_error():
+    scrape_rows = [
+        SimpleNamespace(
+            context_json={"geocode_attempts": 4, "geocode_successes": 3},
+        )
+    ]
+    error_rows = [
+        SimpleNamespace(
+            created_at=datetime(2026, 3, 24, tzinfo=UTC),
+            level="WARNING",
+            event_type="daft_area_blocked",
+            message="blocked",
+            context_json={"source_name": "Daft.ie", "error": "status 403"},
+        ),
+        SimpleNamespace(
+            created_at=datetime(2026, 3, 24, tzinfo=UTC),
+            level="ERROR",
+            event_type="scrape_source_failed",
+            message="failed",
+            context_json={"source_name": "MyHome", "error": "database timeout"},
+        ),
+    ]
+
+    class FakeQuery:
+        def __init__(self, rows):
+            self._rows = rows
+
+        def filter(self, *_args, **_kwargs):
+            return self
+
+        def order_by(self, *_args, **_kwargs):
+            return self
+
+        def limit(self, *_args, **_kwargs):
+            return self
+
+        def all(self):
+            return self._rows
+
+        def scalar(self):
+            return 7
+
+    class FakeDB:
+        def __init__(self):
+            self.query_calls = 0
+
+        def query(self, *_args, **_kwargs):
+            self.query_calls += 1
+            if self.query_calls == 1:
+                return FakeQuery(scrape_rows)
+            if self.query_calls == 2:
+                return FakeQuery(error_rows)
+            return FakeQuery([])
+
+    payload = backend_health_summary(
+        FakeDB(),
+        queue_settings=SimpleNamespace(
+            scrape_queue_url="http://example.com/scrape",
+            alert_queue_url="http://example.com/alert",
+            llm_queue_url="",
+        ),
+    )
+
+    assert payload["scrape_runs_24h"] == 7
+    assert payload["geocode_attempts"] == 4
+    assert payload["geocode_successes"] == 3
+    assert payload["last_error"]["event_type"] == "scrape_source_failed"
+    assert payload["last_error"]["level"] == "ERROR"
+
+
+def test_list_recent_errors_filters_non_actionable_external_noise_by_default():
+    rows = [
+        SimpleNamespace(
+            id="log-1",
+            created_at=datetime(2026, 3, 24, tzinfo=UTC),
+            level="WARNING",
+            event_type="daft_cursor_auto_reset",
+            component="worker.tasks",
+            source_id="source-1",
+            message="cursor reset",
+            context_json={"source_name": "Daft.ie"},
+        ),
+        SimpleNamespace(
+            id="log-2",
+            created_at=datetime(2026, 3, 24, tzinfo=UTC),
+            level="ERROR",
+            event_type="scrape_source_failed",
+            component="worker.tasks",
+            source_id="source-2",
+            message="failed",
+            context_json={"source_name": "MyHome", "error": "Unconsumed column names: metadata_json"},
+        ),
+    ]
+
+    class FakeRepo:
+        def __init__(self, _db):
+            pass
+
+        def list_recent(self, *, hours=24, limit=25, level=None, event_type=None):
+            return rows
+
+        def list_recent_errors(self, *, hours=24, limit=25):
+            return rows
+
+    from packages.admin import service as admin_service
+
+    with pytest.MonkeyPatch.context() as m:
+        m.setattr(admin_service, "BackendLogRepository", FakeRepo)
+        payload = list_recent_errors(SimpleNamespace(), limit=10)
+
+    assert [item["id"] for item in payload] == ["log-2"]
+
+
+def test_list_recent_errors_can_include_non_actionable_noise():
+    rows = [
+        SimpleNamespace(
+            id="log-1",
+            created_at=datetime(2026, 3, 24, tzinfo=UTC),
+            level="WARNING",
+            event_type="propertypal_area_blocked",
+            component="worker.tasks",
+            source_id="source-1",
+            message="area blocked",
+            context_json={"source_name": "PropertyPal"},
+        ),
+        SimpleNamespace(
+            id="log-2",
+            created_at=datetime(2026, 3, 24, tzinfo=UTC),
+            level="ERROR",
+            event_type="scrape_source_failed",
+            component="worker.tasks",
+            source_id="source-2",
+            message="failed",
+            context_json={"source_name": "MyHome", "error": "database timeout"},
+        ),
+    ]
+
+    class FakeRepo:
+        def __init__(self, _db):
+            pass
+
+        def list_recent(self, *, hours=24, limit=25, level=None, event_type=None):
+            return rows
+
+        def list_recent_errors(self, *, hours=24, limit=25):
+            return rows
+
+    from packages.admin import service as admin_service
+
+    with pytest.MonkeyPatch.context() as m:
+        m.setattr(admin_service, "BackendLogRepository", FakeRepo)
+        payload = list_recent_errors(SimpleNamespace(), limit=10, include_non_actionable=True)
+
+    assert [item["id"] for item in payload] == ["log-1", "log-2"]
+
+
+# ─── list_feed_activity ────────────────────────────────────────────────────────
+
+
+def test_list_feed_activity_surfaces_ingest_reason_fields():
+    now = datetime(2026, 3, 22, tzinfo=UTC)
+    rows = [
+        SimpleNamespace(
+            id="log-1",
+            created_at=now,
+            source_id="src-1",
+            context_json={
+                "source_name": "Daft Cork",
+                "new": 0,
+                "updated": 0,
+                "skipped": 80,
+                "total_fetched": 80,
+                "geocode_success_rate": 100.0,
+                "existing_by_external_id": 75,
+                "existing_by_content_hash": 5,
+                "zero_fetch_reason": "all_existing_mixed",
+            },
+        )
+    ]
+
+    class FakeQuery:
+        def __init__(self, result_rows):
+            self._rows = result_rows
+
+        def filter(self, *_a, **_kw):
+            return self
+
+        def order_by(self, *_a, **_kw):
+            return self
+
+        def limit(self, *_a, **_kw):
+            return self
+
+        def all(self):
+            return self._rows
+
+    class FakeDB:
+        def query(self, *_a, **_kw):
+            return FakeQuery(rows)
+
+    payload = list_feed_activity(FakeDB(), limit=1)
+
+    assert len(payload) == 1
+    row = payload[0]
+    assert row["existing_by_external_id"] == 75
+    assert row["existing_by_content_hash"] == 5
+    assert row["zero_fetch_reason"] == "all_existing_mixed"
+
+
+# ─── source_net_new_summary ────────────────────────────────────────────────────
+
+
+def test_source_net_new_summary_ranks_stalled_sources_first():
+    now = datetime(2026, 3, 22, tzinfo=UTC)
+
+    def _make_log(source_id, source_name, new, total_fetched, at=now):
+        return SimpleNamespace(
+            source_id=source_id,
+            created_at=at,
+            context_json={
+                "source_name": source_name,
+                "new": new,
+                "updated": 0,
+                "total_fetched": total_fetched,
+                "zero_fetch_reason": "no_results" if total_fetched == 0 else None,
+            },
+        )
+
+    log_rows = [
+        _make_log("src-active", "Active Source", new=5, total_fetched=80),
+        _make_log("src-stalled", "Stalled Source", new=0, total_fetched=0),
+        _make_log("src-stalled", "Stalled Source", new=0, total_fetched=0),
+    ]
+
+    class FakeQuery:
+        def __init__(self, result_rows):
+            self._rows = result_rows
+
+        def filter(self, *_a, **_kw):
+            return self
+
+        def order_by(self, *_a, **_kw):
+            return self
+
+        def limit(self, *_a, **_kw):
+            return self
+
+        def all(self):
+            return self._rows
+
+    class FakeDB:
+        def query(self, *_a, **_kw):
+            return FakeQuery(log_rows)
+
+    result = source_net_new_summary(FakeDB(), runs=10)
+
+    assert len(result) == 2
+    # Stalled source should appear first
+    assert result[0]["source_id"] == "src-stalled"
+    assert result[0]["zero_ingestion"] is True
+    assert result[0]["consecutive_zero_new"] == 2
+    assert result[0]["consecutive_zero_fetch"] == 2
+    assert result[0]["total_new"] == 0
+
+    assert result[1]["source_id"] == "src-active"
+    assert result[1]["zero_ingestion"] is False
+    assert result[1]["total_new"] == 5
+
+
+def test_source_net_new_summary_consecutive_zero_streak_stops_at_first_success():
+    """consecutive_zero_new should stop counting when a non-zero new run is found."""
+    now = datetime(2026, 3, 22, tzinfo=UTC)
+    from datetime import timedelta
+
+    def _log(new, total_fetched, offset_mins=0):
+        return SimpleNamespace(
+            source_id="src-1",
+            created_at=now - timedelta(minutes=offset_mins),
+            context_json={
+                "source_name": "Test Source",
+                "new": new,
+                "updated": 0,
+                "total_fetched": total_fetched,
+                "zero_fetch_reason": None,
+            },
+        )
+
+    # Most recent two are zero, then one was successful
+    log_rows = [_log(0, 80, 0), _log(0, 80, 10), _log(3, 80, 20)]
+
+    class FakeQuery:
+        def filter(self, *_a, **_kw):
+            return self
+
+        def order_by(self, *_a, **_kw):
+            return self
+
+        def limit(self, *_a, **_kw):
+            return self
+
+        def all(self):
+            return log_rows
+
+    class FakeDB:
+        def query(self, *_a, **_kw):
+            return FakeQuery()
+
+    result = source_net_new_summary(FakeDB(), runs=10)
+
+    assert len(result) == 1
+    assert result[0]["consecutive_zero_new"] == 2  # streak stops at the successful run
+    assert result[0]["total_new"] == 3

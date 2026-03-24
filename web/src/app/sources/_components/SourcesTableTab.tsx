@@ -20,6 +20,7 @@ type Props = {
   onToggleSelectAllVisible: () => void;
   onToggleSourceSelection: (sourceId: string) => void;
   onScrapeNow: (sourceId: string) => void;
+  onResetCursor: (sourceId: string) => void;
   onPreviousPage: () => void;
   onNextPage: () => void;
 };
@@ -125,12 +126,22 @@ export function SourcesTableTab(props: Props) {
                     {source.last_error ? <p className="text-xs text-[var(--danger)] mt-1 line-clamp-2">{source.last_error}</p> : null}
                   </td>
                   <td className="py-2 px-3">
-                    <button
-                      onClick={() => props.onScrapeNow(source.id)}
-                      className="ui-btn ui-btn-primary text-xs"
-                    >
-                      Scrape Now
-                    </button>
+                    <div className="flex flex-col gap-1">
+                      <button
+                        onClick={() => props.onScrapeNow(source.id)}
+                        className="ui-btn ui-btn-primary text-xs"
+                      >
+                        Scrape Now
+                      </button>
+                      {source.adapter_name === 'daft' ? (
+                        <button
+                          onClick={() => props.onResetCursor(source.id)}
+                          className="ui-btn ui-btn-secondary text-xs"
+                        >
+                          Reset Cursor
+                        </button>
+                      ) : null}
+                    </div>
                   </td>
                 </tr>
               );

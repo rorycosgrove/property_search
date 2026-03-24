@@ -29,9 +29,9 @@ logger = get_logger(__name__)
 DAFT_API_URL = "https://gateway.daft.ie/old/v1/listings"
 
 _BROWSER_UA_FALLBACKS: tuple[str, ...] = (
-    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36",
-    "Mozilla/5.0 (Macintosh; Intel Mac OS X 14_4) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36",
-    "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/133.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/133.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/133.0.0.0 Safari/537.36",
 )
 
 # Daft area slug → storedShapeIds mapping
@@ -538,12 +538,18 @@ class DaftAdapter(SourceAdapter):
         else:
             user_agent = configured_ua
 
+        # Derive sec-ch-ua version from UA string for consistency.
+        ch_ver = "133"
+        is_windows = "Windows" in user_agent
+        platform = '"Windows"' if is_windows else ('"macOS"' if "Mac" in user_agent else '"Linux"')
         return {
             "User-Agent": user_agent,
+            "sec-ch-ua": f'"Not(A:Brand";v="99", "Google Chrome";v="{ch_ver}", "Chromium";v="{ch_ver}"',
+            "sec-ch-ua-mobile": "?0",
+            "sec-ch-ua-platform": platform,
             "Sec-Fetch-Dest": "empty",
             "Sec-Fetch-Mode": "cors",
             "Sec-Fetch-Site": "same-site",
-            "X-Requested-With": "XMLHttpRequest",
         }
 
     @staticmethod

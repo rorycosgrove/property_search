@@ -56,6 +56,8 @@ class MyHomeAdapter(SourceAdapter):
             "max_pages": 5,
         }
 
+    _MH_UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/133.0.0.0 Safari/537.36"
+
     def get_config_schema(self) -> dict[str, Any]:
         return {
             "counties": {"type": "array", "items": {"type": "string"}, "description": "Counties to search"},
@@ -75,15 +77,26 @@ class MyHomeAdapter(SourceAdapter):
         async with httpx.AsyncClient(
             timeout=settings.request_timeout_seconds,
             headers={
-                "User-Agent": settings.user_agent,
-                "Accept": "text/html,application/xhtml+xml",
+                "User-Agent": self._MH_UA,
+                "sec-ch-ua": '"Not(A:Brand";v="99", "Google Chrome";v="133", "Chromium";v="133"',
+                "sec-ch-ua-mobile": "?0",
+                "sec-ch-ua-platform": '"Windows"',
+                "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
                 "Accept-Language": "en-IE,en;q=0.9",
+                "Sec-Fetch-Dest": "document",
+                "Sec-Fetch-Mode": "navigate",
+                "Sec-Fetch-Site": "none",
+                "Upgrade-Insecure-Requests": "1",
             },
             follow_redirects=True,
         ) as client:
             for base_url in urls:
                 for page in range(1, max_pages + 1):
-                    url = f"{base_url}?page={page}" if page > 1 else base_url
+                    if page > 1:
+                        sep = "&" if "?" in base_url else "?"
+                        url = f"{base_url}{sep}page={page}"
+                    else:
+                        url = base_url
                     try:
                         logger.info("myhome_fetch_page", url=url, page=page)
                         response = await client.get(url)

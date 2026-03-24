@@ -1281,3 +1281,329 @@ def test_evaluate_source_quality_governance_promotes_and_quarantines(monkeypatch
     assert governance_rows
     assert any((s.get("details") or {}).get("action") == "promote" for s in governance_rows)
     assert any((s.get("details") or {}).get("action") == "quarantine" for s in governance_rows)
+
+
+def test_scrape_source_tracks_existing_by_external_id_and_content_hash(monkeypatch):
+    """existing_by_external_id and existing_by_content_hash counters should be tallied correctly."""
+    monkeypatch.delenv("ALERT_QUEUE_URL", raising=False)
+
+    source_obj = SimpleNamespace(
+        id="myhome-src",
+        enabled=True,
+        adapter_name="myhome",
+        name="MyHome",
+        config={},
+    )
+
+    existing_by_ext = SimpleNamespace(id="prop-1", price=Decimal("300000"))
+    existing_by_hash = SimpleNamespace(id="prop-2", price=Decimal("200000"))
+
+    class FakeSourceRepository:
+        def __init__(self, _db):
+            pass
+
+        def get_by_id(self, _sid):
+            return source_obj
+
+        def mark_poll_success(self, _sid, _count):
+            pass
+
+        def mark_poll_error(self, _sid, _err):
+            pass
+
+        def should_skip_poll(self, _source):
+            return False
+
+        def try_acquire_scrape_lock(self, _source_id):
+            return True
+
+    class FakePropertyRepository:
+        def __init__(self, _db):
+            pass
+
+        def get_by_external_id_and_source(self, _sid, ext_id):
+            # First call returns existing; second call returns None
+            return existing_by_ext if ext_id == "ext-1" else None
+
+        def get_by_content_hash(self, _hash):
+            # Only reached for the listing where external_id lookup missed
+            return existing_by_hash
+
+        def update(self, _pid, **_kwargs):
+            pass
+
+    class FakePriceHistoryRepository:
+        def __init__(self, _db):
+            pass
+
+        def add_entry_if_new_price(self, **_kwargs):
+            pass
+
+    class FakeNormalizer:
+        def __init__(self):
+            self._call = 0
+
+        def normalize(self, _parsed):
+            self._call += 1
+            if self._call == 1:
+                return {
+                    "content_hash": "hash-1",
+                    "external_id": "ext-1",
+                    "address": "A",
+                    "county": "Dublin",
+                    "price": Decimal("300000"),
+                    "raw_data": {},
+                }
+            return {
+                "content_hash": "hash-2",
+                "external_id": "ext-2",  # won't match in FakePropertyRepository
+                "address": "B",
+                "county": "Cork",
+                "price": Decimal("200000"),
+                "raw_data": {},
+            }
+
+    class FakeAdapter:
+        async def fetch_listings(self, _config):
+            return [
+                SimpleNamespace(raw_data={}, source_url="https://example.com/1"),
+                SimpleNamespace(raw_data={}, source_url="https://example.com/2"),
+            ]
+
+        def parse_listing(self, _raw):
+            return SimpleNamespace(raw_data={})
+
+    normalizer_instance = FakeNormalizer()
+
+    monkeypatch.setattr("packages.storage.database.get_session", lambda: _SessionCtx())
+    monkeypatch.setattr("packages.storage.repositories.SourceRepository", FakeSourceRepository)
+    monkeypatch.setattr("packages.storage.repositories.PropertyRepository", FakePropertyRepository)
+    monkeypatch.setattr("packages.storage.repositories.PriceHistoryRepository", FakePriceHistoryRepository)
+    monkeypatch.setattr("packages.storage.repositories.PropertyTimelineRepository", lambda _db: SimpleNamespace(add_event=lambda **_kw: None))
+    monkeypatch.setattr("packages.normalizer.normalizer.PropertyNormalizer", lambda: normalizer_instance)
+    monkeypatch.setattr("packages.sources.registry.get_adapter", lambda _name: FakeAdapter())
+    monkeypatch.setattr("apps.worker.tasks._record_backend_log", lambda **_kwargs: None)
+    monkeypatch.setattr("apps.worker.tasks._materialize_property_documents_safe", lambda *_a, **_kw: None)
+
+    result = scrape_source("myhome-src")
+
+    assert result["existing_by_external_id"] == 1
+    assert result["existing_by_content_hash"] == 1
+    assert result["new"] == 0
+    assert result["total_fetched"] == 2
+    assert result["zero_fetch_reason"] == "all_existing_mixed"
+
+
+def test_scrape_source_daft_auto_resets_cursor_after_consecutive_zero_fetch(monkeypatch):
+    """After N consecutive zero-fetch runs the daft cursor keys should be cleared."""
+    monkeypatch.delenv("ALERT_QUEUE_URL", raising=False)
+
+    source_obj = SimpleNamespace(
+        id="daft-src",
+        enabled=True,
+        adapter_name="daft",
+        name="Daft Cork",
+        config={"areas": ["cork"], "recent_listing_ids": ["123", "456"], "last_publish_ts_ms": 999},
+    )
+
+    class FakeSourceRepository:
+        def __init__(self, _db):
+            self.updated_configs: list = []
+
+        def get_by_id(self, _sid):
+            return source_obj
+
+        def mark_poll_success(self, _sid, _cnt):
+            pass
+
+        def mark_poll_error(self, _sid, _err):
+            pass
+
+        def should_skip_poll(self, _source):
+            return False
+
+        def try_acquire_scrape_lock(self, _source_id):
+            return True
+
+        def update(self, source_id, **kwargs):
+            if "config" in kwargs:
+                self.updated_configs.append(kwargs["config"])
+            return source_obj
+
+    class FakePropertyRepository:
+        def __init__(self, _db):
+            pass
+
+    class FakePriceHistoryRepository:
+        def __init__(self, _db):
+            pass
+
+    class FakeAdapter:
+        async def fetch_listings(self, _config):
+            return []  # zero fetch
+
+        def parse_listing(self, _raw):
+            return None
+
+    # Simulate 2 prior consecutive zero-fetch runs in BackendLog
+    from types import SimpleNamespace as SN
+    prior_logs = [
+        SN(context_json={"total_fetched": 0}),
+        SN(context_json={"total_fetched": 0}),
+    ]
+
+    class FakeLogQuery:
+        def filter(self, *_a, **_kw):
+            return self
+
+        def order_by(self, *_a, **_kw):
+            return self
+
+        def limit(self, *_a, **_kw):
+            return self
+
+        def all(self):
+            return prior_logs
+
+    class FakeDB:
+        def query(self, *_a, **_kw):
+            return FakeLogQuery()
+
+    class FakeSessionCtx:
+        def __enter__(self):
+            return FakeDB()
+
+        def __exit__(self, *_a):
+            return False
+
+    repo_holder: dict = {}
+
+    def _repo_factory(db):
+        repo = FakeSourceRepository(db)
+        repo_holder["repo"] = repo
+        return repo
+
+    monkeypatch.setattr("packages.storage.database.get_session", lambda: FakeSessionCtx())
+    monkeypatch.setattr("packages.storage.repositories.SourceRepository", _repo_factory)
+    monkeypatch.setattr("packages.storage.repositories.PropertyRepository", FakePropertyRepository)
+    monkeypatch.setattr("packages.storage.repositories.PriceHistoryRepository", FakePriceHistoryRepository)
+    monkeypatch.setattr("packages.storage.repositories.PropertyTimelineRepository", lambda _db: SimpleNamespace(add_event=lambda **_kw: None))
+    monkeypatch.setattr("packages.normalizer.normalizer.PropertyNormalizer", lambda: SimpleNamespace(normalize=lambda _p: {}))
+    monkeypatch.setattr("packages.sources.registry.get_adapter", lambda _name: FakeAdapter())
+    monkeypatch.setattr("apps.worker.tasks._record_backend_log", lambda **_kwargs: None)
+
+    result = scrape_source("daft-src")
+
+    assert result["total_fetched"] == 0
+    # Cursor should have been reset — config written without cursor keys
+    configs = repo_holder["repo"].updated_configs
+    assert len(configs) == 1
+    reset_config = configs[0]
+    assert "recent_listing_ids" not in reset_config
+    assert "last_publish_ts_ms" not in reset_config
+    assert "cursor_updated_at" not in reset_config
+    # Non-cursor keys should survive
+    assert reset_config.get("areas") == ["cork"]
+
+
+def test_scrape_source_daft_no_auto_reset_when_cursor_absent(monkeypatch):
+    """Do not repeatedly reset/log when the cursor keys are already absent."""
+    monkeypatch.delenv("ALERT_QUEUE_URL", raising=False)
+
+    source_obj = SimpleNamespace(
+        id="daft-src",
+        enabled=True,
+        adapter_name="daft",
+        name="Daft Cork",
+        config={"areas": ["cork"]},
+    )
+
+    class FakeSourceRepository:
+        def __init__(self, _db):
+            self.updated_configs: list = []
+
+        def get_by_id(self, _sid):
+            return source_obj
+
+        def mark_poll_success(self, _sid, _cnt):
+            pass
+
+        def mark_poll_error(self, _sid, _err):
+            pass
+
+        def should_skip_poll(self, _source):
+            return False
+
+        def try_acquire_scrape_lock(self, _source_id):
+            return True
+
+        def update(self, source_id, **kwargs):
+            if "config" in kwargs:
+                self.updated_configs.append(kwargs["config"])
+            return source_obj
+
+    class FakePropertyRepository:
+        def __init__(self, _db):
+            pass
+
+    class FakePriceHistoryRepository:
+        def __init__(self, _db):
+            pass
+
+    class FakeAdapter:
+        async def fetch_listings(self, _config):
+            return []
+
+        def parse_listing(self, _raw):
+            return None
+
+    from types import SimpleNamespace as SN
+    prior_logs = [
+        SN(context_json={"total_fetched": 0}),
+        SN(context_json={"total_fetched": 0}),
+    ]
+
+    class FakeLogQuery:
+        def filter(self, *_a, **_kw):
+            return self
+
+        def order_by(self, *_a, **_kw):
+            return self
+
+        def limit(self, *_a, **_kw):
+            return self
+
+        def all(self):
+            return prior_logs
+
+    class FakeDB:
+        def query(self, *_a, **_kw):
+            return FakeLogQuery()
+
+    class FakeSessionCtx:
+        def __enter__(self):
+            return FakeDB()
+
+        def __exit__(self, *_a):
+            return False
+
+    repo_holder: dict = {}
+
+    def _repo_factory(db):
+        repo = FakeSourceRepository(db)
+        repo_holder["repo"] = repo
+        return repo
+
+    monkeypatch.setattr("packages.storage.database.get_session", lambda: FakeSessionCtx())
+    monkeypatch.setattr("packages.storage.repositories.SourceRepository", _repo_factory)
+    monkeypatch.setattr("packages.storage.repositories.PropertyRepository", FakePropertyRepository)
+    monkeypatch.setattr("packages.storage.repositories.PriceHistoryRepository", FakePriceHistoryRepository)
+    monkeypatch.setattr("packages.storage.repositories.PropertyTimelineRepository", lambda _db: SimpleNamespace(add_event=lambda **_kw: None))
+    monkeypatch.setattr("packages.normalizer.normalizer.PropertyNormalizer", lambda: SimpleNamespace(normalize=lambda _p: {}))
+    monkeypatch.setattr("packages.sources.registry.get_adapter", lambda _name: FakeAdapter())
+    monkeypatch.setattr("apps.worker.tasks._record_backend_log", lambda **_kwargs: None)
+
+    result = scrape_source("daft-src")
+
+    assert result["total_fetched"] == 0
+    assert repo_holder["repo"].updated_configs == []

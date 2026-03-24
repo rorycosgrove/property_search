@@ -181,6 +181,38 @@ def _build_daft_cursor_payload(raw_listings: list[Any], max_recent_ids: int = 60
     }
 
 
+# Number of consecutive zero-fetch scrape runs before the daft cursor is auto-reset.
+_AUTO_CURSOR_RESET_THRESHOLD = 2  # history runs; together with the current run = 3 consecutive zeros.
+
+_CURSOR_KEYS = ("recent_listing_ids", "last_publish_ts_ms", "cursor_updated_at")
+
+
+def _count_consecutive_zero_fetch_runs(db: Any, source_id: str, limit: int = 5) -> int:
+    """Return the number of the most-recent historical scrape runs with total_fetched == 0.
+
+    Only counts a consecutive streak from the most recent run backwards; stops as
+    soon as a run with total_fetched > 0 is encountered.
+    """
+    from packages.storage.models import BackendLog
+
+    rows = (
+        db.query(BackendLog)
+        .filter(BackendLog.event_type == "scrape_source_complete")
+        .filter(BackendLog.source_id == source_id)
+        .order_by(BackendLog.created_at.desc())
+        .limit(limit)
+        .all()
+    )
+    count = 0
+    for row in rows:
+        ctx = row.context_json or {}
+        if int(ctx.get("total_fetched", 0) or 0) == 0:
+            count += 1
+        else:
+            break
+    return count
+
+
 # ── Source scraping tasks ─────────────────────────────────────────────────────
 
 
@@ -412,16 +444,42 @@ def scrape_source(source_id: str, force: bool = False) -> dict[str, Any]:
             logger.info(f"Fetched {len(raw_listings)} listings from {source.name}")
 
             if source.adapter_name == "daft":
-                cursor_payload = _build_daft_cursor_payload(raw_listings)
-                last_publish_ts_ms = cursor_payload.get("last_publish_ts_ms")
-                next_config = {
-                    **config,
-                    "recent_listing_ids": cursor_payload.get("recent_listing_ids", []),
-                    "cursor_updated_at": cursor_payload.get("cursor_updated_at"),
-                }
-                if last_publish_ts_ms is not None:
-                    next_config["last_publish_ts_ms"] = last_publish_ts_ms
-                source_repo.update(source_id, config=next_config)
+                if len(raw_listings) == 0:
+                    # Auto-reset: if the last N historical runs also returned nothing,
+                    # clear the cursor so the next run does a full re-fetch.
+                    consecutive_zero = _count_consecutive_zero_fetch_runs(db, source_id)
+                    has_cursor_state = any(key in config for key in _CURSOR_KEYS)
+                    if consecutive_zero >= _AUTO_CURSOR_RESET_THRESHOLD and has_cursor_state:
+                        reset_config = {k: v for k, v in config.items() if k not in _CURSOR_KEYS}
+                        source_repo.update(source_id, config=reset_config)
+                        logger.warning(
+                            "daft_cursor_auto_reset",
+                            source_id=source_id,
+                            source_name=source.name,
+                            consecutive_zero_fetch=consecutive_zero + 1,
+                        )
+                        _record_backend_log(
+                            level="WARNING",
+                            event_type="daft_cursor_auto_reset",
+                            message="Daft cursor auto-reset after consecutive zero-fetch runs",
+                            source_id=source_id,
+                            context={
+                                "source_name": source.name,
+                                "consecutive_zero_fetch": consecutive_zero + 1,
+                                "reason": "auto_recovery",
+                            },
+                        )
+                else:
+                    cursor_payload = _build_daft_cursor_payload(raw_listings)
+                    last_publish_ts_ms = cursor_payload.get("last_publish_ts_ms")
+                    next_config = {
+                        **config,
+                        "recent_listing_ids": cursor_payload.get("recent_listing_ids", []),
+                        "cursor_updated_at": cursor_payload.get("cursor_updated_at"),
+                    }
+                    if last_publish_ts_ms is not None:
+                        next_config["last_publish_ts_ms"] = last_publish_ts_ms
+                    source_repo.update(source_id, config=next_config)
 
             new_count = 0
             updated_count = 0
@@ -431,6 +489,8 @@ def scrape_source(source_id: str, force: bool = False) -> dict[str, Any]:
             skipped_count = 0  # ppr-duplicate and misc paths only
             geocode_attempts = 0
             geocode_successes = 0
+            existing_by_external_id = 0
+            existing_by_content_hash = 0
             # Samples collected per run for reconciliation/diagnostics — not persisted individually.
             _new_external_ids: list[str] = []
             _parse_fail_sample: list[dict[str, Any]] = []
@@ -479,8 +539,12 @@ def scrape_source(source_id: str, force: bool = False) -> dict[str, Any]:
                 external_id = record.get("external_id")
                 if external_id:
                     existing = property_repo.get_by_external_id_and_source(source_id, external_id)
+                    if existing:
+                        existing_by_external_id += 1
                 if not existing:
                     existing = property_repo.get_by_content_hash(record["content_hash"])
+                    if existing:
+                        existing_by_content_hash += 1
 
                 if existing:
                     existing_price = existing.price  # Decimal from DB
@@ -660,6 +724,16 @@ def scrape_source(source_id: str, force: bool = False) -> dict[str, Any]:
                     round((geocode_successes / geocode_attempts) * 100, 2)
                     if geocode_attempts
                     else 100.0
+                ),
+                "existing_by_external_id": existing_by_external_id,
+                "existing_by_content_hash": existing_by_content_hash,
+                # Classify why new=0 for observability dashboards.
+                "zero_fetch_reason": (
+                    "no_results" if len(raw_listings) == 0
+                    else "all_existing_external_id" if existing_by_external_id > 0 and new_count == 0 and updated_count == 0 and existing_by_content_hash == 0
+                    else "all_existing_content_hash" if existing_by_content_hash > 0 and new_count == 0 and updated_count == 0 and existing_by_external_id == 0
+                    else "all_existing_mixed" if (existing_by_external_id + existing_by_content_hash) > 0 and new_count == 0 and updated_count == 0
+                    else None
                 ),
                 # Sampled for reconciliation — first 100 new external IDs and first 5 parse failures.
                 "new_external_ids_sample": _new_external_ids,

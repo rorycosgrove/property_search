@@ -41,6 +41,44 @@ if (-not (Get-Command aws -ErrorAction SilentlyContinue)) {
   exit 0
 }
 
+$profileFromDotEnv = (Read-DotEnvValue -Map $vars -Key 'AWS_PROFILE').Trim()
+$profileFromDotEnvDefault = (Read-DotEnvValue -Map $vars -Key 'AWS_DEFAULT_PROFILE').Trim()
+$preferredProfile = if ($profileFromDotEnv) {
+  $profileFromDotEnv
+} elseif ($profileFromDotEnvDefault) {
+  $profileFromDotEnvDefault
+} else {
+  'default'
+}
+
+$profileFallbacks = @($preferredProfile, 'default') | Where-Object { $_ } | Select-Object -Unique
+
+function Get-QueueAttributesJson([string]$QueueUrl, [string[]]$ProfilesToTry) {
+  $lastError = ''
+  foreach ($profile in $ProfilesToTry) {
+    $output = aws sqs get-queue-attributes `
+      --queue-url $QueueUrl `
+      --attribute-names ApproximateNumberOfMessages ApproximateNumberOfMessagesNotVisible ApproximateNumberOfMessagesDelayed `
+      --query Attributes `
+      --output json `
+      --profile $profile 2>&1
+
+    if ($LASTEXITCODE -eq 0) {
+      return @{ Success = $true; Json = $output; Profile = $profile; Error = '' }
+    }
+
+    $err = (($output | Out-String).Trim())
+    if ($err) {
+      $lastError = $err
+    }
+  }
+
+  if (-not $lastError) {
+    $lastError = 'AWS auth failed for all attempted profiles. Run: aws sso login --profile <profile>'
+  }
+  return @{ Success = $false; Json = ''; Profile = ''; Error = $lastError }
+}
+
 $queues = @(
   @{ Name = 'scrape'; Url = (Read-DotEnvValue -Map $vars -Key 'SCRAPE_QUEUE_URL') },
   @{ Name = 'llm'; Url = (Read-DotEnvValue -Map $vars -Key 'LLM_QUEUE_URL') },
@@ -73,6 +111,7 @@ if (Test-Path $statusCachePath) {
 
 $currentVisible = @{}
 $growthWarnings = @()
+$reportedFallback = $false
 
 foreach ($q in $queues) {
   if (-not $q.Url) {
@@ -81,11 +120,16 @@ foreach ($q in $queues) {
   }
 
   try {
-    $json = aws sqs get-queue-attributes `
-      --queue-url $q.Url `
-      --attribute-names ApproximateNumberOfMessages ApproximateNumberOfMessagesNotVisible ApproximateNumberOfMessagesDelayed `
-      --query Attributes `
-      --output json
+    $result = Get-QueueAttributesJson -QueueUrl $q.Url -ProfilesToTry $profileFallbacks
+    if (-not $result.Success) {
+      throw $result.Error
+    }
+    if (-not $reportedFallback -and $result.Profile -ne $preferredProfile) {
+      Write-Host ("[status] SQS: profile '{0}' unavailable, using '{1}'" -f $preferredProfile, $result.Profile)
+      $reportedFallback = $true
+    }
+
+    $json = $result.Json
 
     $attrs = $json | ConvertFrom-Json
     $visible = [int]$attrs.ApproximateNumberOfMessages

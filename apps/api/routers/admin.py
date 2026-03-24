@@ -25,6 +25,7 @@ from packages.admin.service import (
     list_source_quality_activity,
     list_source_status,
     run_database_migrations,
+    source_net_new_summary,
     source_quality_scorecards,
     source_freshness_report,
 )
@@ -66,6 +67,25 @@ def get_feed_activity(
     db: Session = Depends(get_db_session),
 ):
     return list_feed_activity(db, limit=limit)
+
+
+@router.get("/logs/net-new", summary="Net-new property ingestion summary per source")
+def get_net_new_summary(
+    runs: int = Query(10, ge=1, le=100, description="Number of recent scrape runs to aggregate per source"),
+    source_id: str | None = Query(None, min_length=36, max_length=36, description="Filter to a single source UUID"),
+    db: Session = Depends(get_db_session),
+):
+    """Return per-source net-new aggregation across recent scrape runs.
+
+    Sources with zero net-new ingestion across all sampled runs appear first,
+    flagged with ``zero_ingestion: true``.  The ``consecutive_zero_new`` and
+    ``consecutive_zero_fetch`` fields indicate *why* ingestion stalled:
+
+    - ``consecutive_zero_fetch > 0`` → upstream returned no results (cursor issue or source offline)
+    - ``consecutive_zero_new > 0`` with ``consecutive_zero_fetch == 0`` → listings are fetched but all
+      already exist (dedup / price-unchanged)
+    """
+    return source_net_new_summary(db, runs=runs, source_id=source_id)
 
 
 @router.get("/logs/sources", summary="Current source status")
@@ -258,9 +278,18 @@ def get_backend_health_summary(db: Session = Depends(get_db_session)):
 def get_recent_errors(
     level: str | None = Query(None, description="Optional log level filter, e.g. ERROR or WARNING"),
     limit: int = Query(25, ge=1, le=200),
+    include_non_actionable: bool = Query(
+        False,
+        description="Include expected/non-actionable external-block warnings in results",
+    ),
     db: Session = Depends(get_db_session),
 ):
-    return list_recent_errors(db, level=level, limit=limit)
+    return list_recent_errors(
+        db,
+        level=level,
+        limit=limit,
+        include_non_actionable=include_non_actionable,
+    )
 
 
 @router.get("/listings/{external_id}/diagnose", summary="Diagnose why a listing was missed")
