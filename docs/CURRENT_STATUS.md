@@ -64,3 +64,21 @@ Progress update:
   - Lifecycle action execution now enforces both controls before any non-dry-run request is considered.
   - Schedule metadata now exposes `destructive_enabled`, `rollback_plan_id_configured`, and `destructive_ready` for operator readiness checks.
   - Regression coverage added in admin service + API lifecycle tests for the new guardrails.
+
+## Data-First Search Status (Mar 25, 2026)
+
+The data-quality execution track is complete through search calibration gates.
+
+Completed milestones:
+- Ingestion correctness and deterministic PPR import accounting.
+- Persisted matching fields and backfill support.
+- Trigram infrastructure and relevance sorting in property search.
+- Confidence-gated sold comparable-sales endpoint.
+- Persistent geocode cache path.
+- Curated search benchmark and enforceable quality gates.
+
+Operational benchmark command:
+- `make benchmark-search-gate`
+
+This command runs the curated query set in `scripts/search_benchmark_queries.txt`
+and exits non-zero when gate thresholds are missed.

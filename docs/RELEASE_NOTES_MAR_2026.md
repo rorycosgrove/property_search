@@ -72,3 +72,36 @@ This release stabilizes the LLM analysis flow and modernizes the map workspace U
   - inline failure propagation
   - backend log filtering/summary paths
   - worker task observability event branches
+
+## Data-First Search Completion (Mar 25, 2026)
+
+### What Landed
+- Persisted address matching primitives (`address_normalized`, `fuzzy_address_hash`) for both active and sold properties.
+- Trigram infrastructure enabled (`pg_trgm` + GIN trigram indexes) with migration coverage and shortened safe revision IDs.
+- Confidence-gated sold comparable-sales endpoint added:
+  - `GET /api/v1/properties/{id}/sold-comps`
+- Property keyword search upgraded from pure substring matching to trigram-assisted matching with relevance sorting (`sort_by=relevance`).
+- Geocoder upgraded with persistent DB-backed cache support.
+- Search benchmarking tooling added with enforceable gates and curated query set:
+  - `scripts/benchmark_search_quality.py`
+  - `scripts/search_benchmark_queries.txt`
+  - `make benchmark-search`
+  - `make benchmark-search-gate`
+
+### Calibration Snapshot
+- Curated benchmark gate run passes with current defaults:
+  - `result_coverage`: 0.9375
+  - `avg_top_overlap`: 0.5333
+  - `avg_top3_overlap`: 0.5333
+- Gate thresholds are centralized in `packages/shared/constants.py`:
+  - `SEARCH_BENCHMARK_MIN_RESULT_COVERAGE`
+  - `SEARCH_BENCHMARK_MIN_TOP_OVERLAP`
+  - `SEARCH_BENCHMARK_MIN_TOP3_OVERLAP`
+
+### Commit Readiness Checklist
+- Apply migrations: `python -m alembic upgrade head`
+- Refresh persisted matching fields: `python scripts/backfill_address_match_fields.py`
+- Validate focused search stack:
+  - `python -m pytest -q tests/test_property_repository.py tests/test_sold_repository.py tests/test_api.py tests/test_property_service.py tests/test_search_quality_benchmark.py`
+- Validate search quality gates:
+  - `make benchmark-search-gate`
