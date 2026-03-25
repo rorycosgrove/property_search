@@ -1,169 +1,205 @@
 # Data Model
 
-## Entity Relationship
+This document reflects the current SQLAlchemy schema in `packages/storage/models.py`.
+
+## Core Relationships
 
 ```
-Source 1──── N Property 1──── N PropertyPriceHistory
-                  │
-                  └──── 0..1 LLMEnrichment
+Source 1────N Property 1────N PropertyPriceHistory
+                    │
+                    ├────N PropertyTimelineEvent
+                    ├────N Alert
+                    ├────N PropertyGrantMatch N────1 GrantProgram
+                    ├────N PropertyDocument
+                    └────0..1 LLMEnrichment
 
-SoldProperty (PPR records, independent)
+SavedSearch 1────N Alert
+Conversation 1────N ConversationMessage
 
-SavedSearch 1──── N Alert
+SoldProperty, BackendLog, OrganicSearchRun, SourceQualitySnapshot,
+and GeocodeCache are standalone operational datasets.
 ```
 
-## Tables
+## PostgreSQL Tables
 
-### source
-Represents a configured data source (e.g. "Daft.ie – Dublin").
+### `sources`
+Configured ingestion sources for scrapers, APIs, RSS feeds, and CSV imports.
 
-| Column | Type | Description |
-|--------|------|-------------|
-| id | UUID (PK) | Auto-generated |
-| name | VARCHAR(255) | Human-readable name |
-| adapter_name | VARCHAR(100) | Adapter key (daft, myhome, ppr, rss, etc.) |
-| enabled | BOOLEAN | Whether to include in scheduled scrapes |
-| config | JSONB | Adapter-specific configuration |
-| last_polled_at | TIMESTAMP | Last successful poll time |
-| last_poll_status | VARCHAR(50) | ok / error |
-| items_found_last_poll | INTEGER | Count from last poll |
-| consecutive_errors | INTEGER | Error streak counter (resets on success) |
-| created_at | TIMESTAMP | |
-| updated_at | TIMESTAMP | |
+Key columns:
+- `id`, `name`, `url`
+- `adapter_type` (`scraper`, `api`, `rss`, `csv`)
+- `adapter_name`
+- `config`, `enabled`, `poll_interval_seconds`, `tags`
+- `last_polled_at`, `last_success_at`, `last_error`, `error_count`, `total_listings`
+- `created_at`, `updated_at`
 
-### property
-Core property listing. Deduplicated by `content_hash`.
+Key behavior:
+- `url` is unique and is canonicalized before persistence.
+- One source owns many `properties`.
 
-| Column | Type | Description |
-|--------|------|-------------|
-| id | UUID (PK) | |
-| source_id | UUID (FK → source) | Owning source |
-| title | VARCHAR(500) | Listing title |
-| address | TEXT | Normalized address |
-| county | VARCHAR(100) | Extracted county |
-| eircode | VARCHAR(8) | Extracted Eircode |
-| price | NUMERIC(12,2) | Current asking price |
-| bedrooms | SMALLINT | |
-| bathrooms | SMALLINT | |
-| floor_area_sqm | NUMERIC(8,2) | |
-| property_type | VARCHAR(50) | house, apartment, etc. |
-| sale_type | VARCHAR(50) | sale, rent, auction |
-| status | VARCHAR(50) | available, sale_agreed, sold, withdrawn |
-| ber_rating | VARCHAR(10) | A1–G or EXEMPT |
-| description | TEXT | Full listing text |
-| url | VARCHAR(1000) | Original listing URL |
-| image_urls | JSONB | Array of image URLs |
-| latitude | DOUBLE | WGS84 |
-| longitude | DOUBLE | WGS84 |
-| location | GEOMETRY(POINT, 4326) | PostGIS spatial column |
-| content_hash | VARCHAR(64) | SHA-256 of URL (dedup key) |
-| fuzzy_hash | VARCHAR(64) | Hash of normalized address+price (fuzzy dedup) |
-| raw_data | JSONB | Original scraped data |
-| first_listed_at | TIMESTAMP | When first seen |
-| last_seen_at | TIMESTAMP | Most recent scrape that found it |
-| created_at | TIMESTAMP | |
-| updated_at | TIMESTAMP | |
+### `properties`
+Canonical live property listings aggregated from all enabled sources.
 
-**Indexes:**
-- `ix_property_content_hash` (UNIQUE)
-- `ix_property_county`
-- `ix_property_price`
-- `ix_property_bedrooms`
-- `ix_property_property_type`
-- `ix_property_status`
-- `ix_property_source_id`
-- `ix_property_first_listed_at`
-- PostGIS GIST index on `location`
+Key columns:
+- Identity: `id`, `source_id`, `external_id`, `canonical_property_id`, `content_hash`
+- Listing content: `title`, `description`, `url`
+- Address and matching: `address`, `address_line1`, `address_line2`, `town`, `county`, `eircode`, `address_normalized`, `fuzzy_address_hash`
+- Pricing: `price`, `price_text`
+- Attributes: `property_type`, `sale_type`, `bedrooms`, `bathrooms`, `floor_area_sqm`, `ber_rating`, `ber_number`
+- Media and metadata: `images`, `features`, `raw_data`
+- Geospatial: `location_point`, `latitude`, `longitude`
+- Lifecycle: `status`, `first_listed_at`, `last_updated_at`, `created_at`, `updated_at`
 
-### property_price_history
-Tracks price changes over time.
+Important indexes:
+- unique `content_hash`
+- composite and filter indexes on county/price/status/source identity
+- `address_normalized` and `fuzzy_address_hash`
+- trigram GIN indexes on `address` and `title`
+- partial unique index on (`source_id`, `external_id`) when `external_id` is not null
 
-| Column | Type | Description |
-|--------|------|-------------|
-| id | UUID (PK) | |
-| property_id | UUID (FK → property) | |
-| price | NUMERIC(12,2) | Price at this point |
-| price_change | NUMERIC(12,2) | Delta from previous (null for first) |
-| recorded_at | TIMESTAMP | When change was detected |
+### `property_price_history`
+Append-only price history snapshots for active listings.
 
-### sold_property
-Property Price Register records (independent of active listings).
+Key columns:
+- `property_id`, `price`, `price_change`, `price_change_pct`
+- `recorded_at`
+- `recorded_hour_utc` for per-hour deduplication
 
-| Column | Type | Description |
-|--------|------|-------------|
-| id | UUID (PK) | |
-| address | TEXT | |
-| county | VARCHAR(100) | |
-| price | NUMERIC(12,2) | Actual sale price |
-| sale_date | DATE | |
-| property_type | VARCHAR(50) | |
-| is_new | BOOLEAN | New build or second-hand |
-| latitude | DOUBLE | |
-| longitude | DOUBLE | |
-| location | GEOMETRY(POINT, 4326) | |
-| content_hash | VARCHAR(64) | Dedup key |
-| created_at | TIMESTAMP | |
+Important indexes:
+- `property_id + recorded_at`
+- unique `property_id + price + recorded_hour_utc`
 
-### saved_search
-User-defined search criteria for alert matching.
+### `property_timeline_events`
+Unified lifecycle and provenance events for a property.
 
-| Column | Type | Description |
-|--------|------|-------------|
-| id | UUID (PK) | |
-| name | VARCHAR(255) | |
-| criteria | JSONB | Search filter criteria |
-| alerts_enabled | BOOLEAN | |
-| last_matched_at | TIMESTAMP | Last time alerts were evaluated |
-| created_at | TIMESTAMP | |
-| updated_at | TIMESTAMP | |
+Key columns:
+- `property_id`, `event_type`, `occurred_at`, `occurred_hour_utc`
+- optional pricing deltas: `price`, `price_change`, `price_change_pct`
+- provenance: `source_id`, `adapter_name`, `source_url`, `detection_method`, `confidence_score`, `dedup_key`
+- evidence payloads: `evidence`, `metadata`
 
-### alert
-Generated notifications.
+### `sold_properties`
+Property Price Register sale records used for market analytics and comparable sales.
 
-| Column | Type | Description |
-|--------|------|-------------|
-| id | UUID (PK) | |
-| alert_type | VARCHAR(50) | new_listing, price_drop, price_increase, sale_agreed, back_on_market |
-| severity | VARCHAR(20) | low, medium, high, critical |
-| title | VARCHAR(500) | Human-readable summary |
-| property_id | UUID (FK → property, nullable) | Related property |
-| saved_search_id | UUID (FK → saved_search, nullable) | Triggering search |
-| data | JSONB | Extra context (old_price, new_price, etc.) |
-| acknowledged | BOOLEAN | |
-| created_at | TIMESTAMP | |
+Key columns:
+- `address`, `address_normalized`, `fuzzy_address_hash`, `county`
+- `price`, `sale_date`
+- `is_new`, `is_full_market_price`, `vat_exclusive`, `property_size_description`
+- `location_point`, `latitude`, `longitude`
+- `content_hash`, `created_at`
 
-### llm_enrichment
-AI-generated insights for a property.
+Important indexes:
+- county/date and county/price composites
+- `address_normalized`, `fuzzy_address_hash`
+- trigram GIN index on `address`
 
-| Column | Type | Description |
-|--------|------|-------------|
-| id | UUID (PK) | |
-| property_id | UUID (FK → property, UNIQUE) | |
-| provider | VARCHAR(50) | bedrock |
-| model | VARCHAR(100) | Model ID (e.g. amazon.titan-text-express-v1) |
-| summary | TEXT | AI-generated summary |
-| value_score | NUMERIC(3,1) | 1–10 value rating |
-| pros | JSONB | Array of strings |
-| cons | JSONB | Array of strings |
-| features | JSONB | Extracted features |
-| neighbourhood | TEXT | Area description |
-| investment_notes | TEXT | Investment analysis |
-| raw_response | JSONB | Full LLM response |
-| created_at | TIMESTAMP | |
-| updated_at | TIMESTAMP | |
+### `saved_searches`
+User-defined search criteria and notification preferences.
 
-## DynamoDB Tables
+Key columns:
+- `name`, `criteria`
+- `notify_new_listings`, `notify_price_drops`, `notify_method`, `email`
+- `is_active`, `last_matched_at`, `created_at`, `updated_at`
 
-### property-search-config
-Runtime configuration cache (replaces Redis). Used for LLM model settings.
+### `alerts`
+Notifications generated from search matches and listing state changes.
 
-| Attribute | Type | Description |
-|-----------|------|-------------|
-| config_key | String (PK) | Configuration key (e.g. `llm_provider`, `bedrock_model_id`) |
-| config_value | String | Configuration value |
+Key columns:
+- `property_id`, `saved_search_id`
+- `alert_type` (`new_listing`, `price_drop`, `price_increase`, `sale_agreed`, `market_trend`, `back_on_market`)
+- `title`, `description`, `severity`
+- `metadata`, `acknowledged`, `acknowledged_at`, `created_at`
 
-## Database Hosting
+### `organic_search_runs`
+Execution ledger for full scrape + alerts + enrichment runs.
 
-- **Production:** Amazon RDS PostgreSQL 16 (db.t3.micro, free tier) with PostGIS extension, deployed in isolated subnets via CDK `DatabaseStack`
-- **Local development:** Docker Compose with `postgis/postgis:16-3.4` image
-- **Credentials:** Stored in AWS Secrets Manager, injected into Lambda via environment variables
+Key columns:
+- `status`, `triggered_from`, `options`, `steps`, `error`, `created_at`
+
+### `backend_logs`
+Structured operational event log for diagnostics and admin views.
+
+Key columns:
+- `level`, `event_type`, `component`, `source_id`, `message`, `context`, `created_at`
+
+### `source_quality_snapshots`
+Periodic source-quality and discovery-quality metrics.
+
+Key columns:
+- source identity: `source_id`, `source_name`, `adapter_name`, `run_type`
+- ingestion counts: `total_fetched`, `parse_failed`, `new_count`, `updated_count`, `price_unchanged_count`, `dedup_conflicts`
+- discovery counts: `candidates_scored`, `created_count`, `auto_enabled_count`, `pending_approval_count`, `existing_count`, `skipped_invalid_count`, `skipped_invalid_config_count`
+- `score_avg`, `score_max`, `dry_run`, `follow_links`, `details`, `created_at`
+
+### `geocode_cache`
+Persistent cache of successful geocoding lookups.
+
+Key columns:
+- `query` (unique), `provider`
+- `latitude`, `longitude`, `display_name`, `confidence`, `raw_json`
+- `hit_count`, `last_hit_at`, `created_at`, `updated_at`
+
+### `llm_enrichments`
+Persisted Bedrock-generated analysis attached one-to-one to a property.
+
+Key columns:
+- `property_id` (unique)
+- `summary`, `value_score`, `value_reasoning`
+- `pros`, `cons`, `extracted_features`, `neighbourhood_notes`, `investment_potential`
+- `llm_provider`, `llm_model`, `processed_at`, `processing_time_ms`
+
+### `grant_programs`
+Catalog of grant, rebate, equity, and similar buyer-support programs.
+
+Key columns:
+- `code`, `name`, `country`, `region`, `authority`
+- `description`, `eligibility_rules`, `benefit_type`, `max_amount`, `currency`
+- `active`, `valid_from`, `valid_to`, `source_url`, `created_at`, `updated_at`
+
+### `property_grant_matches`
+Materialized eligibility assessments between properties and grant programs.
+
+Key columns:
+- `property_id`, `grant_program_id`
+- `status`, `reason`, `estimated_benefit`, `metadata`, `created_at`
+
+Important indexes:
+- unique `property_id + grant_program_id`
+
+### `property_documents`
+Retrieval-ready corpus records for property intelligence and chat flows.
+
+Key columns:
+- identity: `document_type`, `scope_type`, `scope_key`, `document_key`, `content_hash`
+- joins: `property_id`, `source_id`, `canonical_property_id`, `county`
+- content: `title`, `content`, `metadata`
+- lifecycle: `effective_at`, `expires_at`, `created_at`, `updated_at`
+
+### `conversations` and `conversation_messages`
+User chat history persisted for the AI assistant experience.
+
+`conversations`:
+- `title`, `user_identifier`, `context`, `created_at`, `updated_at`
+
+`conversation_messages`:
+- `conversation_id`, `role`, `content`, `citations`
+- token accounting: `prompt_tokens`, `completion_tokens`, `total_tokens`
+- `processing_time_ms`, `created_at`
+
+## DynamoDB Table
+
+### `property-search-config`
+Runtime configuration cache used for LLM provider/model overrides.
+
+Attributes:
+- `config_key` as the partition key
+- `config_value` as the stored string value
+
+Common keys include `llm_provider` and `llm_model`.
+
+## Hosting Notes
+
+- Production uses Amazon RDS PostgreSQL 16 with PostGIS in private isolated subnets.
+- Local development uses Docker Compose with a PostGIS-enabled PostgreSQL image.
+- Lambda functions receive database credentials through AWS Secrets Manager and runtime environment variables.
+- Search quality features rely on PostgreSQL `pg_trgm` in production and use Python fallbacks in non-Postgres test environments where needed.

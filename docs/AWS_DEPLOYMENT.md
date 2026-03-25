@@ -2,7 +2,7 @@
 
 ## Overview
 
-The Irish Property Research Dashboard runs entirely on AWS serverless infrastructure, designed to stay within the AWS Free Tier. Infrastructure is defined as code using AWS CDK (TypeScript).
+The Irish Property Research Dashboard runs on AWS using Lambda, SQS, API Gateway, Amplify, and a private RDS PostgreSQL instance. Infrastructure is defined as code using AWS CDK (TypeScript).
 
 ## Prerequisites
 
@@ -19,7 +19,7 @@ The Irish Property Research Dashboard runs entirely on AWS serverless infrastruc
 1. Go to the [Amazon Bedrock console](https://console.aws.amazon.com/bedrock)
 2. Navigate to **Model access** in the left sidebar
 3. Click **Manage model access**
-4. Enable: Amazon Titan Text Express, Amazon Titan Text Lite, Amazon Nova Micro
+4. Enable the Bedrock models you plan to use. The default local/runtime configuration uses `anthropic.claude-3-haiku-20240307-v1:0` unless overridden.
 5. Click **Save changes**
 
 ## CDK Stacks
@@ -43,10 +43,12 @@ All infrastructure is defined in `infra/lib/`:
 What `python deploy.py` automates:
 - Prerequisite checks and dependency setup
 - CDK bootstrap (when needed) and stack deployment
-- Migration and initial seed flow
+- Writing stack outputs locally
+- Attempting initial source seed calls against the deployed API
 
 What remains manual:
 - Bedrock model access enablement in AWS Console
+- Production database migrations from an environment with VPC access to RDS
 - Optional Amplify repository connection for CI/CD from your own Git repo
 
 Deployment ease assessment:
@@ -118,14 +120,9 @@ After deployment completes:
 curl https://<api-gateway-url>/health
 ```
 
-3. Confirm migration status:
-
-```bash
-curl https://<api-gateway-url>/api/v1/admin/migrate/status
-```
-
-4. Confirm backend log signal is present in health response (`backend_errors_last_hour`).
-5. Open frontend URL and verify it can fetch from the deployed API.
+3. Confirm backend log signal is present in the health response (`backend_errors_last_hour`).
+4. Open the frontend URL and verify it can fetch from the deployed API.
+5. Confirm the target database has the expected Alembic revision before seeding or testing the app.
 
 ## Environment Variables
 
@@ -164,19 +161,20 @@ Lambda functions receive their configuration via environment variables set by CD
 
 ## Database Migrations
 
-After deployment, run migrations via the admin API endpoint (Lambda has VPC access to RDS):
+The current public API does not expose migration endpoints. The RDS instance is deployed into private isolated subnets and is not publicly accessible, so production migrations must be run from an environment that can reach the database.
+
+Recommended pattern:
+- deploy infrastructure with `python deploy.py` or `make deploy`
+- establish a trusted execution path inside the VPC
+- run `uv run alembic upgrade head`
+- seed sources through the API after migrations complete
+
+Example source seed request:
 
 ```bash
-# Run migrations (API URL from CDK output)
-curl -X POST https://<api-gateway-url>/api/v1/admin/migrate
-
-# Check current revision
-curl https://<api-gateway-url>/api/v1/admin/migrate/status
-
-# Seed sources
 curl -X POST https://<api-gateway-url>/api/v1/sources \
   -H "Content-Type: application/json" \
-  -d '{"name":"Daft.ie","adapter_name":"daft","enabled":true,"config":{}}'
+  -d '{"name":"Daft.ie – National","url":"https://www.daft.ie/property-for-sale/ireland","adapter_type":"api","adapter_name":"daft","enabled":true,"config":{"county":null,"sale_type":"sale"}}'
 ```
 
 ## Monitoring

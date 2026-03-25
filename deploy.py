@@ -309,35 +309,70 @@ def get_api_url() -> str:
     return ""
 
 
-def run_migrations(api_url: str) -> bool:
-    heading("Running Database Migrations")
-    if not api_url:
-        warn("Could not detect API URL. Run manually:")
-        print("    curl -X POST https://<api-url>/api/v1/admin/migrate")
-        return True
-
-    info(f"API URL: {api_url}")
-    migrate_url = f"{api_url}/api/v1/admin/migrate"
+def get_stack_output(*name_fragments: str) -> str:
+    outputs_file = ROOT / "cdk-outputs.json"
+    if not outputs_file.exists():
+        return ""
 
     try:
-        import urllib.request
-        import urllib.error
+        outputs = json.loads(outputs_file.read_text())
+    except (json.JSONDecodeError, OSError):
+        return ""
 
-        info(f"POST {migrate_url}")
-        req = urllib.request.Request(migrate_url, method="POST")
-        with urllib.request.urlopen(req, timeout=120) as resp:
-            body = json.loads(resp.read())
-            info(f"Migration result: {body.get('status', 'ok')}")
-            if body.get("output"):
-                print(f"    {body['output']}")
-        return True
-    except urllib.error.HTTPError as e:
-        error(f"Migration failed ({e.code}): {e.read().decode()[:200]}")
-        return False
-    except Exception as e:
-        warn(f"Could not reach API ({e}). The Lambda may need a moment to cold-start.")
-        print(f"    Retry manually: curl -X POST {migrate_url}")
-        return True
+    targets = tuple(fragment.lower() for fragment in name_fragments)
+    for stack_outputs in outputs.values():
+        for key, value in stack_outputs.items():
+            lowered = key.lower()
+            if all(fragment in lowered for fragment in targets):
+                return str(value)
+    return ""
+
+
+def run_migrations(api_url: str) -> bool:
+    heading("Running Database Migrations")
+    db_endpoint = get_stack_output("db", "endpoint")
+    db_name = get_stack_output("db", "name") or "propertysearch"
+    secret_arn = get_stack_output("secret", "arn")
+    if api_url:
+        info(f"API URL: {api_url}")
+    if db_endpoint:
+        info(f"RDS endpoint: {db_endpoint}")
+    if secret_arn:
+        info(f"DB secret ARN: {secret_arn}")
+
+    warn("Automatic remote migrations are not available in this script.")
+    print(textwrap.dedent("""\
+        The deployed RDS instance is private and the public API does not expose a
+        migration endpoint. Run Alembic from an environment with network access
+        to the database, then return to source/grant seeding.
+
+        Recommended command:
+            uv run alembic upgrade head
+
+        Typical options:
+          - a shell inside the VPC
+          - a bastion or SSM port-forward into the VPC
+          - any trusted environment that can reach the private RDS endpoint
+    """))
+
+    if db_endpoint and secret_arn:
+        print(textwrap.dedent(f"""\
+            Example (PowerShell) to inspect DB credentials from Secrets Manager:
+              aws secretsmanager get-secret-value --secret-id {secret_arn} --query SecretString --output text
+
+            Connection target summary:
+              host={db_endpoint}
+              port=5432
+              db={db_name}
+        """))
+
+    return confirm("Have you already run migrations in a VPC-accessible environment?", default=False)
+
+
+def _load_seed_defaults() -> tuple[list[dict], list[dict]]:
+    from scripts.seed import DEFAULT_GRANTS, DEFAULT_SOURCES
+
+    return [dict(item) for item in DEFAULT_SOURCES], [dict(item) for item in DEFAULT_GRANTS]
 
 
 def seed_sources(api_url: str) -> bool:
@@ -346,48 +381,7 @@ def seed_sources(api_url: str) -> bool:
         warn("API URL not available. Seed manually after deployment.")
         return True
 
-    sources = [
-        {
-            "name": "Daft.ie – National",
-            "url": "https://www.daft.ie/property-for-sale/ireland",
-            "adapter_type": "api",
-            "adapter_name": "daft",
-            "enabled": True,
-            "config": {},
-        },
-        {
-            "name": "MyHome.ie – National",
-            "url": "https://www.myhome.ie/residential/ireland/property-for-sale",
-            "adapter_type": "scraper",
-            "adapter_name": "myhome",
-            "enabled": True,
-            "config": {},
-        },
-        {
-            "name": "PropertyPal – ROI",
-            "url": "https://www.propertypal.com/property-for-sale/republic-of-ireland",
-            "adapter_type": "scraper",
-            "adapter_name": "propertypal",
-            "enabled": True,
-            "config": {"region": "roi"},
-        },
-        {
-            "name": "PropertyPal – NI",
-            "url": "https://www.propertypal.com/property-for-sale/northern-ireland",
-            "adapter_type": "scraper",
-            "adapter_name": "propertypal",
-            "enabled": True,
-            "config": {"region": "ni"},
-        },
-        {
-            "name": "Property Price Register",
-            "url": "https://www.propertypriceregister.ie",
-            "adapter_type": "csv",
-            "adapter_name": "ppr",
-            "enabled": True,
-            "config": {"years": 2},
-        },
-    ]
+    sources, _ = _load_seed_defaults()
 
     sources_url = f"{api_url}/api/v1/sources"
     import urllib.request
@@ -423,62 +417,7 @@ def seed_grants(api_url: str) -> bool:
         warn("API URL not available. Seed manually after deployment.")
         return True
 
-    grants = [
-        {
-            "code": "IE-SEAI-HOME-ENERGY-2026",
-            "name": "SEAI Home Energy Upgrade Grants",
-            "country": "IE",
-            "authority": "Sustainable Energy Authority of Ireland",
-            "description": "Supports insulation, heat pumps, and energy retrofit measures.",
-            "eligibility_rules": {"country": "IE", "max_ber": "D2"},
-            "benefit_type": "rebate",
-            "max_amount": 8000,
-            "currency": "EUR",
-            "active": True,
-            "source_url": "https://www.seai.ie/grants/home-energy-grants/",
-        },
-        {
-            "code": "IE-HTB-2026",
-            "name": "Help to Buy (HTB)",
-            "country": "IE",
-            "authority": "Revenue Commissioners",
-            "description": "Tax refund support for first-time buyers purchasing or self-building a new home.",
-            "eligibility_rules": {"country": "IE", "property_types": ["house", "apartment"], "max_price": 500000},
-            "benefit_type": "tax_refund",
-            "max_amount": 30000,
-            "currency": "EUR",
-            "active": True,
-            "source_url": "https://www.revenue.ie/en/property/help-to-buy-incentive/index.aspx",
-        },
-        {
-            "code": "IE-FIRST-HOME-SCHEME-2026",
-            "name": "First Home Scheme",
-            "country": "IE",
-            "authority": "First Home Scheme DAC",
-            "description": "Shared equity support for eligible first-time buyers in Ireland.",
-            "eligibility_rules": {"country": "IE", "property_types": ["house", "apartment"]},
-            "benefit_type": "equity_support",
-            "max_amount": 75000,
-            "currency": "EUR",
-            "active": True,
-            "source_url": "https://www.firsthomescheme.ie/",
-        },
-        {
-            "code": "NI-COOWN-2026",
-            "name": "Co-Ownership Scheme (NI)",
-            "country": "NI",
-            "authority": "Co-Ownership Housing",
-            "description": "Shared ownership support for eligible buyers in Northern Ireland.",
-            "eligibility_rules": {
-                "country": "NI",
-                "counties": ["antrim", "armagh", "down", "fermanagh", "derry", "londonderry", "tyrone"],
-            },
-            "benefit_type": "shared_ownership",
-            "currency": "GBP",
-            "active": True,
-            "source_url": "https://www.co-ownership.org/",
-        },
-    ]
+    _, grants = _load_seed_defaults()
 
     grants_url = f"{api_url}/api/v1/grants"
     import urllib.request
@@ -623,11 +562,13 @@ def full_deploy() -> None:
         warn("Could not read API URL from cdk-outputs.json")
         api_url = ask("Enter the API Gateway URL (from CDK output above)")
 
-    run_migrations(api_url)
+    migrations_ready = run_migrations(api_url)
 
-    if confirm("Seed default property sources?"):
+    if migrations_ready and confirm("Seed default property sources?"):
         seed_sources(api_url)
         seed_grants(api_url)
+    elif not migrations_ready:
+        warn("Skipping API seeding until database migrations have been completed.")
 
     # Summary
     heading("Deployment Complete!")
@@ -640,8 +581,10 @@ def full_deploy() -> None:
         Next steps:
           1. Connect Amplify to your Git repo in the AWS Console
           2. Enable Bedrock models if you haven't already
-          3. Wait for the first scheduled scrape (~6 hours) or trigger manually:
-             curl -X POST {api_url}/api/v1/sources/1/scrape
+             3. Run database migrations from a VPC-accessible environment
+             4. Seed sources and grants after migrations complete
+             5. Wait for the first scheduled scrape (~6 hours) or trigger manually:
+                 curl -X POST {api_url}/api/v1/sources/trigger-all
 
         Useful commands:
           make diff       Preview infrastructure changes
@@ -671,7 +614,9 @@ def deploy_only() -> None:
     api_url = get_api_url()
     if api_url:
         info(f"API URL: {api_url}")
-    run_migrations(api_url)
+    migrations_ready = run_migrations(api_url)
+    if not migrations_ready:
+        warn("Automatic seeding remains blocked until migrations are completed.")
     info("Done")
 
 

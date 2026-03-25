@@ -25,7 +25,7 @@ Irish Property Research Dashboard follows a **modular monolith** architecture de
                         │  Lambda Workers           │─────────────┘
                         │  (SQS event handlers)     │
                         │                           │──▶ Amazon Bedrock
-                        └───────────────────────────┘    (Titan / Nova)
+                        └───────────────────────────┘    (runtime-configured model)
                                    ▲
                         ┌──────────┴───────────────┐
                         │  EventBridge Rules        │
@@ -41,7 +41,7 @@ Irish Property Research Dashboard follows a **modular monolith** architecture de
 
 | Stack | Resources |
 |-------|-----------|
-| `VpcStack` | VPC with public/private/isolated subnets, 1 NAT gateway |
+| `VpcStack` | VPC with public/private/isolated subnets and a low-cost NAT instance strategy |
 | `SecretsStack` | Secrets Manager for RDS credentials |
 | `DatabaseStack` | RDS PostgreSQL db.t3.micro + DynamoDB config table |
 | `ApiStack` | Lambda (Python 3.12, 512 MB) + HTTP API Gateway with CORS |
@@ -84,7 +84,7 @@ Alert evaluation engine. Matches new properties against saved searches, detects 
 ### packages/ai
 Amazon Bedrock LLM integration. `BedrockProvider` implements the abstract `LLMProvider` interface using Bedrock Runtime. Service layer handles provider config (stored in DynamoDB), prompt management, and response parsing. Supports property enrichment (summary, value score, pros/cons), market analysis, and property comparison.
 
-Supported models are configured by deployment/runtime settings (for example Bedrock Nova family model IDs).
+Supported models are configured by deployment/runtime settings. The current default configuration uses a Bedrock Claude 3 Haiku model ID, and runtime overrides are stored in DynamoDB.
 
 **Depends on:** `shared` (config), `storage` (repositories)
 
@@ -149,7 +149,7 @@ User triggers via API → send_task("llm", "enrich_property_llm", {property_id})
 2. **Repository Pattern** — Decouples ORM from business logic. Testable via mock repositories.
 3. **Content Hash + Canonical Identity Dedup** — Listings are deduped with deterministic content hashes and canonical property identity to reconcile cross-source records.
 4. **SQS Queue Separation** — Three queues (scrape, llm, alert) isolate workloads with independent concurrency and retry settings.
-5. **Amazon Bedrock** — No API keys needed, uses IAM credentials. Free tier models (Titan, Nova) for property enrichment.
+5. **Amazon Bedrock** — No API keys needed, uses IAM credentials. The active model is runtime-configurable and stored in the config table.
 6. **DynamoDB Config Cache** — Replaces Redis for runtime LLM configuration storage. Serverless, pay-per-use, always-on.
 7. **Lambda + NullPool** — Database connections use NullPool in Lambda to avoid connection leaks across invocations.
 8. **PostGIS Spatial** — Native spatial queries for nearby property searches, market heatmaps.

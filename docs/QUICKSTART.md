@@ -24,8 +24,8 @@ The interactive script will:
 1. Check prerequisites (Python, Node, AWS CLI, credentials)
 2. Install all dependencies (Python, CDK, frontend)
 3. Bootstrap CDK and deploy all 7 stacks
-4. Run database migrations
-5. Seed default property sources
+4. Write stack outputs locally
+5. Attempt source seeding
 
 ### Manual Step-by-Step
 
@@ -66,10 +66,12 @@ CDK deploys 7 stacks:
 ### Step 3: Initialize Database
 
 ```bash
-# The API URL is printed in CDK output
-# Run migrations via the admin endpoint:
-curl -X POST https://<api-gateway-url>/api/v1/admin/migrate
+# Run migrations from an environment that can reach the private RDS instance.
+# For local development this is simply:
+uv run alembic upgrade head
 ```
+
+For AWS deployments, the current public API does not expose migration endpoints. Run Alembic from a trusted environment with network access to the deployed RDS instance before seeding sources or validating the app.
 
 ### Step 4: Access the Dashboard
 
@@ -81,7 +83,7 @@ curl -X POST https://<api-gateway-url>/api/v1/admin/migrate
 ```bash
 curl -X POST https://<api-url>/api/v1/sources \
   -H "Content-Type: application/json" \
-  -d '{"name":"Daft.ie","adapter_name":"daft","enabled":true,"config":{}}'
+  -d '{"name":"Daft.ie – National","url":"https://www.daft.ie/property-for-sale/ireland","adapter_type":"api","adapter_name":"daft","enabled":true,"config":{"county":null,"sale_type":"sale"}}'
 ```
 
 ## Option B: Local Development
@@ -231,6 +233,7 @@ All scheduling is handled by EventBridge rules dispatching to SQS queues.
 AI analysis uses **Amazon Bedrock** models configured through environment settings and the LLM configuration endpoints.
 
 No API keys needed — Bedrock uses IAM credentials. Configure the model in **Settings** page or via the LLM config API.
+The current default local model is `anthropic.claude-3-haiku-20240307-v1:0`, but the active model can be changed at runtime.
 
 ## Next Steps
 

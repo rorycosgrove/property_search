@@ -67,8 +67,8 @@ start-dev.cmd
 
 #### Access the Application
 - Frontend: http://localhost:3000
-- API: http://localhost:8000
-- API Docs: http://localhost:8000/docs
+- API: the selected local port in `.dev-runtime\api-port.txt` (typically http://localhost:8000)
+- API Docs: `http://localhost:<selected-port>/docs`
 
 ## Troubleshooting
 
@@ -134,9 +134,14 @@ cd web && npm.cmd install
 
 Create `.env` file in the root directory (copy from `.env.example` if available):
 ```env
-DATABASE_URL=postgresql://postgres:postgres@localhost:5432/propertysearch
+POSTGRES_HOST=localhost
+POSTGRES_PORT=5432
+POSTGRES_DB=propertysearch
+POSTGRES_USER=propertysearch
+POSTGRES_PASSWORD=changeme_in_production
 AWS_REGION=eu-west-1
 LOG_LEVEL=INFO
+NEXT_PUBLIC_API_URL=http://localhost:8000
 ```
 
 ## Next Steps

@@ -95,6 +95,8 @@ List properties with filtering, sorting, and pagination.
 | radius_km | float | Radius in km (requires lat/lng) |
 | sort_by | string | Sort field (price, net_price, relevance, created_at, date, beds/bedrooms) |
 | sort_dir | string | asc or desc |
+| eligible_only | bool | Only include properties with confirmed eligible grants |
+| min_eligible_grants_total | float | Minimum confirmed eligible grant total |
 | page | int | Page number (default: 1) |
 | size | int | Page size (default: 20, max: 100) |
 
@@ -123,7 +125,8 @@ List properties with filtering, sorting, and pagination.
   ],
   "total": 1234,
   "page": 1,
-  "size": 20
+  "per_page": 20,
+  "pages": 62
 }
 ```
 
@@ -147,6 +150,15 @@ Get price change history for a property.
   }
 ]
 ```
+
+### GET /api/v1/properties/{id}/timeline
+Get unified lifecycle and provenance events for a property.
+
+### GET /api/v1/properties/{id}/intelligence
+Get a consolidated payload containing property detail, price history, timeline, and retrieval documents.
+
+### GET /api/v1/properties/{id}/brief
+Get a structured decision brief for a single property.
 
 ### GET /api/v1/properties/{id}/similar
 Get similar properties (same county, type, price range).
@@ -200,6 +212,13 @@ List sold property records from the Property Price Register.
 | min_price | int | Minimum sale price |
 | max_price | int | Maximum sale price |
 | address_contains | string | Case-insensitive substring match on sold address |
+| min_year | int | Minimum sale year |
+| max_year | int | Maximum sale year |
+| lat | float | Center latitude for spatial filter |
+| lng | float | Center longitude for spatial filter |
+| radius_km | float | Radius in km when using spatial filter |
+| sort_by | string | Accepted query parameter; current list payload is returned in service default order |
+| sort_dir | string | Accepted query parameter; current list payload is returned in service default order |
 | page | int | Page number |
 | size | int | Page size |
 
@@ -211,7 +230,7 @@ Find sold properties near a location.
 |-------|------|
 | latitude | float (required) |
 | longitude | float (required) |
-| radius_km | float (default: 2) |
+| radius_km | float (default: 5) |
 | limit | int (default: 20) |
 
 ### GET /api/v1/sold/stats
@@ -236,14 +255,18 @@ Create a new source.
 **Body**
 ```json
 {
-  "name": "Daft.ie – Dublin",
+  "name": "Daft.ie – National",
+  "url": "https://www.daft.ie/property-for-sale/ireland",
+  "adapter_type": "api",
   "adapter_name": "daft",
+  "poll_interval_seconds": 900,
+  "tags": [],
   "enabled": true,
-  "config": {"county": "dublin"}
+  "config": {"county": null, "sale_type": "sale"}
 }
 ```
 
-### PUT /api/v1/sources/{id}
+### PATCH /api/v1/sources/{id}
 Update a source.
 
 ### DELETE /api/v1/sources/{id}
@@ -262,6 +285,9 @@ List auto-discovered sources that are awaiting approval.
 
 ### POST /api/v1/sources/{id}/approve-discovered
 Approve a discovered source and enable it for scheduled scraping.
+
+### POST /api/v1/sources/{id}/reset-cursor
+Reset the stored incremental-ingestion cursor for a source.
 
 ### POST /api/v1/sources/{id}/trigger
 Manually trigger a scrape for this source. Sends a task to the SQS scrape queue.
@@ -321,6 +347,15 @@ Worker env controls for discovery-during-scrape:
 
 ### GET /api/v1/sources/trigger-all/history?limit=20
 List recent full organic search runs from the shared backend ledger.
+
+### POST /api/v1/sources/discover-full
+Run the unified source and grant discovery crawler.
+
+Query params:
+- `dry_run=true|false`
+- `follow_links=true|false`
+- `limit=1..500`
+- `include_grants=true|false`
 
 **Response** `200`
 ```json

@@ -57,7 +57,7 @@ class MySourceAdapter(SourceAdapter):
     def get_adapter_type(self) -> str:
         return "scraper"
 
-    async def fetch_listings(self) -> list[RawListing]:
+    async def fetch_listings(self, source_config: dict) -> list[RawListing]:
         """Fetch raw listings from the source."""
         listings = []
         async with httpx.AsyncClient() as client:
@@ -71,9 +71,6 @@ class MySourceAdapter(SourceAdapter):
             for item in data["listings"]:
                 listings.append(RawListing(
                     source_url=f"https://mysource.com/listing/{item['id']}",
-                    title=item["title"],
-                    price=str(item["price"]),
-                    address=item["address"],
                     raw_data=item,
                 ))
 
@@ -83,15 +80,17 @@ class MySourceAdapter(SourceAdapter):
         """Convert a raw listing to a normalized property."""
         data = raw.raw_data
         return NormalizedProperty(
-            source_url=raw.source_url,
-            title=raw.title,
-            address=raw.address,
+            title=data.get("title", ""),
+            url=raw.source_url,
+            address=data.get("address", ""),
             price=data.get("price"),
             bedrooms=data.get("beds"),
             bathrooms=data.get("baths"),
             property_type=data.get("type", "house"),
             description=data.get("description"),
-            image_urls=data.get("images", []),
+            images=[{"url": url} for url in data.get("images", [])],
+            raw_data=data,
+            external_id=str(data.get("id")) if data.get("id") is not None else None,
         )
 
     @classmethod
@@ -129,7 +128,11 @@ curl -X POST https://<api-url>/api/v1/sources \
   -H "Content-Type: application/json" \
   -d '{
     "name": "MySource – Dublin",
+        "url": "https://mysource.com/dublin",
+        "adapter_type": "scraper",
     "adapter_name": "mysource",
+        "poll_interval_seconds": 900,
+        "tags": [],
     "enabled": true,
     "config": {"region": "dublin"}
   }'
@@ -179,3 +182,9 @@ All HTTP-based adapters use `httpx.AsyncClient` with timeouts. The scraping pipe
 - Per-adapter timeout (configurable)
 - Nominatim geocoding rate limit (1 req/sec per OSM policy)
 - SQS visibility timeout ensures long-running scrapes don't get retried prematurely
+
+## Source Contract Notes
+
+- A source record requires `name`, `url`, `adapter_type`, and `adapter_name`.
+- The backend canonicalizes `url` and rejects duplicates by canonical source identity.
+- Discovery-created sources are usually inserted disabled and tagged `pending_approval` until explicitly approved.

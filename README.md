@@ -1,6 +1,6 @@
 # Irish Property Research Dashboard
 
-A comprehensive web-based platform for researching properties to buy across Ireland (Republic + Northern Ireland). Aggregates listings from multiple sources, provides map visualisation, price tracking, alerts, comparative analysis, and AI-powered insights — all running on AWS serverless infrastructure within the free tier.
+A comprehensive web-based platform for researching properties to buy across Ireland (Republic + Northern Ireland). Aggregates listings from multiple sources, provides map visualisation, price tracking, alerts, comparative analysis, and AI-powered insights on a low-ops AWS footprint.
 
 ![Stack](https://img.shields.io/badge/Python-3.12-blue) ![Stack](https://img.shields.io/badge/FastAPI-0.110-green) ![Stack](https://img.shields.io/badge/Next.js-16-black) ![Stack](https://img.shields.io/badge/AWS_Lambda-serverless-orange) ![Stack](https://img.shields.io/badge/Amazon_Bedrock-AI-purple) ![Stack](https://img.shields.io/badge/RDS_PostgreSQL-16+PostGIS-blue)
 
@@ -12,7 +12,7 @@ A comprehensive web-based platform for researching properties to buy across Irel
 - **Price tracking** — historical price changes, drop/increase detection
 - **Smart alerts** — new listings matching saved searches, price drops, status changes
 - **Market analytics** — county stats, price trends, BER/type distribution, heatmap
-- **AI enrichment** — property summaries, value scores, pros/cons via Amazon Bedrock (Titan / Nova models)
+- **AI enrichment** — property summaries, value scores, pros/cons via Amazon Bedrock, with the active model configurable at runtime
 - **Modern map-first UI** — responsive panels, utility top nav, and mobile menu optimized for research workflows
 
 ## AWS Architecture
@@ -24,7 +24,7 @@ A comprehensive web-based platform for researching properties to buy across Irel
 | Amazon SQS | Task queues (scrape, LLM, alert) | 1M requests/month |
 | Amazon RDS | PostgreSQL 16 + PostGIS | 750 hrs/month db.t3.micro |
 | Amazon DynamoDB | Config cache (replaces Redis) | 25 GB free forever |
-| Amazon Bedrock | AI enrichment (Titan Text / Nova) | Free trial included |
+| Amazon Bedrock | AI enrichment and comparison workflows | Usage-based |
 | AWS Amplify | Next.js SSR hosting | 1000 build-min + 15 GB/month |
 | EventBridge | Scheduled tasks (scrape/alerts/PPR/cleanup) | Included |
 | AWS CDK | Infrastructure as Code (TypeScript) | — |
@@ -58,11 +58,11 @@ See `docs/RELEASE_NOTES_MAR_2026.md` for implementation details and validation o
 |------|---------------|--------------|------|-------|
 | Local (Windows) | `start-all.cmd` | 2-5 min first run, then ~1 min restarts | Easy | Best default for local development. Includes health checks and startup orchestration. |
 | Local (Manual split) | `start-local-services.cmd` + `status-local.cmd` | 2-5 min | Moderate | Better for debugging separate API/web terminals. |
-| Remote (AWS) | `python deploy.py` | 15-25 min | Moderate | Mostly automated, but Bedrock model access remains a manual AWS Console step. |
+| Remote (AWS) | `python deploy.py` | 15-25 min | Moderate | Mostly automated, but Bedrock model access remains manual and production DB migrations require VPC-accessible execution. |
 
 Practical assessment:
 - Local is straightforward once prerequisites are installed.
-- Remote deployment is practical and repeatable, but not fully one-click due to required AWS account setup and Bedrock enablement.
+- Remote deployment is practical and repeatable, but not fully one-click due to AWS account setup, Bedrock enablement, and the need to run production migrations from an environment that can reach the private RDS instance.
 
 ### Deploy to AWS
 
@@ -171,6 +171,12 @@ property_search/
 | [AWS_DEPLOYMENT.md](docs/AWS_DEPLOYMENT.md) | AWS deployment guide, CDK stacks, costs |
 | [QUICKSTART.md](docs/QUICKSTART.md) | Get running in under 5 minutes |
 | [CURRENT_STATUS.md](docs/CURRENT_STATUS.md) | Current operational status and known constraints |
+
+## Deployment Notes
+
+- Local development migrations run with `make migrate` or `uv run alembic upgrade head`.
+- The current public API does not expose migration endpoints. For AWS deployments, run Alembic from an environment with network access to the private RDS instance before seeding or validating the application.
+- `scripts/seed.py` and the source-management API both require `url`, `adapter_type`, and `adapter_name` for each source.
 
 ## License
 
