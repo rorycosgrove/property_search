@@ -203,6 +203,36 @@ Tests use `unittest.mock` and `moto` to mock AWS services (SQS, Bedrock, DynamoD
 
 Use this focused run before full-suite execution when iterating on reliability changes.
 
+## Search Quality Benchmark
+
+Use the local benchmark to compare keyword relevance behavior after threshold/query changes.
+
+```bash
+# Default run (auto-derived queries)
+make benchmark-search
+
+# Mixed difficulty (base + typo/abbreviation variants)
+uv run python scripts/benchmark_search_quality.py --query-set mixed
+
+# Challenging-only queries
+uv run python scripts/benchmark_search_quality.py --query-set challenging
+
+# Custom query set
+uv run python scripts/benchmark_search_quality.py --queries "dublin,blackrock,main street" --size 10
+
+# Machine-readable output
+uv run python scripts/benchmark_search_quality.py --json
+
+# Enforce quality gates (non-zero exit if benchmark drops below threshold)
+make benchmark-search-gate
+
+# Use a custom file of stable queries
+uv run python scripts/benchmark_search_quality.py --queries-file scripts/search_benchmark_queries.txt --enforce-gates --json
+```
+
+The default make targets use a curated, versioned query set in `scripts/search_benchmark_queries.txt`
+to keep benchmark comparisons stable across local runs and CI.
+
 ## Queue Dispatch Semantics
 
 Queue dispatch behavior is centralized in `packages/shared/queue.py`:

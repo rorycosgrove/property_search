@@ -10,6 +10,7 @@ from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
+from difflib import SequenceMatcher
 from typing import Any
 
 from geoalchemy2 import Geography
@@ -21,9 +22,11 @@ from sqlalchemy.exc import DatabaseError, IntegrityError
 from sqlalchemy.orm import Session, joinedload
 
 from packages.shared.constants import (
+    PROPERTY_KEYWORD_TRGM_MIN_SIMILARITY,
     SIMILAR_PROPERTY_BEDROOM_RANGE,
     SIMILAR_PROPERTY_LIMIT,
     SIMILAR_PROPERTY_PRICE_TOLERANCE,
+    SOLD_COMPS_HIGH_CONFIDENCE_MIN_SCORE,
     SOURCE_ERROR_THRESHOLD,
 )
 from packages.shared.money import to_decimal
@@ -32,12 +35,14 @@ from packages.shared.schemas import (
     PropertyFilters,
     SoldPropertyFilters,
 )
+from packages.shared.utils import normalize_address
 from packages.shared.utils import utc_now
 from packages.storage.models import (
     Alert,
     BackendLog,
     Conversation,
     ConversationMessage,
+    GeocodeCache,
     GrantProgram,
     LLMEnrichment,
     Property,
@@ -63,6 +68,97 @@ def _build_location_point(latitude: float | None, longitude: float | None) -> WK
     except (TypeError, ValueError):
         return None
     return WKTElement(f"POINT({lng} {lat})", srid=4326)
+
+
+def _sold_match_confidence(score: float) -> str:
+    return "high" if score >= SOLD_COMPS_HIGH_CONFIDENCE_MIN_SCORE else "medium"
+
+
+def _sold_comp_to_dict(sold: SoldProperty, score: float) -> dict[str, Any]:
+    return {
+        "id": str(sold.id),
+        "address": sold.address,
+        "county": sold.county,
+        "price": float(sold.price) if sold.price else None,
+        "sale_date": sold.sale_date.isoformat() if sold.sale_date else None,
+        "latitude": sold.latitude,
+        "longitude": sold.longitude,
+        "match_method": "fuzzy_hash_county_address_similarity",
+        "match_score": round(float(score), 4),
+        "match_confidence": _sold_match_confidence(float(score)),
+    }
+
+
+def _session_dialect_name(session: Session) -> str:
+    bind = session.get_bind() if hasattr(session, "get_bind") else None
+    return bind.dialect.name if bind is not None else ""
+
+
+def _build_property_keyword_conditions(
+    keywords: list[str] | None,
+    *,
+    dialect_name: str,
+) -> list[Any]:
+    conditions: list[Any] = []
+    for keyword in keywords or []:
+        normalized = keyword.strip()
+        if not normalized:
+            continue
+
+        pattern = f"%{normalized}%"
+        terms = [
+            Property.title.ilike(pattern),
+            Property.description.ilike(pattern),
+            Property.address.ilike(pattern),
+        ]
+
+        if dialect_name == "postgresql" and len(normalized) >= 4:
+            title_similarity = cast(func.similarity(Property.title, normalized), Float)
+            address_similarity = cast(func.similarity(Property.address, normalized), Float)
+            terms.extend([
+                title_similarity >= PROPERTY_KEYWORD_TRGM_MIN_SIMILARITY,
+                address_similarity >= PROPERTY_KEYWORD_TRGM_MIN_SIMILARITY,
+            ])
+
+        conditions.append(or_(*terms))
+
+    return conditions
+
+
+def _build_property_keyword_rank_expression(
+    keywords: list[str] | None,
+    *,
+    dialect_name: str,
+) -> Any | None:
+    rank_terms: list[Any] = []
+    for keyword in keywords or []:
+        normalized = keyword.strip()
+        if not normalized:
+            continue
+
+        if dialect_name == "postgresql" and len(normalized) >= 4:
+            term = func.greatest(
+                cast(func.similarity(Property.title, normalized), Float),
+                cast(func.similarity(Property.address, normalized), Float),
+            )
+        else:
+            pattern = f"%{normalized}%"
+            term = case(
+                (Property.title.ilike(pattern), 2.0),
+                (Property.address.ilike(pattern), 1.5),
+                (Property.description.ilike(pattern), 1.0),
+                else_=0.0,
+            )
+
+        rank_terms.append(cast(term, Float))
+
+    if not rank_terms:
+        return None
+
+    rank_expr = rank_terms[0]
+    for term in rank_terms[1:]:
+        rank_expr = rank_expr + term
+    return cast(rank_expr, Float)
 
 # ──────────────────────────────────────────────────────────────────────────────
 # SourceRepository
@@ -284,6 +380,11 @@ class PropertyRepository:
             joinedload(Property.price_history),
         )
         count_query = select(func.count(Property.id))
+        dialect_name = _session_dialect_name(self.session)
+        keyword_rank_expr = _build_property_keyword_rank_expression(
+            filters.keywords,
+            dialect_name=dialect_name,
+        )
 
         # Apply filters
         conditions = []
@@ -313,15 +414,9 @@ class PropertyRepository:
             conditions.append(Property.ber_rating.in_(filters.ber_ratings))
 
         if filters.keywords:
-            for keyword in filters.keywords:
-                pattern = f"%{keyword}%"
-                conditions.append(
-                    or_(
-                        Property.title.ilike(pattern),
-                        Property.description.ilike(pattern),
-                        Property.address.ilike(pattern),
-                    )
-                )
+            conditions.extend(
+                _build_property_keyword_conditions(filters.keywords, dialect_name=dialect_name)
+            )
 
         if filters.statuses:
             conditions.append(Property.status.in_([s.value for s in filters.statuses]))
@@ -353,11 +448,17 @@ class PropertyRepository:
             "beds": Property.bedrooms,
             "bedrooms": Property.bedrooms,
         }
-        sort_col = sort_map.get(filters.sort_by, Property.created_at)
-        if filters.sort_order == "asc":
-            query = query.order_by(sort_col.asc().nullslast())
+        if filters.sort_by == "relevance" and filters.keywords and keyword_rank_expr is not None:
+            if filters.sort_order == "asc":
+                query = query.order_by(keyword_rank_expr.asc().nullslast(), Property.created_at.desc())
+            else:
+                query = query.order_by(keyword_rank_expr.desc().nullslast(), Property.created_at.desc())
         else:
-            query = query.order_by(sort_col.desc().nullslast())
+            sort_col = sort_map.get(filters.sort_by, Property.created_at)
+            if filters.sort_order == "asc":
+                query = query.order_by(sort_col.asc().nullslast())
+            else:
+                query = query.order_by(sort_col.desc().nullslast())
 
         # Count
         total = self.session.scalar(count_query) or 0
@@ -374,6 +475,11 @@ class PropertyRepository:
         filters: PropertyFilters,
     ) -> tuple[list[Property], int, dict[str, dict[str, float]]]:
         """List properties sorted by net price (price - eligible grants)."""
+        dialect_name = _session_dialect_name(self.session)
+        keyword_rank_expr = _build_property_keyword_rank_expression(
+            filters.keywords,
+            dialect_name=dialect_name,
+        )
         eligible_grants_expr = func.coalesce(
             func.sum(
                 case(
@@ -440,15 +546,9 @@ class PropertyRepository:
             conditions.append(Property.ber_rating.in_(filters.ber_ratings))
 
         if filters.keywords:
-            for keyword in filters.keywords:
-                pattern = f"%{keyword}%"
-                conditions.append(
-                    or_(
-                        Property.title.ilike(pattern),
-                        Property.description.ilike(pattern),
-                        Property.address.ilike(pattern),
-                    )
-                )
+            conditions.extend(
+                _build_property_keyword_conditions(filters.keywords, dialect_name=dialect_name)
+            )
 
         if filters.statuses:
             conditions.append(Property.status.in_([s.value for s in filters.statuses]))
@@ -478,10 +578,26 @@ class PropertyRepository:
         if having_conditions:
             query = query.where(and_(*having_conditions))
 
-        if filters.sort_order == "desc":
-            query = query.order_by(net_price_expr.desc(), Property.created_at.desc(), Property.id.asc())
+        if filters.sort_by == "relevance" and filters.keywords and keyword_rank_expr is not None:
+            if filters.sort_order == "desc":
+                query = query.order_by(
+                    keyword_rank_expr.desc().nullslast(),
+                    net_price_expr.asc(),
+                    Property.created_at.desc(),
+                    Property.id.asc(),
+                )
+            else:
+                query = query.order_by(
+                    keyword_rank_expr.asc().nullslast(),
+                    net_price_expr.asc(),
+                    Property.created_at.desc(),
+                    Property.id.asc(),
+                )
         else:
-            query = query.order_by(net_price_expr.asc(), Property.created_at.desc(), Property.id.asc())
+            if filters.sort_order == "desc":
+                query = query.order_by(net_price_expr.desc(), Property.created_at.desc(), Property.id.asc())
+            else:
+                query = query.order_by(net_price_expr.asc(), Property.created_at.desc(), Property.id.asc())
 
         total = self.session.scalar(
             select(func.count()).select_from(query.order_by(None).subquery())
@@ -1041,6 +1157,28 @@ class SoldPropertyRepository:
         self.session.flush()
         return len(records)
 
+    def bulk_create_ignore_conflicts(
+        self,
+        records: list[dict[str, Any]],
+        *,
+        conflict_columns: tuple[str, ...] = ("content_hash",),
+    ) -> int:
+        """Bulk insert sold properties and ignore duplicates on conflict columns."""
+        if not records:
+            return 0
+
+        table = SoldProperty.__table__
+        conflict_elems = [table.c[col] for col in conflict_columns]
+        stmt = (
+            pg_insert(table)
+            .values(records)
+            .on_conflict_do_nothing(index_elements=conflict_elems)
+            .returning(table.c.id)
+        )
+        inserted_ids = self.session.execute(stmt).scalars().all()
+        self.session.flush()
+        return len(inserted_ids)
+
     def count_total(self) -> int:
         return self.session.scalar(select(func.count(SoldProperty.id))) or 0
 
@@ -1062,6 +1200,96 @@ class SoldPropertyRepository:
             .limit(limit)
         )
         return list(self.session.scalars(query))
+
+    def get_confident_comparable_sold(
+        self,
+        *,
+        address: str,
+        county: str | None,
+        fuzzy_address_hash_value: str | None,
+        limit: int = 20,
+        min_similarity: float = 0.86,
+        max_candidates: int = 80,
+    ) -> list[dict[str, Any]]:
+        """Return address-based sold comps with confidence metadata.
+
+        Guardrails:
+        - Hard county + fuzzy hash gate
+        - Address similarity threshold
+        - Ambiguity guard when too many candidates pass threshold
+        """
+        if not county or not fuzzy_address_hash_value:
+            return []
+
+        normalized_target = normalize_address(address).lower().strip()
+        if not normalized_target:
+            return []
+
+        bind = self.session.get_bind() if hasattr(self.session, "get_bind") else None
+        dialect_name = bind.dialect.name if bind is not None else ""
+        ambiguity_limit = max(5, limit * 3)
+        query_limit = max(1, max(max_candidates, ambiguity_limit + 1))
+
+        if dialect_name == "postgresql":
+            address_expr = func.coalesce(SoldProperty.address_normalized, func.lower(SoldProperty.address))
+            similarity_expr = cast(func.similarity(address_expr, normalized_target), Float)
+            query = (
+                select(SoldProperty, similarity_expr.label("match_score"))
+                .where(
+                    SoldProperty.county == county,
+                    SoldProperty.fuzzy_address_hash == fuzzy_address_hash_value,
+                    similarity_expr >= min_similarity,
+                )
+                .order_by(similarity_expr.desc(), SoldProperty.sale_date.desc())
+                .limit(query_limit)
+            )
+            try:
+                rows = self.session.execute(query).all()
+            except DatabaseError:
+                rows = []
+            else:
+                if not rows:
+                    return []
+                if len(rows) > ambiguity_limit:
+                    return []
+                return [_sold_comp_to_dict(sold, score) for sold, score in rows[: max(1, limit)]]
+
+        query = (
+            select(SoldProperty)
+            .where(
+                SoldProperty.county == county,
+                SoldProperty.fuzzy_address_hash == fuzzy_address_hash_value,
+            )
+            .order_by(SoldProperty.sale_date.desc())
+            .limit(query_limit)
+        )
+        candidates = list(self.session.scalars(query))
+        if not candidates:
+            return []
+
+        scored: list[tuple[SoldProperty, float, str]] = []
+        for sold in candidates:
+            candidate_addr = normalize_address(sold.address_normalized or sold.address or "").lower().strip()
+            if not candidate_addr:
+                continue
+            score = SequenceMatcher(None, normalized_target, candidate_addr).ratio()
+            if score < min_similarity:
+                continue
+
+            confidence = "high" if score >= 0.95 else "medium"
+            scored.append((sold, score, confidence))
+
+        if not scored:
+            return []
+
+        # Ambiguity guard: too many plausible matches means we should return none.
+        if len(scored) > ambiguity_limit:
+            return []
+
+        scored.sort(key=lambda row: (row[1], row[0].sale_date), reverse=True)
+        top_scored = scored[: max(1, limit)]
+
+        return [_sold_comp_to_dict(sold, score) for sold, score, _confidence in top_scored]
 
     def get_stats_by_county(
         self,
@@ -1448,6 +1676,66 @@ class BackendLogRepository:
                 for row in by_event_rows
             ],
         }
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# GeocodeCacheRepository
+# ──────────────────────────────────────────────────────────────────────────────
+
+class GeocodeCacheRepository:
+    def __init__(self, session: Session):
+        self.session = session
+
+    def get_by_query(self, query: str) -> GeocodeCache | None:
+        return self.session.scalar(select(GeocodeCache).where(GeocodeCache.query == query))
+
+    def record_hit(self, query: str) -> GeocodeCache | None:
+        entry = self.get_by_query(query)
+        if not entry:
+            return None
+        entry.hit_count = int(entry.hit_count or 0) + 1
+        entry.last_hit_at = utc_now()
+        self.session.flush()
+        return entry
+
+    def upsert_success(
+        self,
+        *,
+        query: str,
+        provider: str,
+        latitude: float,
+        longitude: float,
+        display_name: str | None,
+        confidence: float | None,
+        raw_json: dict[str, Any] | None,
+    ) -> GeocodeCache:
+        entry = self.get_by_query(query)
+        if entry:
+            entry.provider = provider
+            entry.latitude = latitude
+            entry.longitude = longitude
+            entry.display_name = display_name
+            entry.confidence = confidence
+            entry.raw_json = raw_json or {}
+            entry.hit_count = int(entry.hit_count or 0) + 1
+            entry.last_hit_at = utc_now()
+            self.session.flush()
+            return entry
+
+        entry = GeocodeCache(
+            query=query,
+            provider=provider,
+            latitude=latitude,
+            longitude=longitude,
+            display_name=display_name,
+            confidence=confidence,
+            raw_json=raw_json or {},
+            hit_count=1,
+            last_hit_at=utc_now(),
+        )
+        self.session.add(entry)
+        self.session.flush()
+        return entry
 
 
 # ──────────────────────────────────────────────────────────────────────────────

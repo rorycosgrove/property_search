@@ -621,6 +621,24 @@ class TestPropertiesEndpoint:
         finally:
             app.dependency_overrides.clear()
 
+    def test_list_properties_accepts_relevance_sort(self, client):
+        from packages.storage.database import get_db_session
+
+        mock_session = MagicMock()
+        app.dependency_overrides[get_db_session] = lambda: mock_session
+
+        try:
+            with patch("apps.api.routers.properties.PropertyRepository") as MockRepo:
+                instance = MockRepo.return_value
+                instance.list_properties.return_value = ([], 0)
+
+                resp = client.get("/api/v1/properties?keywords=main&sort_by=relevance")
+
+                assert resp.status_code == 200
+                instance.list_properties.assert_called_once()
+        finally:
+            app.dependency_overrides.clear()
+
     def test_list_properties_eligible_only_uses_grant_aware_path(self, client):
         from packages.storage.database import get_db_session
 
@@ -707,6 +725,45 @@ class TestPropertiesEndpoint:
                 instance.get_by_id.return_value = None
                 resp = client.get("/api/v1/properties/00000000-0000-0000-0000-000000000000")
                 assert resp.status_code == 404
+        finally:
+            app.dependency_overrides.clear()
+
+    def test_get_sold_comps_endpoint(self, client):
+        from packages.storage.database import get_db_session
+
+        mock_session = MagicMock()
+        app.dependency_overrides[get_db_session] = lambda: mock_session
+
+        try:
+            with patch("apps.api.routers.properties.get_sold_comps_payload") as mock_payload:
+                mock_payload.return_value = {
+                    "property_id": "prop-1",
+                    "strategy": "address_fuzzy",
+                    "items": [
+                        {
+                            "id": "sold-1",
+                            "address": "1 Main Street",
+                            "county": "Dublin",
+                            "price": 310000.0,
+                            "sale_date": "2025-01-01",
+                            "match_method": "fuzzy_hash_county_address_similarity",
+                            "match_score": 0.94,
+                            "match_confidence": "medium",
+                        }
+                    ],
+                }
+
+                resp = client.get("/api/v1/properties/prop-1/sold-comps?limit=5&min_similarity=0.9")
+
+                assert resp.status_code == 200
+                data = resp.json()
+                assert data["property_id"] == "prop-1"
+                assert data["strategy"] == "address_fuzzy"
+                assert data["items"][0]["match_confidence"] == "medium"
+                mock_payload.assert_called_once()
+                assert mock_payload.call_args.kwargs["property_id"] == "prop-1"
+                assert mock_payload.call_args.kwargs["limit"] == 5
+                assert mock_payload.call_args.kwargs["min_similarity"] == 0.9
         finally:
             app.dependency_overrides.clear()
 

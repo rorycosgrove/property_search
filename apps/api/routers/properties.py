@@ -11,12 +11,13 @@ from packages.properties.service import (
     get_intelligence_payload,
     get_price_history_payload,
     get_property_payload,
+    get_sold_comps_payload,
     get_similar_payload,
     get_timeline_payload,
     list_properties_payload,
 )
 from packages.properties.service import get_brief_payload
-from packages.shared.constants import DEFAULT_PAGE_SIZE, MAX_PAGE_SIZE
+from packages.shared.constants import DEFAULT_PAGE_SIZE, MAX_PAGE_SIZE, SOLD_COMPS_DEFAULT_MIN_SIMILARITY
 from packages.shared.schemas import PropertyListResponse, PropertyResponse, PropertyTimelineEventResponse
 from packages.storage.database import get_db_session
 from packages.storage.repositories import (
@@ -24,6 +25,7 @@ from packages.storage.repositories import (
     PropertyDocumentRepository,
     PropertyRepository,
     PropertyTimelineRepository,
+    SoldPropertyRepository,
 )
 
 router = APIRouter()
@@ -44,7 +46,7 @@ def list_properties(
     ber_ratings: str | None = Query(None, description="Comma-separated BER ratings"),
     eligible_only: bool = Query(False, description="Only include properties with confirmed eligible grants"),
     min_eligible_grants_total: float | None = Query(None, ge=0, description="Minimum confirmed eligible grant total"),
-    sort_by: str = Query("created_at", pattern="^(price|net_price|created_at|date|beds|bedrooms)$"),
+    sort_by: str = Query("created_at", pattern="^(price|net_price|relevance|created_at|date|beds|bedrooms)$"),
     sort_dir: str = Query("desc", pattern="^(asc|desc)$"),
     lat: float | None = Query(None, ge=-90, le=90),
     lng: float | None = Query(None, ge=-180, le=180),
@@ -121,6 +123,30 @@ def get_similar(
     repo = PropertyRepository(db)
     try:
         return get_similar_payload(repo=repo, property_id=property_id, limit=limit)
+    except PropertyNotFoundError as exc:
+        raise HTTPException(status_code=404, detail="Property not found") from exc
+
+
+@router.get("/{property_id}/sold-comps")
+def get_sold_comps(
+    property_id: str,
+    limit: int = Query(10, ge=1, le=30),
+    min_similarity: float = Query(SOLD_COMPS_DEFAULT_MIN_SIMILARITY, ge=0.0, le=1.0),
+    db: Session = Depends(get_db_session),
+):
+    """Get confidence-gated sold comparables for a property.
+
+    Uses geo-radius comps when coordinates are available, otherwise falls back
+    to county + fuzzy-hash + address-similarity matching.
+    """
+    try:
+        return get_sold_comps_payload(
+            property_repo=PropertyRepository(db),
+            sold_repo=SoldPropertyRepository(db),
+            property_id=property_id,
+            limit=limit,
+            min_similarity=min_similarity,
+        )
     except PropertyNotFoundError as exc:
         raise HTTPException(status_code=404, detail="Property not found") from exc
 

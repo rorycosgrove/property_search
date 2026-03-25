@@ -82,6 +82,8 @@ class TestPropertyNormalizer:
         assert result["raw_data"]["source_key"] == "value"
         assert "fuzzy_address_hash" in result["raw_data"]
         assert len(result["raw_data"]["fuzzy_address_hash"]) == 16
+        assert result["fuzzy_address_hash"] == result["raw_data"]["fuzzy_address_hash"]
+        assert result["address_normalized"] == "12 main street, dublin"
 
     def test_normalize_stores_external_and_canonical_identity(self):
         raw = NormalizedProperty(

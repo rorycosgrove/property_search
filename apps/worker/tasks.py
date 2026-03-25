@@ -27,6 +27,7 @@ from packages.shared.constants import (
 from packages.shared.config import settings
 from packages.shared.logging import get_logger
 from packages.shared.money import safe_price_difference, to_decimal
+from packages.shared.utils import fuzzy_address_hash, normalize_address
 
 logger = get_logger(__name__)
 
@@ -646,7 +647,11 @@ def scrape_source(source_id: str, force: bool = False) -> dict[str, Any]:
                     if not record.get("latitude"):
                         geocode_attempts += 1
                         geo = _run_async(
-                            _geocode_safe(record.get("address", ""), record.get("county"))
+                            _geocode_safe(
+                                record.get("address", ""),
+                                record.get("county"),
+                                db,
+                            )
                         )
                         if geo:
                             record["latitude"] = geo.latitude
@@ -895,46 +900,63 @@ def discover_sources(auto_enable: bool = False, limit: int = 25) -> dict[str, An
 # ── PPR import ────────────────────────────────────────────────────────────────
 
 
-def import_ppr() -> dict[str, Any]:
+def import_ppr(years: int = 2) -> dict[str, Any]:
     """Import Property Price Register data."""
     from packages.sources.ppr import PPRAdapter
     from packages.storage.database import get_session
     from packages.storage.repositories import SoldPropertyRepository
 
     adapter = PPRAdapter()
-    config = {"min_year": datetime.now().year - 2}
+    config = {"min_year": datetime.now().year - max(1, int(years))}
+    batch_size = _env_int("PPR_IMPORT_BATCH_SIZE", 5000, minimum=100, maximum=50000)
 
     raw_listings = _run_async(adapter.fetch_listings(config))
     logger.info(f"PPR: downloaded {len(raw_listings)} records")
+
+    records_to_insert: list[dict[str, Any]] = []
+    skipped_invalid_count = 0
+    failed_count = 0
+
+    for raw in raw_listings:
+        parsed = adapter.parse_listing(raw)
+        if not parsed:
+            skipped_invalid_count += 1
+            continue
+
+        try:
+            record = _build_ppr_insert_record(parsed)
+        except Exception as exc:
+            failed_count += 1
+            logger.warning("ppr_import_record_build_failed", error=str(exc))
+            continue
+
+        if not record:
+            skipped_invalid_count += 1
+            continue
+
+        records_to_insert.append(record)
 
     with get_session() as db:
         sold_repo = SoldPropertyRepository(db)
         new_count = 0
         duplicate_count = 0
-        skipped_invalid_count = 0
-        failed_count = 0
 
-        for raw in raw_listings:
-            parsed = adapter.parse_listing(raw)
-            if not parsed:
-                skipped_invalid_count += 1
-                continue
-
-            content_hash = parsed.raw_data.get("content_hash", "")
-            if sold_repo.get_by_content_hash(content_hash):
-                duplicate_count += 1
-                continue
-
+        for start in range(0, len(records_to_insert), batch_size):
+            batch = records_to_insert[start : start + batch_size]
             try:
-                with db.begin_nested():
-                    inserted = _handle_ppr_record(db, parsed)
-                if inserted:
-                    new_count += 1
-                else:
-                    skipped_invalid_count += 1
+                inserted_count = sold_repo.bulk_create_ignore_conflicts(batch)
+                new_count += inserted_count
+                duplicate_count += len(batch) - inserted_count
             except Exception as exc:
-                failed_count += 1
-                logger.warning("ppr_import_record_failed", error=str(exc))
+                failed_count += len(batch)
+                logger.warning(
+                    "ppr_import_batch_failed",
+                    error=str(exc),
+                    batch_start=start,
+                    batch_size=len(batch),
+                )
+
+    accounted_total = new_count + duplicate_count + skipped_invalid_count + failed_count
 
     return {
         "total_downloaded": len(raw_listings),
@@ -942,6 +964,8 @@ def import_ppr() -> dict[str, Any]:
         "duplicates": duplicate_count,
         "skipped_invalid": skipped_invalid_count,
         "failed": failed_count,
+        "batch_size": batch_size,
+        "accounted_total": accounted_total,
     }
 
 
@@ -1026,6 +1050,13 @@ def enrich_property_llm(property_id: str) -> dict[str, Any]:
                 }
                 for s in sold_props
             ]
+        else:
+            nearby_sold = sold_repo.get_confident_comparable_sold(
+                address=prop.address,
+                county=prop.county,
+                fuzzy_address_hash_value=getattr(prop, "fuzzy_address_hash", None),
+                limit=NEARBY_SOLD_LIMIT,
+            )
 
         property_data = {
             "title": prop.title,
@@ -1193,11 +1224,11 @@ def cleanup_old_alerts(days: int = ALERT_CLEANUP_DAYS) -> dict[str, int]:
 # ── Private helpers ───────────────────────────────────────────────────────────
 
 
-async def _geocode_safe(address: str, county: str | None) -> Any:
+async def _geocode_safe(address: str, county: str | None, db=None) -> Any:
     """Geocode with error handling."""
     try:
         from packages.normalizer.geocoder import geocode_address
-        return await geocode_address(address, county)
+        return await geocode_address(address, county, db=db)
     except Exception:
         return None
 
@@ -1206,30 +1237,43 @@ def _handle_ppr_record(db, parsed) -> bool:
     """Insert a parsed PPR record into the SoldProperty table."""
     from packages.storage.repositories import SoldPropertyRepository
 
-    # Skip records without a valid price (NOT NULL constraint on sold_properties)
-    if parsed.price is None:
-        logger.debug("ppr_record_skipped", reason="missing_price")
+    record = _build_ppr_insert_record(parsed)
+    if not record:
         return False
 
     repo = SoldPropertyRepository(db)
+    repo.create(**record)
+    return True
+
+
+def _build_ppr_insert_record(parsed) -> dict[str, Any] | None:
+    """Build a validated SoldProperty insert payload from a parsed PPR record."""
+    # Skip records without a valid price (NOT NULL constraint on sold_properties)
+    if parsed.price is None:
+        logger.debug("ppr_record_skipped", reason="missing_price")
+        return None
+
     raw = parsed.raw_data
     sale_date = _parse_ppr_sale_date(raw.get("sale_date"))
     if sale_date is None:
         logger.debug("ppr_record_skipped", reason="invalid_sale_date", sale_date=raw.get("sale_date"))
-        return False
+        return None
 
-    repo.create(
-        address=parsed.address,
-        county=parsed.county,
-        price=parsed.price,
-        sale_date=sale_date,
-        is_new=raw.get("is_new", False),
-        is_full_market_price=raw.get("is_full_market_price", True),
-        vat_exclusive=raw.get("vat_exclusive", False),
-        property_size_description=raw.get("property_size_description"),
-        content_hash=raw.get("content_hash", ""),
-    )
-    return True
+    return {
+        "address": parsed.address,
+        "address_normalized": normalize_address(parsed.address).lower(),
+        "fuzzy_address_hash": fuzzy_address_hash(parsed.address),
+        "county": parsed.county,
+        "price": parsed.price,
+        "sale_date": sale_date,
+        "is_new": raw.get("is_new", False),
+        "is_full_market_price": raw.get("is_full_market_price", True),
+        "vat_exclusive": raw.get("vat_exclusive", False),
+        "property_size_description": raw.get("property_size_description"),
+        "content_hash": raw.get("content_hash", ""),
+        "latitude": getattr(parsed, "latitude", None),
+        "longitude": getattr(parsed, "longitude", None),
+    }
 
 
 def _parse_ppr_sale_date(value: Any) -> date | None:

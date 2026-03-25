@@ -9,6 +9,7 @@ from packages.properties.service import (
     build_property_filters,
     get_price_history_payload,
     get_property_payload,
+    get_sold_comps_payload,
     get_timeline_payload,
     list_properties_payload,
     property_to_dict,
@@ -44,6 +45,22 @@ class _FakeTimelineRepo:
 
     def list_for_property(self, _property_id, limit=100):
         return self._history[:limit]
+
+
+class _FakeSoldRepo:
+    def __init__(self, nearby=None, fuzzy=None):
+        self._nearby = nearby or []
+        self._fuzzy = fuzzy or []
+        self.last_nearby_args = None
+        self.last_fuzzy_args = None
+
+    def get_nearby_sold(self, **kwargs):
+        self.last_nearby_args = kwargs
+        return self._nearby
+
+    def get_confident_comparable_sold(self, **kwargs):
+        self.last_fuzzy_args = kwargs
+        return self._fuzzy
 
 
 class TestBuildPropertyFilters:
@@ -269,3 +286,74 @@ class TestPropertyPayloads:
         assert payload[0]["adapter_name"] == "daft"
         assert payload[0]["confidence_score"] == pytest.approx(0.95)
         assert payload[0]["metadata"]["source_name"] == "Daft.ie"
+
+    def test_get_sold_comps_payload_uses_geo_strategy_when_coordinates_present(self):
+        prop = SimpleNamespace(
+            id="p-geo",
+            address="1 Main St",
+            county="Dublin",
+            fuzzy_address_hash="h1",
+            latitude=53.3,
+            longitude=-6.2,
+        )
+        sold = SimpleNamespace(
+            id="s-1",
+            address="2 Main St",
+            county="Dublin",
+            price=300000,
+            sale_date=datetime(2025, 1, 1, tzinfo=UTC).date(),
+            latitude=53.31,
+            longitude=-6.21,
+        )
+        property_repo = _FakePropertyRepo(prop=prop)
+        sold_repo = _FakeSoldRepo(nearby=[sold])
+
+        payload = get_sold_comps_payload(
+            property_repo=property_repo,
+            sold_repo=sold_repo,
+            property_id="p-geo",
+            limit=5,
+            min_similarity=0.86,
+        )
+
+        assert payload["strategy"] == "geo_radius"
+        assert payload["items"][0]["match_confidence"] == "high"
+        assert sold_repo.last_nearby_args is not None
+        assert sold_repo.last_fuzzy_args is None
+
+    def test_get_sold_comps_payload_uses_address_strategy_without_coordinates(self):
+        prop = SimpleNamespace(
+            id="p-fuzzy",
+            address="1 Main St",
+            county="Dublin",
+            fuzzy_address_hash="h1",
+            latitude=None,
+            longitude=None,
+        )
+        comps = [
+            {
+                "id": "s-2",
+                "address": "1 Main Street",
+                "county": "Dublin",
+                "price": 320000.0,
+                "sale_date": "2025-02-10",
+                "match_method": "fuzzy_hash_county_address_similarity",
+                "match_score": 0.94,
+                "match_confidence": "medium",
+            }
+        ]
+        property_repo = _FakePropertyRepo(prop=prop)
+        sold_repo = _FakeSoldRepo(fuzzy=comps)
+
+        payload = get_sold_comps_payload(
+            property_repo=property_repo,
+            sold_repo=sold_repo,
+            property_id="p-fuzzy",
+            limit=5,
+            min_similarity=0.9,
+        )
+
+        assert payload["strategy"] == "address_fuzzy"
+        assert payload["items"][0]["match_method"] == "fuzzy_hash_county_address_similarity"
+        assert sold_repo.last_fuzzy_args["min_similarity"] == 0.9
+        assert sold_repo.last_nearby_args is None

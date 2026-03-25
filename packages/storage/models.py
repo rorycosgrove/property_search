@@ -109,6 +109,8 @@ class Property(Base):
     town: Mapped[str | None] = mapped_column(String(255), nullable=True)
     county: Mapped[str | None] = mapped_column(String(100), nullable=True, index=True)
     eircode: Mapped[str | None] = mapped_column(String(10), nullable=True)
+    address_normalized: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    fuzzy_address_hash: Mapped[str | None] = mapped_column(String(16), nullable=True)
 
     # Pricing — Numeric(12, 2) for precise money calculations
     price: Mapped[Decimal | None] = mapped_column(Numeric(12, 2), nullable=True, index=True)
@@ -188,6 +190,20 @@ class Property(Base):
 
     __table_args__ = (
         Index("ix_properties_county_price", "county", "price"),
+        Index("ix_properties_address_normalized", "address_normalized"),
+        Index("ix_properties_fuzzy_address_hash", "fuzzy_address_hash"),
+        Index(
+            "ix_properties_address_trgm",
+            "address",
+            postgresql_using="gin",
+            postgresql_ops={"address": "gin_trgm_ops"},
+        ),
+        Index(
+            "ix_properties_title_trgm",
+            "title",
+            postgresql_using="gin",
+            postgresql_ops={"title": "gin_trgm_ops"},
+        ),
         Index("ix_properties_status_created", "status", "created_at"),
         Index("ix_properties_canonical_property_id", "canonical_property_id"),
         Index("ix_properties_source_external_id", "source_id", "external_id"),
@@ -295,6 +311,8 @@ class SoldProperty(Base):
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid)
     address: Mapped[str] = mapped_column(String(500), nullable=False)
+    address_normalized: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    fuzzy_address_hash: Mapped[str | None] = mapped_column(String(16), nullable=True)
     county: Mapped[str] = mapped_column(String(100), nullable=False, index=True)
     price: Mapped[Decimal] = mapped_column(Numeric(12, 2), nullable=False)
     sale_date: Mapped[date] = mapped_column(Date, nullable=False, index=True)
@@ -318,6 +336,14 @@ class SoldProperty(Base):
     __table_args__ = (
         Index("ix_sold_county_date", "county", "sale_date"),
         Index("ix_sold_county_price", "county", "price"),
+        Index("ix_sold_address_normalized", "address_normalized"),
+        Index("ix_sold_fuzzy_address_hash", "fuzzy_address_hash"),
+        Index(
+            "ix_sold_address_trgm",
+            "address",
+            postgresql_using="gin",
+            postgresql_ops={"address": "gin_trgm_ops"},
+        ),
     )
 
 
@@ -482,6 +508,37 @@ class SourceQualitySnapshot(Base):
     __table_args__ = (
         Index("ix_source_quality_run_created", "run_type", "created_at"),
         Index("ix_source_quality_source_created", "source_id", "created_at"),
+    )
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# GeocodeCache — persistent cache of successful geocoding lookups
+# ──────────────────────────────────────────────────────────────────────────────
+
+class GeocodeCache(Base):
+    __tablename__ = "geocode_cache"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid)
+    query: Mapped[str] = mapped_column(String(600), nullable=False, unique=True, index=True)
+    provider: Mapped[str] = mapped_column(String(50), nullable=False, default="nominatim", server_default="nominatim")
+    latitude: Mapped[float] = mapped_column(Float, nullable=False)
+    longitude: Mapped[float] = mapped_column(Float, nullable=False)
+    display_name: Mapped[str | None] = mapped_column(Text, nullable=True)
+    confidence: Mapped[float | None] = mapped_column(Float, nullable=True)
+    raw_json: Mapped[dict] = mapped_column(JSONB, default=dict, server_default="{}")
+    hit_count: Mapped[int] = mapped_column(Integer, nullable=False, default=1, server_default="1")
+    last_hit_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=_utcnow, server_default="now()", index=True
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=_utcnow, server_default="now()"
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=_utcnow, server_default="now()", onupdate=_utcnow
+    )
+
+    __table_args__ = (
+        Index("ix_geocode_cache_provider_last_hit", "provider", "last_hit_at"),
     )
 
 

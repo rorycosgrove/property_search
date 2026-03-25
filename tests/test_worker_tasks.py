@@ -12,6 +12,7 @@ from apps.worker.tasks import (
     evaluate_alerts,
     enrich_batch_llm,
     enrich_property_llm,
+    import_ppr,
     materialize_reference_documents_task,
     scrape_all_sources,
     scrape_source,
@@ -761,6 +762,9 @@ def test_enrich_property_llm_records_success_backend_log(monkeypatch):
         def get_nearby_sold(self, **_kwargs):
             return [SimpleNamespace(address="Sold A", price=300000, sale_date=None)]
 
+        def get_confident_comparable_sold(self, **_kwargs):
+            return []
+
     class FakeEnrichmentRepo:
         def __init__(self, _db):
             self.upsert_calls = []
@@ -829,6 +833,9 @@ def test_enrich_property_llm_records_failure_backend_log(monkeypatch):
         def __init__(self, _db):
             pass
 
+        def get_confident_comparable_sold(self, **_kwargs):
+            return []
+
     class FakeEnrichmentRepo:
         def __init__(self, _db):
             pass
@@ -854,6 +861,104 @@ def test_enrich_property_llm_records_failure_backend_log(monkeypatch):
         enrich_property_llm("prop-1")
 
     assert any(e["event_type"] == "llm_enrichment_failed" for e in events)
+
+
+def test_enrich_property_llm_uses_address_comps_when_coordinates_missing(monkeypatch):
+    class FakeSession:
+        def commit(self):
+            return None
+
+    class FakeSessionCtx:
+        def __enter__(self):
+            return FakeSession()
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+    prop = SimpleNamespace(
+        id="prop-2",
+        title="Fallback Home",
+        address="10 Main Street",
+        county="Dublin",
+        fuzzy_address_hash="hash-main",
+        price=420000.0,
+        property_type="house",
+        bedrooms=4,
+        bathrooms=2,
+        floor_area_sqm=130,
+        ber_rating="B3",
+        description="Nice",
+        latitude=None,
+        longitude=None,
+    )
+
+    class FakePropertyRepo:
+        def __init__(self, _db):
+            pass
+
+        def get_by_id(self, _property_id):
+            return prop
+
+    class FakeSoldRepo:
+        def __init__(self, _db):
+            self.last_args = None
+
+        def get_confident_comparable_sold(self, **kwargs):
+            self.last_args = kwargs
+            return [
+                {
+                    "id": "sold-1",
+                    "address": "10 Main St",
+                    "county": "Dublin",
+                    "price": 400000.0,
+                    "sale_date": "2025-01-01",
+                    "match_confidence": "high",
+                    "match_score": 0.97,
+                    "match_method": "fuzzy_hash_county_address_similarity",
+                }
+            ]
+
+    class FakeEnrichmentRepo:
+        def __init__(self, _db):
+            self.upsert_calls = []
+
+        def upsert(self, property_id, **payload):
+            self.upsert_calls.append((property_id, payload))
+
+    events: list[dict] = []
+
+    sold_repo_holder: dict[str, FakeSoldRepo] = {}
+
+    def _sold_repo_factory(_db):
+        repo = FakeSoldRepo(_db)
+        sold_repo_holder["repo"] = repo
+        return repo
+
+    monkeypatch.setattr("packages.storage.database.get_session", lambda: FakeSessionCtx())
+    monkeypatch.setattr("packages.storage.repositories.PropertyRepository", FakePropertyRepo)
+    monkeypatch.setattr("packages.storage.repositories.SoldPropertyRepository", _sold_repo_factory)
+    enrichment_repo = FakeEnrichmentRepo(None)
+    monkeypatch.setattr("packages.storage.repositories.LLMEnrichmentRepository", lambda _db: enrichment_repo)
+
+    observed_nearby_payload: dict[str, object] = {}
+
+    async def _fake_enrich(property_data, nearby_sold):
+        observed_nearby_payload["count"] = len(nearby_sold)
+        observed_nearby_payload["first_confidence"] = nearby_sold[0].get("match_confidence")
+        return {"summary": "ok"}
+
+    monkeypatch.setattr("packages.ai.service.enrich_property", _fake_enrich)
+    monkeypatch.setattr("apps.worker.tasks._run_async", lambda coro: __import__("asyncio").run(coro))
+    monkeypatch.setattr("apps.worker.tasks._record_backend_log", lambda **kwargs: events.append(kwargs))
+    monkeypatch.setattr("apps.worker.tasks.settings.llm_enabled", True)
+
+    result = enrich_property_llm("prop-2")
+
+    assert result == {"property_id": "prop-2", "enriched": True}
+    assert observed_nearby_payload["count"] == 1
+    assert observed_nearby_payload["first_confidence"] == "high"
+    assert sold_repo_holder["repo"].last_args["fuzzy_address_hash_value"] == "hash-main"
+    assert any(e["event_type"] == "llm_enrichment_complete" for e in events)
 
 
 def test_enrich_batch_llm_records_skip_backend_log_when_queue_unconfigured(monkeypatch):
@@ -1607,3 +1712,129 @@ def test_scrape_source_daft_no_auto_reset_when_cursor_absent(monkeypatch):
 
     assert result["total_fetched"] == 0
     assert repo_holder["repo"].updated_configs == []
+
+
+def test_import_ppr_batches_and_reconciles_counts(monkeypatch):
+    class FakeAdapter:
+        async def fetch_listings(self, _config):
+            return [
+                SimpleNamespace(raw_data={"idx": 1}),
+                SimpleNamespace(raw_data={"idx": 2}),
+                SimpleNamespace(raw_data={"idx": 3}),
+                SimpleNamespace(raw_data={"idx": 4}),
+                SimpleNamespace(raw_data={"idx": 5}),
+            ]
+
+        def parse_listing(self, raw):
+            idx = raw.raw_data["idx"]
+            if idx == 1:
+                return SimpleNamespace(
+                    address="A",
+                    county="Dublin",
+                    price=100000.0,
+                    latitude=None,
+                    longitude=None,
+                    raw_data={"sale_date": "01/01/2024", "content_hash": "h1"},
+                )
+            if idx == 2:
+                return None
+            if idx == 3:
+                return SimpleNamespace(
+                    address="C",
+                    county="Cork",
+                    price=None,
+                    latitude=None,
+                    longitude=None,
+                    raw_data={"sale_date": "01/01/2024", "content_hash": "h3"},
+                )
+            if idx == 4:
+                return SimpleNamespace(
+                    address="D",
+                    county="Galway",
+                    price=220000.0,
+                    latitude=None,
+                    longitude=None,
+                    raw_data={"sale_date": "invalid", "content_hash": "h4"},
+                )
+            return SimpleNamespace(
+                address="E",
+                county="Dublin",
+                price=300000.0,
+                latitude=None,
+                longitude=None,
+                raw_data={"sale_date": "02/01/2024", "content_hash": "h5"},
+            )
+
+    class FakeSoldRepo:
+        def __init__(self, _db):
+            self.batches: list[list[dict]] = []
+
+        def bulk_create_ignore_conflicts(self, records, conflict_columns=("content_hash",)):
+            assert conflict_columns == ("content_hash",)
+            self.batches.append(records)
+            return len(records) - 1  # one duplicate in batch
+
+    repo_holder: dict[str, FakeSoldRepo] = {}
+
+    def _repo_factory(db):
+        repo = FakeSoldRepo(db)
+        repo_holder["repo"] = repo
+        return repo
+
+    monkeypatch.setenv("PPR_IMPORT_BATCH_SIZE", "100")
+    monkeypatch.setattr("packages.sources.ppr.PPRAdapter", FakeAdapter)
+    monkeypatch.setattr("packages.storage.database.get_session", lambda: _SessionCtx())
+    monkeypatch.setattr("packages.storage.repositories.SoldPropertyRepository", _repo_factory)
+
+    result = import_ppr()
+
+    assert result["total_downloaded"] == 5
+    assert result["new_records"] == 1
+    assert result["duplicates"] == 1
+    assert result["skipped_invalid"] == 3
+    assert result["failed"] == 0
+    assert result["accounted_total"] == 5
+    assert result["batch_size"] == 100
+    assert len(repo_holder["repo"].batches) == 1
+    assert len(repo_holder["repo"].batches[0]) == 2
+
+
+def test_import_ppr_counts_failed_batches(monkeypatch):
+    class FakeAdapter:
+        async def fetch_listings(self, _config):
+            return [
+                SimpleNamespace(raw_data={"idx": 1}),
+                SimpleNamespace(raw_data={"idx": 2}),
+            ]
+
+        def parse_listing(self, raw):
+            idx = raw.raw_data["idx"]
+            return SimpleNamespace(
+                address=f"A{idx}",
+                county="Dublin",
+                price=100000.0 + idx,
+                latitude=None,
+                longitude=None,
+                raw_data={"sale_date": "01/01/2024", "content_hash": f"h{idx}"},
+            )
+
+    class FakeSoldRepo:
+        def __init__(self, _db):
+            pass
+
+        def bulk_create_ignore_conflicts(self, records, conflict_columns=("content_hash",)):
+            raise RuntimeError(f"boom-{len(records)}")
+
+    monkeypatch.setenv("PPR_IMPORT_BATCH_SIZE", "100")
+    monkeypatch.setattr("packages.sources.ppr.PPRAdapter", FakeAdapter)
+    monkeypatch.setattr("packages.storage.database.get_session", lambda: _SessionCtx())
+    monkeypatch.setattr("packages.storage.repositories.SoldPropertyRepository", FakeSoldRepo)
+
+    result = import_ppr()
+
+    assert result["total_downloaded"] == 2
+    assert result["new_records"] == 0
+    assert result["duplicates"] == 0
+    assert result["skipped_invalid"] == 0
+    assert result["failed"] == 2
+    assert result["accounted_total"] == 2

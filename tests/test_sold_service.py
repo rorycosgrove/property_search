@@ -44,6 +44,7 @@ class TestBuildSoldFilters:
             county="Dublin",
             min_price=250000,
             max_price=500000,
+            address_contains="Main",
             min_year=2020,
             max_year=2021,
             lat=53.34,
@@ -53,6 +54,7 @@ class TestBuildSoldFilters:
 
         assert filters.date_from == date(2020, 1, 1)
         assert filters.date_to == date(2021, 12, 31)
+        assert filters.address_contains == "Main"
         assert filters.page == 2
         assert filters.per_page == 10
 
@@ -80,6 +82,7 @@ class TestSoldPayloads:
             county=None,
             min_price=None,
             max_price=None,
+            address_contains="Main",
             min_year=None,
             max_year=None,
             lat=None,
@@ -92,6 +95,7 @@ class TestSoldPayloads:
         assert payload["items"][0]["id"] == "sold-1"
         assert payload["items"][0]["sale_date"] == "2024-05-10"
         assert repo.last_filters is not None
+        assert repo.last_filters.address_contains == "Main"
 
     def test_nearby_payload_preserves_endpoint_shape(self):
         sold = SimpleNamespace(

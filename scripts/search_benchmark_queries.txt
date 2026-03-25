@@ -1,0 +1,24 @@
+# Curated search benchmark queries
+# Keep this list stable to make benchmark-gate results comparable over time.
+# Includes exact, abbreviation, and typo-like variants.
+
+waterford
+waterfrd
+dungarvan
+dungarvn
+abbeyside
+abbeysid
+greystones
+greystons
+blackrock
+blackrck
+wicklow
+wicklw
+stillorgan
+stillrgan
+main street
+main st
+rathmines
+rathmnes
+cork city
+cork cty

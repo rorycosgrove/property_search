@@ -173,8 +173,10 @@ class PropertyNormalizer:
         )
 
         # Persist fuzzy hash in raw_data metadata so downstream merge logic can use it.
+        normalized_address = normalize_address(address).lower()
+        fuzzy_hash = fuzzy_address_hash(address)
         raw_data = dict(prop.raw_data or {})
-        raw_data["fuzzy_address_hash"] = fuzzy_address_hash(address)
+        raw_data["fuzzy_address_hash"] = fuzzy_hash
         canonical_id = canonical_property_id(address=address, county=county, eircode=eircode)
 
         record = {
@@ -185,6 +187,8 @@ class PropertyNormalizer:
             "content_hash": c_hash,
             "canonical_property_id": canonical_id,
             "address": address,
+            "address_normalized": normalized_address,
+            "fuzzy_address_hash": fuzzy_hash,
             "address_line1": prop.address_line1,
             "address_line2": prop.address_line2,
             "town": prop.town,

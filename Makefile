@@ -20,6 +20,12 @@ scrape:
 import-ppr:
 	uv run python scripts/import_ppr.py
 
+benchmark-search:
+	uv run python scripts/benchmark_search_quality.py --queries-file scripts/search_benchmark_queries.txt
+
+benchmark-search-gate:
+	uv run python scripts/benchmark_search_quality.py --queries-file scripts/search_benchmark_queries.txt --enforce-gates
+
 # ── Development ───────────────────────────────
 test:
 	uv run pytest -v
@@ -92,6 +98,8 @@ help:
 	@echo "  make seed        - Seed initial data sources"
 	@echo "  make scrape      - Trigger manual scrape"
 	@echo "  make import-ppr  - Import Property Price Register data"
+	@echo "  make benchmark-search - Run local search-quality benchmark (curated query set)"
+	@echo "  make benchmark-search-gate - Run curated benchmark and fail if quality gates miss"
 	@echo ""
 	@echo "Development:"
 	@echo "  make test        - Run tests"

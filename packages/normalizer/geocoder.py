@@ -36,7 +36,14 @@ _cache: dict[str, GeoResult | None] = {}
 _last_request_time: float = 0.0
 
 
-async def geocode_address(address: str, county: str | None = None) -> GeoResult | None:
+def _build_query(address: str, county: str | None = None) -> str:
+    query = address
+    if county and county.lower() not in address.lower():
+        query = f"{address}, Co. {county}"
+    return f"{query}, Ireland"
+
+
+async def geocode_address(address: str, county: str | None = None, db: Any | None = None) -> GeoResult | None:
     """
     Geocode an Irish address using Nominatim.
 
@@ -48,16 +55,31 @@ async def geocode_address(address: str, county: str | None = None) -> GeoResult 
     if not address:
         return None
 
-    # Build query
-    query = address
-    if county and county.lower() not in address.lower():
-        query = f"{address}, Co. {county}"
-    query = f"{query}, Ireland"
+    query = _build_query(address, county)
 
     # Check cache
     cache_key = query.lower().strip()
     if cache_key in _cache:
         return _cache[cache_key]
+
+    if db is not None:
+        try:
+            from packages.storage.repositories import GeocodeCacheRepository
+
+            cache_repo = GeocodeCacheRepository(db)
+            cached = cache_repo.record_hit(cache_key)
+            if cached:
+                geo = GeoResult(
+                    latitude=float(cached.latitude),
+                    longitude=float(cached.longitude),
+                    display_name=cached.display_name or "",
+                    confidence=float(cached.confidence or 0.0),
+                    raw=cached.raw_json or {},
+                )
+                _cache[cache_key] = geo
+                return geo
+        except Exception as exc:
+            logger.warning("geocode_cache_lookup_error", query=query, error=str(exc))
 
     # Rate limit — Nominatim requires max 1 request/second
     now = time.monotonic()
@@ -101,6 +123,21 @@ async def geocode_address(address: str, county: str | None = None) -> GeoResult 
             )
 
             _cache[cache_key] = geo
+            if db is not None:
+                try:
+                    from packages.storage.repositories import GeocodeCacheRepository
+
+                    GeocodeCacheRepository(db).upsert_success(
+                        query=cache_key,
+                        provider=settings.geocoder_provider,
+                        latitude=geo.latitude,
+                        longitude=geo.longitude,
+                        display_name=geo.display_name,
+                        confidence=geo.confidence,
+                        raw_json=geo.raw or {},
+                    )
+                except Exception as exc:
+                    logger.warning("geocode_cache_write_error", query=query, error=str(exc))
             logger.debug(
                 "geocode_success",
                 query=query,

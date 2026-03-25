@@ -89,11 +89,11 @@ List properties with filtering, sorting, and pagination.
 | min_beds | int | Minimum bedrooms |
 | max_beds | int | Maximum bedrooms |
 | property_types | string | Comma-separated types (house, apartment, etc.) |
-| keywords | string | Full-text search in title/description |
+| keywords | string | Space- or comma-separated keywords; trigram-assisted match on title/address with description substring fallback |
 | latitude | float | Center lat for spatial search |
 | longitude | float | Center lng for spatial search |
 | radius_km | float | Radius in km (requires lat/lng) |
-| sort_by | string | Sort field (price, first_listed_at, updated_at) |
+| sort_by | string | Sort field (price, net_price, relevance, created_at, date, beds/bedrooms) |
 | sort_dir | string | asc or desc |
 | page | int | Page number (default: 1) |
 | size | int | Page size (default: 20, max: 100) |
@@ -153,6 +153,39 @@ Get similar properties (same county, type, price range).
 
 **Response** `200` — Array of Property objects
 
+### GET /api/v1/properties/{id}/sold-comps
+Get sold comparables for a property.
+
+Strategy:
+- Uses nearby sold records within 2km when the listing has coordinates.
+- Falls back to county + fuzzy-address-hash + address similarity matching when coordinates are missing.
+
+**Query Parameters**
+| Param | Type | Description |
+|-------|------|-------------|
+| limit | int | Maximum comparable sales to return (default: 10, max: 30) |
+| min_similarity | float | Minimum address similarity for fallback matching (default: 0.86) |
+
+**Response** `200`
+```json
+{
+  "property_id": "uuid",
+  "strategy": "address_fuzzy",
+  "items": [
+    {
+      "id": "uuid",
+      "address": "12 Main Street",
+      "county": "Dublin",
+      "price": 320000,
+      "sale_date": "2025-02-10",
+      "match_method": "fuzzy_hash_county_address_similarity",
+      "match_score": 0.94,
+      "match_confidence": "medium"
+    }
+  ]
+}
+```
+
 ---
 
 ## Sold Properties
@@ -166,7 +199,7 @@ List sold property records from the Property Price Register.
 | county | string | Filter by county |
 | min_price | int | Minimum sale price |
 | max_price | int | Maximum sale price |
-| property_type | string | house or apartment |
+| address_contains | string | Case-insensitive substring match on sold address |
 | page | int | Page number |
 | size | int | Page size |
 

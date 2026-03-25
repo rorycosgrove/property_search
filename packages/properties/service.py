@@ -246,6 +246,59 @@ def get_similar_payload(*, repo: Any, property_id: str, limit: int) -> list[dict
     return [property_to_dict(p) for p in similar]
 
 
+def get_sold_comps_payload(
+    *,
+    property_repo: Any,
+    sold_repo: Any,
+    property_id: str,
+    limit: int,
+    min_similarity: float,
+) -> dict[str, Any]:
+    prop = property_repo.get_by_id(property_id)
+    if not prop:
+        raise PropertyNotFoundError(property_id)
+
+    if prop.latitude is not None and prop.longitude is not None:
+        sold_items = sold_repo.get_nearby_sold(
+            lat=prop.latitude,
+            lng=prop.longitude,
+            radius_km=2.0,
+            limit=limit,
+        )
+        return {
+            "property_id": property_id,
+            "strategy": "geo_radius",
+            "items": [
+                {
+                    "id": str(item.id),
+                    "address": item.address,
+                    "county": item.county,
+                    "price": float(item.price) if item.price else None,
+                    "sale_date": item.sale_date.isoformat() if item.sale_date else None,
+                    "latitude": item.latitude,
+                    "longitude": item.longitude,
+                    "match_method": "geo_radius",
+                    "match_confidence": "high",
+                }
+                for item in sold_items
+            ],
+        }
+
+    fuzzy_hash = getattr(prop, "fuzzy_address_hash", None)
+    comps = sold_repo.get_confident_comparable_sold(
+        address=prop.address,
+        county=prop.county,
+        fuzzy_address_hash_value=fuzzy_hash,
+        limit=limit,
+        min_similarity=min_similarity,
+    )
+    return {
+        "property_id": property_id,
+        "strategy": "address_fuzzy",
+        "items": comps,
+    }
+
+
 def get_price_history_payload(*, repo: Any, property_id: str, limit: int) -> list[dict[str, Any]]:
     history = repo.get_for_property(property_id)
     # Guard against very large history responses.
